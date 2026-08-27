@@ -5,11 +5,11 @@ Status: Draft
 ## Data directory layout (D-2)
 
 ```
-/var/lib/minicrond/            # root default; ~/.local/share/minicrond otherwise (0700)
-├── minicrond.db               # SQLite database (0600)
-├── minicrond.db-wal / -shm    # WAL sidecars
-├── minicrond.lock             # flock single-instance guard
-├── minicrond.sock             # Unix control socket (0600) [if enabled]
+/var/lib/minicron/            # root default; ~/.local/share/minicron otherwise (0700)
+├── minicron.db               # SQLite database (0600)
+├── minicron.db-wal / -shm    # WAL sidecars
+├── minicron.lock             # flock single-instance guard
+├── minicron.sock             # Unix control socket (0600) [if enabled]
 ├── daemon.log                 # the daemon's OWN log (never mixes with run logs)
 └── logs/                      # run logs, FileSink backend (spec 09)
     └── <job>/<YYYY>/<MM>/<DD>/<run_id>.log[.gz]
@@ -146,7 +146,7 @@ delete) → hard delete row after 24 h (undo window). Events capped by
 
 ## Backup / restore
 
-- `minicrond backup [--out file]` [v0.2]: `VACUUM INTO` a snapshot DB +
+- `minicron backup [--out file]` [v0.2]: `VACUUM INTO` a snapshot DB +
   manifest (binary version, schema version, timestamp, definition count).
   Run logs optionally included for the file backend (`--with-logs` tars the
   logs tree). S3-backed logs already live off-box — the manifest records

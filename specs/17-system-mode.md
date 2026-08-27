@@ -19,14 +19,14 @@ storage mechanics.
 
 ## Registration & identity
 
-- **`minicrond user register`** — connects to the system socket; kernel
+- **`minicron user register`** — connects to the system socket; kernel
   peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED`) prove uid/gid — no
   passwords, no secrets. Records `{uid, username, gid, home}`. Idempotent:
   re-registering refreshes gid/home (user added to a group, renamed home).
-- Companions: `minicrond user whoami` (who the daemon thinks you are),
-  `minicrond user list` (admin), `minicrond user unregister <name>` (admin;
+- Companions: `minicron user whoami` (who the daemon thinks you are),
+  `minicron user list` (admin), `minicron user unregister <name>` (admin;
   finalizes active runs, disables owned definitions, keeps history).
-- Network access: **`minicrond user token`** prints a user-scoped bearer
+- Network access: **`minicron user token`** prints a user-scoped bearer
   token (rotatable). Users are CLI-first by design; web UI namespace
   scoping is v1.1 — v1 UI is admin-token, all scopes, owner badges shown.
 
@@ -43,7 +43,7 @@ Identity is the OS identity. A user is whoever the kernel says connected.
 
 ## User-owned sources & imports
 
-- **`minicrond import <path>`** run by a registered user registers that
+- **`minicron import <path>`** run by a registered user registers that
   file as a **file-authority source in their scope** (spec `05` rules: the
   file is the single source of truth; reloads re-read it; UI/API cannot
   edit its metadata). `--copy` instead materializes **db-authority**
@@ -51,7 +51,7 @@ Identity is the OS identity. A user is whoever the kernel says connected.
 - **`run_as` is locked to the owner** in user scopes: any other value is a
   validation error naming the line — never a silent override. `~` and
   `working_dir` resolve against the owner's home.
-- Auto-scanning `~/.config/minicrond/jobs/*.toml` per registered user is a
+- Auto-scanning `~/.config/minicron/jobs/*.toml` per registered user is a
   MAY for later; explicit import first (no implicit magic).
 
 ## Authorization matrix
@@ -88,14 +88,14 @@ the box.
 
 ## Socket & paths (system mode)
 
-- Socket: `/run/minicrond/minicrond.sock`; parent dir `root:minicrond`
-  0755, socket 0660. The `minicrond` group is created by
-  `minicrond service install`; membership = who may connect.
+- Socket: `/run/minicron/minicron.sock`; parent dir `root:minicron`
+  0755, socket 0660. The `minicron` group is created by
+  `minicron service install`; membership = who may connect.
 - No-group fallback: socket 0666 with the app-level peer-credential check —
   `SO_PEERCRED` is kernel-provided and unspoofable; non-registered uids are
   refused at the door. Either way, registration is the gate, not file
   permissions alone.
-- Data dir stays `/var/lib/minicrond` (root-owned, 0700) — including user
+- Data dir stays `/var/lib/minicron` (root-owned, 0700) — including user
   logs, since users access them through the API/CLI.
 
 ## Storage impact (spec `08`)

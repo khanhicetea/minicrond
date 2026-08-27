@@ -4,7 +4,7 @@ Status: Draft · Format decision: OQ-2 (TOML recommended) · Table style: OQ-4
 
 ## Philosophy
 
-- **One small bootstrap file + includes.** `minicrond.toml` holds daemon-level
+- **One small bootstrap file + includes.** `minicron.toml` holds daemon-level
   settings and points at include globs that carry job/worker definitions.
 - **One authority per definition** (ADR-3, details in `05`): a definition
   imported from a file is file-authoritative — the UI, API, and DB cannot
@@ -17,24 +17,24 @@ Status: Draft · Format decision: OQ-2 (TOML recommended) · Table style: OQ-4
 
 ## File discovery (first match wins; all paths logged at startup)
 
-1. `--config PATH` / `MINICROND_CONFIG` env
-2. `./minicrond.toml`
-3. `$XDG_CONFIG_HOME/minicrond/minicrond.toml` (`~/.config/...`)
-4. `/etc/minicrond/minicrond.toml` (typical when running as root)
+1. `--config PATH` / `minicron_CONFIG` env
+2. `./minicron.toml`
+3. `$XDG_CONFIG_HOME/minicron/minicron.toml` (`~/.config/...`)
+4. `/etc/minicron/minicron.toml` (typical when running as root)
 
-If none exists: interactive `minicrond` prompts to scaffold; `minicrond
+If none exists: interactive `minicron` prompts to scaffold; `minicron
 daemon` (headless) exits non-zero. Data dir resolution mirrors this:
-`--data-dir` / `MINICROND_DATA` → `~/.local/share/minicrond` (unprivileged)
-or `/var/lib/minicrond` (root).
+`--data-dir` / `minicron_DATA` → `~/.local/share/minicron` (unprivileged)
+or `/var/lib/minicron` (root).
 
 ## Full example (vocabulary reference)
 
 ```toml
-# minicrond.toml — daemon bootstrap
+# minicron.toml — daemon bootstrap
 [server]
 mode        = "user"                # user | system (root daemon + registered users, spec 17; restart-only)
 bind        = "127.0.0.1:7423"      # OQ-8 default port
-unix_socket = true                  # peer-auth CLI channel, data_dir/minicrond.sock
+unix_socket = true                  # peer-auth CLI channel, data_dir/minicron.sock
 tls         = "off"                 # off | auto (self-signed) | cert (with tls_cert/tls_key)
 
 [include]
@@ -59,7 +59,7 @@ max_line  = "256KiB"                # hard per-line cap (truncated + flagged)
 # [logs.s3]                          # active only when backend = "s3"
 # endpoint    = ""                   # empty = AWS default; set for MinIO/R2
 # bucket      = "my-bucket"
-# prefix      = "minicrond"
+# prefix      = "minicron"
 # region      = "us-east-1"
 # credentials = "env"                # env | file (~/.aws/credentials) | static
 # force_path_style = false           # true for MinIO/R2-style endpoints
@@ -164,7 +164,7 @@ Job-only: `schedule`, `timezone`, `jitter`, `catch_up` (`latest`\|`all`\|`none`)
 
 ## Validation
 
-`minicrond validate [path]` runs the daemon's real loader in dry-run mode:
+`minicron validate [path]` runs the daemon's real loader in dry-run mode:
 
 - strict decode (unknown key → error with suggestion),
 - schedule grammar + timezone existence,
@@ -173,12 +173,12 @@ Job-only: `schedule`, `timezone`, `jitter`, `catch_up` (`latest`\|`all`\|`none`)
 - cross-file duplicate `name` detection with both source paths listed,
 - output: human (file:line:col) or `--json` for editors/CI.
 
-A JSON Schema is published (`minicrond schema > schema.json`) for editor
+A JSON Schema is published (`minicron schema > schema.json`) for editor
 autocomplete; the TOML itself remains authoritative.
 
 ## Reload semantics
 
-SIGHUP / `minicrond reload` / `POST /api/v1/daemon/reload` — validate first,
+SIGHUP / `minicron reload` / `POST /api/v1/daemon/reload` — validate first,
 then apply atomically per `03` (reconciliation). Restart-only keys: anything
 under `[server]` (except nothing), `[storage]` sqlite path, `[logs] backend`.
 

@@ -79,7 +79,7 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
 ## Auth (summary — full spec `13`)
 
 - Local Unix socket channel: OS peer credentials, no token needed.
-- TCP: `Authorization: Bearer <token>` (or `X-Minicrond-Token`); web UI uses
+- TCP: `Authorization: Bearer <token>` (or `X-minicron-Token`); web UI uses
   the same token via a login screen → memory only (no cookie persistence v1;
   OQ-7).
 - All endpoints except `/healthz` require auth when a token is configured

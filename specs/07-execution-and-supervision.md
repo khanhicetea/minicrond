@@ -11,12 +11,12 @@ Order of operations, precisely:
    with `start_error` and a `disk.low` event).
 2. Persist `pending` run → allocate `run_id` (UUIDv7), open the LogSink.
 3. Build environment, layered:
-   `env_base` (`inherit` = daemon's env minus `MINICROND_*`; `clean` =
+   `env_base` (`inherit` = daemon's env minus `minicron_*`; `clean` =
    `PATH=/usr/bin:/bin`, `HOME`, `TZ`) → `env_file` → `env` → `secret_env` →
    injected context vars:
-   `MINICROND_JOB`, `MINICROND_RUN_ID`, `MINICROND_TRIGGER`,
-   `MINICROND_ATTEMPT`, `MINICROND_LOG_PATH` (file backend), and for worker
-   instances `MINICROND_INSTANCE` (1-based).
+   `minicron_JOB`, `minicron_RUN_ID`, `minicron_TRIGGER`,
+   `minicron_ATTEMPT`, `minicron_LOG_PATH` (file backend), and for worker
+   instances `minicron_INSTANCE` (1-based).
 4. Resolve identity: `run_as` `user[:group]` (name or numeric; resolved via
    the system user database; `~` in `working_dir` resolves against that
    user's home). Root daemon required for dropping — otherwise validation
@@ -102,7 +102,7 @@ Retries apply to timeouts like any failure unless `retry_on_timeout = false`.
 ## Docker driver [v0.2] (summary; details in `10`)
 
 `driver = "docker"` replaces step 7: the executor shells out to `docker run
---rm --name minicrond-<job>-<run_id> --init` with the image, streams
+--rm --name minicron-<job>-<run_id> --init` with the image, streams
 `docker logs -f` into the same LogSink tagged-line pipeline, and maps the
 container's exit code. Stop ladder maps to `docker stop -t <grace>` /
 `docker kill`.

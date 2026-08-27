@@ -5,27 +5,27 @@ blocks v0.1.
 
 ## Three pairing modes
 
-### Mode A — minicrond in a container (the managed box)
+### Mode A — minicron in a container (the managed box)
 
 Run the official image; it schedules/supervises whatever lives inside its own
 container or talks to sibling containers via a mounted socket (Mode B in the
 same breath).
 
 ```bash
-docker run -d --name minicrond \
+docker run -d --name minicron \
   -p 7423:7423 \
-  -v minicrond-data:/var/lib/minicrond \
-  -v ./minicrond.toml:/etc/minicrond/minicrond.toml:ro \
+  -v minicron-data:/var/lib/minicron \
+  -v ./minicron.toml:/etc/minicron/minicron.toml:ro \
   -v /var/run/docker.sock:/var/run/docker.sock \   # enables Mode B
-  minicrond/minicrond:latest
+  minicron/minicron:latest
 ```
 
-- Image variants: `minicrond` (static binary, distroless-ish minimal) and
-  `minicrond:dind` (+ docker CLI & compose plugin, for Modes B/C).
+- Image variants: `minicron` (static binary, distroless-ish minimal) and
+  `minicron:dind` (+ docker CLI & compose plugin, for Modes B/C).
 - The daemon runs as root **in the image** specifically to support per-job
   `run_as` (D-5) and socket use; hardening notes in `13`.
-- Healthcheck: `minicrond healthcheck` (hits `/healthz` internally).
-- Data volume at `/var/lib/minicrond`; config mounted read-only works because
+- Healthcheck: `minicron healthcheck` (hits `/healthz` internally).
+- Data volume at `/var/lib/minicron`; config mounted read-only works because
   imports read files, the registry lives in the volume (spec `05` — a mounted
   read-only config + writable registry is a first-class combination).
 
@@ -35,10 +35,10 @@ The daemon on the host (or the privileged sidecar) supervises **other
 containers' services** by driving the Docker API over the socket:
 
 - `[[worker]]` with `driver = "docker_compose_service"` [v0.3] references a
-  compose project + service; minicrond wraps `docker compose up -d <svc>` /
+  compose project + service; minicron wraps `docker compose up -d <svc>` /
   `stop`, surfaces container status and `docker logs -f` through the normal
   run/log pipeline (same UI as local workers).
-- Managed resources are **labeled** (`dev.minicrond.managed=<daemon
+- Managed resources are **labeled** (`dev.minicron.managed=<daemon
   instance_id>`) so the daemon never touches containers it didn't create,
   and can reclaim stale labeled leftovers after a crash.
 
@@ -57,7 +57,7 @@ volumes  = ["./migrations:/migrations:ro"]                   # bind mounts
 env      = { ... }
 ```
 
-- Executor runs: `docker run --rm --init --name minicrond-<job>-<run8>`,
+- Executor runs: `docker run --rm --init --name minicron-<job>-<run8>`,
   streams output (stdout/stderr demuxed via docker's multiplexed stream)
   into the LogSink, records the container exit code as the run's exit code.
 - Stop ladder maps to `docker stop -t <grace>` then `docker kill`.
@@ -72,7 +72,7 @@ with `start_error` + a `docker.unavailable` event.
 
 ## Compose import [v0.3]
 
-`minicrond import --from compose docker-compose.yml` generates `[[worker]]`
+`minicron import --from compose docker-compose.yml` generates `[[worker]]`
 definitions (driver Mode B) per service: image, command, env, and a mapping
 of compose `restart:` policies onto our restart semantics; anything without
 a clean mapping gets a `# TODO` comment. Import is **generative** — the

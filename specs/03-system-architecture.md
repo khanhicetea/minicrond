@@ -5,7 +5,7 @@ Status: Draft
 ## One binary, many roles
 
 ```
-┌─────────────────────────────  minicrond (single process) ─────────────────────────────┐
+┌─────────────────────────────  minicron (single process) ─────────────────────────────┐
 │                                                                                       │
 │  ┌──────────┐   ┌─────────────┐   ┌──────────────────┐   ┌─────────────────────────┐  │
 │  │ Config   │──▶│ Registry    │──▶│ Scheduler        │   │ Supervisor              │  │
@@ -35,7 +35,7 @@ Status: Draft
 
 ## Components
 
-- **Config Loader** — reads `minicrond.toml` + include globs, applies
+- **Config Loader** — reads `minicron.toml` + include globs, applies
   substitutions, validates (strict, positional errors), computes a content
   fingerprint. Produces a desired-state definition set. Never talks to the
   executor directly.
@@ -82,7 +82,7 @@ Status: Draft
 ## Startup sequence
 
 1. Parse CLI/env; locate config (see `04`).
-2. `flock` the data dir (`minicrond.lock`) — second instance aborts with the
+2. `flock` the data dir (`minicron.lock`) — second instance aborts with the
    holder's PID.
 3. Open SQLite (WAL), run migrations (forward-only; newer-schema-than-binary
    is a hard error with version guidance).
@@ -95,7 +95,7 @@ Status: Draft
 
 ## Reload / reconciliation
 
-Triggered by SIGHUP, `minicrond reload`, or `POST /api/v1/daemon/reload`.
+Triggered by SIGHUP, `minicron reload`, or `POST /api/v1/daemon/reload`.
 Pipeline: load + validate (reject whole reload on any error) → import to
 registry → compute diff classes:
 

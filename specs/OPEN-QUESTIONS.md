@@ -71,8 +71,8 @@ ADR and update the referencing spec's Status.
 ## Product & scope decisions
 
 ### OQ-11 — Product name
-- Options: `minicrond` (repo working title) / something else.
-- Recommendation: keep `minicrond` through v0.1; rename is cheap pre-release.
+- Options: `minicron` (repo working title) / something else.
+- Recommendation: keep `minicron` through v0.1; rename is cheap pre-release.
 - Impact: binary name, config paths, ports branding, crate/repo. Specs: everywhere.
 
 ### OQ-12 — License
@@ -135,7 +135,7 @@ ADR and update the referencing spec's Status.
 - Log chunk size 256 KiB vs 1 MiB (`09`; S3 request economics vs tail
   latency — measure with a chatty worker).
 - `log_on_full` per-definition vs global (`09`).
-- `trigger` as hidden alias of `minicrond run` (`14`).
+- `trigger` as hidden alias of `minicron run` (`14`).
 - npm/bun distribution shim in v0.2 (`15`).
 - Webhook payload `"v": 1` stamping (`16`).
 - Multiple tokens / read-only token (`13`, v2 reservation).
@@ -148,4 +148,4 @@ ADR and update the referencing spec's Status.
   storage; OQ-10 resolved; OQ-1 recommendation updated to Go.
 - 2026-08-26 — ADR-2 (no TUI), ADR-3 (provenance-locked single source of
   truth — resolves OQ-3), ADR-4 (system mode with registered users, spec
-  `17`) accepted; `minicrond logs` promoted to v0.1.
+  `17`) accepted; `minicron logs` promoted to v0.1.

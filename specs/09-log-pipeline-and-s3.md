@@ -32,7 +32,7 @@ stream_tag := 0x01 (stdout) | 0x02 (stderr) | 0x03 (system)
   chunk footers (each chunk footer records first/last line number and byte
   length).
 - ANSI escape sequences pass through untouched (UI renders); `system` lines
-  are minicrond's own annotations (e.g. "timeout reached, stopping",
+  are minicron's own annotations (e.g. "timeout reached, stopping",
   "truncated 3 lines over 256KiB").
 - `log_max` budgets bytes per run (default 100 MiB). On overflow:
   `log_on_full = drop_old` (default; ring-buffer style: oldest chunks
@@ -67,7 +67,7 @@ The executor pumps pipes into `StreamWriter`; the HTTP layer reads through
   line.
 - Reads: index seek → decompress one chunk → scan. Tail = poll at 250 ms +
   inotify/fsevents where available (polling fallback is fine locally).
-- `MINICROND_LOG_PATH` env var is injected into runs (file backend only) so
+- `minicron_LOG_PATH` env var is injected into runs (file backend only) so
   scripts can self-reference.
 
 ## S3Sink [v0.3] (D-4 as amended)

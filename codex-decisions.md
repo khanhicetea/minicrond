@@ -1,4 +1,4 @@
-# Codex review and decisions for the minicrond specifications
+# Codex review and decisions for the minicron specifications
 
 Date: 2026-08-26
 
@@ -49,7 +49,7 @@ state machines, and only then begin implementation.
 | OQ-7 auth | **One high-entropy bearer token plus Unix peer credentials** | Smallest understandable model. Store only a token hash, show a new token once, and use `sessionStorage` rather than persistent `localStorage` in the UI. Use authenticated `fetch()` streaming, not native `EventSource`, because EventSource cannot set an Authorization header. |
 | OQ-8 port | **7423** | No material reason to spend more design time on it. Bind loopback by default. |
 | OQ-9 UI | **Svelte 5 + Vite, static SPA** | Small output and good development ergonomics. This is a client-rendered SPA; remove claims that it works as server-rendered navigation without JavaScript. |
-| OQ-11 name | **Keep `minicrond`** | Freeze the name now, subject to a package/domain/trademark check before the first public release. |
+| OQ-11 name | **Keep `minicron`** | Freeze the name now, subject to a package/domain/trademark check before the first public release. |
 | OQ-12 license | **Apache-2.0** | Clear patent grant and one simple license. |
 | OQ-13 file watch | **Manual reload in v0.1; opt-in watch later** | Correct rename/debounce/error behavior is not core. When added, default it off. |
 | OQ-14 Docker | **One Docker driver for jobs and workers after the core release; no compose-service manager yet** | `docker run` for an ephemeral job or foreground worker is bounded. Managing pre-existing Compose projects creates a second reconciliation system. Defer Mode B and compose import until demonstrated demand, not merely to v0.3 by promise. |
@@ -167,9 +167,9 @@ valid but collectively conflicting files.
 A browser-uploaded file disappears after the HTTP request, so it cannot become
 a linked, file-authoritative definition. Split import into explicit modes:
 
-- `minicrond import --link PATH`: register a daemon-local path as
+- `minicron import --link PATH`: register a daemon-local path as
   file-authoritative.
-- `minicrond import --copy PATH`: copy definitions into DB authority.
+- `minicron import --copy PATH`: copy definitions into DB authority.
 - Web/API upload: always **copy into DB authority** unless a future managed
   source-file feature is deliberately designed.
 
@@ -257,7 +257,7 @@ For Go specifically:
   AWS/cloud/service credentials must not flow into unprivileged jobs.
 - Default `working_dir` to the effective user's home, with an explicit fallback
   if it is unavailable.
-- Remove `MINICROND_LOG_PATH`; it leaks an internal path that the run-as user
+- Remove `minicron_LOG_PATH`; it leaks an internal path that the run-as user
   generally cannot access and encourages mutation of daemon-owned logs.
 - `enabled = false` should prevent all new starts, including manual starts.
   Re-enable first; do not give the word “disabled” a partial meaning.
@@ -369,7 +369,7 @@ Remove or defer these ideas:
 
 - “copy as curl everywhere” — it adds visual noise and risks copying a token;
   provide a developer menu on relevant detail/action views and use
-  `$MINICROND_TOKEN` placeholders;
+  `$minicron_TOKEN` placeholders;
 - side-by-side form and TOML editors — ship one structured editor first;
 - progressive enhancement/server-rendered navigation — incompatible with the
   selected embedded static SPA unless a second rendering implementation is
@@ -393,7 +393,7 @@ System mode has unresolved privilege-escalation paths in the current draft:
   helper/open protocol, with symlink and path-race behavior specified.
 - Self-registration conflicts with “registration is the gate.” If every local
   user can call `user register`, it is not an administrator-controlled gate.
-  Choose admin registration: `sudo minicrond user add <user>`, then grant
+  Choose admin registration: `sudo minicron user add <user>`, then grant
   socket group/ACL access. Registered users may rotate their own token.
 - Do not fall back to a world-writable system socket. Configure the group/ACL
   correctly or fail installation with a useful error.
@@ -413,7 +413,7 @@ System mode has unresolved privilege-escalation paths in the current draft:
   and run labels.
 - The first implementation may invoke an explicitly configured Docker/Podman
   CLI; document that this optional integration has that runtime dependency.
-  “One binary” describes minicrond's distribution, not the Docker runtime.
+  “One binary” describes minicron's distribution, not the Docker runtime.
 - Rename the proposed `:dind` image; it contains a client, not a Docker daemon.
   Better: one normal image plus a documented way to add/mount the client, or a
   `:docker-cli` variant.

@@ -4,7 +4,7 @@ Status: Draft
 
 ## Elevator pitch
 
-**minicrond** is one small binary that replaces `crond` *and* your process
+**minicron** is one small binary that replaces `crond` *and* your process
 supervisor: define cron **jobs** and long-running **workers** once, and see
 every run — exit code, duration, full output — in a dead-simple web UI.
 Metadata lives in SQLite. Logs can stay local or be offloaded to S3.
@@ -62,7 +62,7 @@ It manages processes, and can drive Docker too.
 
 ## Positioning vs. existing tools
 
-| | crond | systemd timers | supervisord | minicrond |
+| | crond | systemd timers | supervisord | minicron |
 |---|---|---|---|---|
 | Cron scheduling | ✅ | ✅ | ❌ | ✅ |
 | Service supervision | ❌ | ✅ | ✅ | ✅ |
@@ -90,7 +90,7 @@ S3 option from day one of the design.
 
 - From binary download to first triggered job with visible streamed output:
   **< 5 minutes**, no docs required for the happy path.
-- `minicrond export` → wipe box → `minicrond import` reproduces an identical
+- `minicron export` → wipe box → `minicron import` reproduces an identical
   working setup (excluding run history).
 - Kill -9 the daemon mid-run: after restart, every in-flight run is marked
   `interrupted`, nothing is silently lost, no duplicate firing of missed

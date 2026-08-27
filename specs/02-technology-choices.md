@@ -75,7 +75,7 @@ catch-all route; data over the REST/SSE API only.
   `linux/arm64`, `darwin/amd64`, `darwin/arm64` (all static, one command
   each). Rust path (if chosen): musl + osxcross/CI runners.
 - Release channels: GitHub Releases tarballs (+ checksums), one-line install
-  script, Homebrew tap, Docker images `minicrond` and `minicrond:dind`
+  script, Homebrew tap, Docker images `minicron` and `minicron:dind`
   (docker-cli variant) — see `10`.
 - Versioning: semver; before 1.0 breaking changes allowed but MUST ship a
   config migration note; config vocabulary is frozen at v0.1 regardless

@@ -48,7 +48,7 @@ is locked in.
 [include]
 paths = [
   "jobs/*.toml",              # glob, relative to the including file
-  "/etc/minicrond/shared/*.toml",
+  "/etc/minicron/shared/*.toml",
 ]
 prune_missing = false
 ```
@@ -64,7 +64,7 @@ prune_missing = false
   validate-first reload; a validation failure keeps the live set and
   surfaces a scoped error.
 - In **system mode**, each registered user owns additional file sources via
-  `minicrond import` — same rules, scoped to their namespace (spec `17`).
+  `minicron import` — same rules, scoped to their namespace (spec `17`).
 
 ## Web UI import/export
 
@@ -76,16 +76,16 @@ prune_missing = false
   - **TOML bundle** (default): single file of `[[job]]`/`[[worker]]` blocks
     with source comments (`# from jobs/backup.toml`), or a ZIP with one
     file per definition + `manifest.json` (name, hash, revision, authority,
-    minicrond version) — OQ-20.
+    minicron version) — OQ-20.
   - **JSON**: canonical definition JSON (same shape as the API), for
     scripts and diffing.
 - Secrets are **never exported** — `secret_env` values export as
   `${file:/run/secrets/...}` references with a header comment listing what
   must be provisioned manually.
-- Run history is not part of settings export; separate `minicrond export
+- Run history is not part of settings export; separate `minicron export
   --runs` (JSONL/CSV) [v0.2].
 
-**Import** (same page, or `minicrond import <path>`):
+**Import** (same page, or `minicron import <path>`):
 
 1. Paste or upload file(s).
 2. Parse + validate. Errors (with positions) block that item only.
@@ -116,22 +116,22 @@ the managing path (`11`).
 
 ```
 repo/
-  minicrond.toml            # bootstrap: [server], [include]
+  minicron.toml            # bootstrap: [server], [include]
   jobs/*.toml               # reviewed in PRs — the only edit channel
   workers/*.toml
 ```
 
-`minicrond import --dry-run jobs/proposed.toml` validates in CI; on merge,
+`minicron import --dry-run jobs/proposed.toml` validates in CI; on merge,
 a reload picks it up. Ad-hoc db-authority definitions made in the UI can be
-materialized back via `minicrond export --format toml` for review.
+materialized back via `minicron export --format toml` for review.
 
 ## Migration aids
 
-- `minicrond import --from crontab <file|user>` [v0.2]: converts user/system
+- `minicron import --from crontab <file|user>` [v0.2]: converts user/system
   crontabs to `[[job]]` TOML with `# TODO` comments for anything ambiguous
   (`%` semantics, redirections). Jobs import **disabled** until reviewed.
   No masking/disabling of system cron — the operator's explicit call.
-- `minicrond import --from compose <file>` [v0.3]: compose services →
+- `minicron import --from compose <file>` [v0.3]: compose services →
   `[[worker]]` definitions using the docker driver (spec `10`).
 
 ## Open questions

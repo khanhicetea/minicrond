@@ -36,7 +36,7 @@ Not debated — fixed inputs to every other decision.
 - Status: accepted
 - Context: `learn/` contains a reference product (RunWisp) studied for feature
   inspiration; its daemon/UI are GPL-3.0.
-- Decision: minicrond is designed and implemented from these original specs
+- Decision: minicron is designed and implemented from these original specs
   only. No source, schema, text, or identifier is copied from the reference;
   `learn/` stays gitignored and is never build input. Where designs resemble
   the reference (category-best-practice behavior like stop ladders), the spec
@@ -70,9 +70,9 @@ Not debated — fixed inputs to every other decision.
 - Context: terminal UIs are a large surface (rendering, input handling,
   virtualization) serving a niche that SSH port-forwarding to the web UI
   largely solves.
-- Decision: minicrond ships exactly two interfaces — the web UI and the
+- Decision: minicron ships exactly two interfaces — the web UI and the
   CLI. No TUI, ever.
-- Consequences: smaller scope; the CLI gains run-log viewing (`minicrond
+- Consequences: smaller scope; the CLI gains run-log viewing (`minicron
   logs`) to keep headless/SSH workflows first-class.
 
 ## ADR-3: Provenance-locked single source of truth
@@ -102,7 +102,7 @@ Not debated — fixed inputs to every other decision.
   individual Unix users manage their own jobs/workers safely — extending
   D-5 rather than running N per-user daemons.
 - Decision: add `[server] mode = "system"` (restart-only). Unix users run
-  `minicrond user register` over the system socket (kernel peer
+  `minicron user register` over the system socket (kernel peer
   credentials prove identity — no passwords); each registered user gets a
   scoped namespace, may import file sources and create db-authority
   definitions (locked to `run_as` = self), and uses the CLI for listing

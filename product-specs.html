@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A visual product-specification overview and Codex decision review for minicron.">
+  <title>minicron — Product Specs &amp; Decision Review</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #eef6f1;
+      --muted: #a6b6b0;
+      --subtle: #71837c;
+      --canvas: #08120f;
+      --panel: #0d1c17;
+      --panel-raised: #11261f;
+      --line: rgba(190, 231, 211, .16);
+      --lime: #c6ff61;
+      --lime-deep: #8acb2e;
+      --aqua: #73e6d0;
+      --blue: #8eb6ff;
+      --amber: #ffcc7a;
+      --coral: #ff9d83;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .28);
+      --radius: 22px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 11% 0%, rgba(115, 230, 208, .13), transparent 24rem),
+        radial-gradient(circle at 94% 12%, rgba(198, 255, 97, .11), transparent 27rem),
+        var(--canvas);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    a { color: inherit; }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: -4rem;
+      left: 1rem;
+      padding: .65rem .9rem;
+      border-radius: .55rem;
+      color: #061008;
+      background: var(--lime);
+      text-decoration: none;
+    }
+    .skip-link:focus { top: 1rem; }
+
+    .page { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1.25rem;
+      padding: 1.35rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: .65rem;
+      color: var(--ink);
+      font-size: .92rem;
+      font-weight: 750;
+      letter-spacing: .02em;
+      text-decoration: none;
+    }
+    .brand-mark {
+      display: grid;
+      width: 30px;
+      height: 30px;
+      place-items: center;
+      border: 1px solid rgba(198, 255, 97, .55);
+      border-radius: 9px;
+      color: var(--lime);
+      background: rgba(198, 255, 97, .08);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .8rem;
+    }
+    .topbar nav { display: flex; flex-wrap: wrap; justify-content: end; gap: .2rem .4rem; }
+    .topbar nav a {
+      padding: .42rem .58rem;
+      border-radius: 7px;
+      color: var(--muted);
+      font-size: .79rem;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .topbar nav a:hover, .topbar nav a:focus-visible { color: var(--ink); background: rgba(255, 255, 255, .06); }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(320px, .7fr);
+      gap: clamp(2rem, 6vw, 5.75rem);
+      align-items: center;
+      padding: clamp(4.5rem, 11vw, 8rem) 0 4.6rem;
+    }
+    .eyebrow {
+      margin: 0 0 .85rem;
+      color: var(--lime);
+      font-size: .72rem;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 770px;
+      margin-bottom: 1.2rem;
+      font-size: clamp(2.8rem, 6.2vw, 5.45rem);
+      line-height: .98;
+      letter-spacing: -.064em;
+    }
+    .hero h1 em { color: var(--lime); font-style: normal; }
+    .lede {
+      max-width: 670px;
+      margin-bottom: 1.65rem;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.7vw, 1.18rem);
+      line-height: 1.7;
+    }
+    .source-row { display: flex; flex-wrap: wrap; gap: .55rem; }
+    .source-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: .42rem;
+      padding: .42rem .65rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(13, 28, 23, .58);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: .72rem;
+    }
+    .source-tag::before { width: 6px; height: 6px; border-radius: 50%; background: var(--aqua); content: ""; }
+
+    .decision-pulse {
+      position: relative;
+      overflow: hidden;
+      padding: 1.25rem;
+      border: 1px solid rgba(198, 255, 97, .26);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(21, 47, 36, .96), rgba(11, 27, 21, .97));
+      box-shadow: var(--shadow);
+    }
+    .decision-pulse::after {
+      position: absolute;
+      top: -75px;
+      right: -75px;
+      width: 190px;
+      height: 190px;
+      border: 1px solid rgba(198, 255, 97, .16);
+      border-radius: 50%;
+      box-shadow: 0 0 0 26px rgba(198, 255, 97, .035), 0 0 0 52px rgba(198, 255, 97, .022);
+      content: "";
+    }
+    .pulse-label { position: relative; z-index: 1; margin: 0 0 .8rem; color: var(--aqua); font-size: .73rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .pulse-title { position: relative; z-index: 1; max-width: 15ch; margin-bottom: .85rem; font-size: clamp(1.55rem, 3vw, 2.12rem); line-height: 1.08; letter-spacing: -.04em; }
+    .pulse-copy { position: relative; z-index: 1; max-width: 32ch; margin-bottom: 1.1rem; color: var(--muted); font-size: .9rem; }
+    .pulse-footer { position: relative; z-index: 1; display: flex; align-items: center; gap: .55rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--subtle); font-size: .76rem; }
+    .pulse-footer strong { color: var(--ink); font-weight: 700; }
+
+    .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .metric { padding: 1.25rem clamp(.85rem, 2.3vw, 2rem); }
+    .metric + .metric { border-left: 1px solid var(--line); }
+    .metric-value { display: block; color: var(--lime); font-size: clamp(1.7rem, 3.2vw, 2.45rem); font-weight: 790; line-height: 1; letter-spacing: -.06em; }
+    .metric-label { display: block; margin-top: .4rem; color: var(--muted); font-size: .79rem; }
+
+    main { padding: 5rem 0 5.5rem; }
+    section { scroll-margin-top: 1.2rem; }
+    section + section { margin-top: clamp(4.5rem, 8vw, 7.5rem); }
+    .section-kicker { margin-bottom: .65rem; color: var(--aqua); font-size: .72rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    .section-heading { max-width: 700px; margin-bottom: .8rem; font-size: clamp(2rem, 4vw, 3.15rem); line-height: 1.03; letter-spacing: -.055em; }
+    .section-intro { max-width: 700px; margin-bottom: 2rem; color: var(--muted); font-size: 1rem; }
+
+    .callout {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 1rem;
+      align-items: start;
+      margin: 2.1rem 0;
+      padding: 1.2rem 1.3rem;
+      border: 1px solid rgba(255, 204, 122, .3);
+      border-radius: 16px;
+      background: rgba(255, 204, 122, .055);
+    }
+    .callout-mark { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; color: #161006; background: var(--amber); font-weight: 900; }
+    .callout p { margin: 0; color: #e2d6bf; font-size: .92rem; }
+    .callout strong { color: var(--amber); }
+
+    .release-grid { display: grid; grid-template-columns: 1.4fr .86fr; gap: 1rem; }
+    .release-main, .release-card, .decision-card, .spec-group, .gate-card { border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(18, 39, 31, .9), rgba(10, 23, 18, .92)); }
+    .release-main { padding: clamp(1.35rem, 3vw, 2rem); }
+    .release-main-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1.7rem; }
+    .release-main h3, .release-card h3, .spec-group h3, .gate-card h3 { margin-bottom: .35rem; font-size: 1.2rem; letter-spacing: -.025em; }
+    .release-main p, .release-card p { color: var(--muted); font-size: .88rem; }
+    .release-label { padding: .38rem .58rem; border-radius: 999px; color: #0b160d; background: var(--lime); font-size: .69rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+    .cluster + .cluster { margin-top: 1.35rem; padding-top: 1.35rem; border-top: 1px solid var(--line); }
+    .cluster-title { display: flex; align-items: center; gap: .55rem; margin-bottom: .68rem; color: var(--aqua); font-size: .73rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+    .cluster-title i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .chip-list { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding: 0; list-style: none; }
+    .chip { padding: .42rem .55rem; border: 1px solid rgba(190, 231, 211, .14); border-radius: .5rem; color: #d7e6df; background: rgba(255, 255, 255, .035); font-size: .78rem; }
+    .release-stack { display: grid; gap: 1rem; }
+    .release-card { position: relative; overflow: hidden; padding: 1.35rem; }
+    .release-card::before { position: absolute; top: 0; left: 0; width: 5px; height: 100%; background: var(--blue); content: ""; }
+    .release-card.v03::before { background: var(--aqua); }
+    .release-card.later::before { background: var(--amber); }
+    .version { display: block; margin-bottom: .45rem; color: var(--blue); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .71rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .v03 .version { color: var(--aqua); }
+    .later .version { color: var(--amber); }
+
+    .decision-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .9rem; }
+    .decision-card { position: relative; min-height: 182px; padding: 1.2rem; overflow: hidden; }
+    .decision-card::after { position: absolute; right: 1.1rem; bottom: 1rem; color: rgba(198, 255, 97, .1); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 2.5rem; font-weight: 900; line-height: 1; content: attr(data-number); }
+    .decision-type { display: block; margin-bottom: .6rem; color: var(--subtle); font-size: .68rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .decision-card h3 { max-width: 90%; margin-bottom: .55rem; font-size: 1.02rem; line-height: 1.14; letter-spacing: -.025em; }
+    .decision-card p { position: relative; z-index: 1; margin-bottom: 0; max-width: 32ch; color: var(--muted); font-size: .82rem; line-height: 1.55; }
+    .decision-card b { color: var(--lime); font-weight: 750; }
+
+    .correction-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: .9rem; }
+    .correction {
+      display: grid;
+      grid-template-columns: 38px 1fr;
+      gap: .85rem;
+      align-items: start;
+      padding: 1.1rem;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .correction-number { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid rgba(115, 230, 208, .35); border-radius: 9px; color: var(--aqua); background: rgba(115, 230, 208, .07); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .73rem; font-weight: 800; }
+    .correction h3 { margin-bottom: .27rem; font-size: .99rem; letter-spacing: -.02em; }
+    .correction p { margin-bottom: 0; color: var(--muted); font-size: .84rem; line-height: 1.55; }
+
+    .spec-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+    .spec-group { padding: 1.35rem; }
+    .spec-group-title { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: .95rem; border-bottom: 1px solid var(--line); }
+    .spec-group-title p { margin: 0; color: var(--subtle); font-size: .75rem; }
+    .spec-list { margin: 1rem 0 0; padding: 0; list-style: none; }
+    .spec-list li + li { margin-top: .25rem; }
+    .spec-list a {
+      display: grid;
+      grid-template-columns: 28px 1fr auto;
+      gap: .5rem;
+      align-items: baseline;
+      padding: .48rem .15rem;
+      border-radius: 7px;
+      color: #dce9e3;
+      font-size: .81rem;
+      text-decoration: none;
+    }
+    .spec-list a:hover, .spec-list a:focus-visible { padding-left: .45rem; color: var(--lime); background: rgba(198, 255, 97, .065); }
+    .spec-number { color: var(--aqua); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .7rem; }
+    .draft { color: var(--subtle); font-size: .65rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+
+    .gate-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .9rem; }
+    .gate-card { padding: 1.2rem; }
+    .gate-icon { display: grid; width: 32px; height: 32px; place-items: center; margin-bottom: .85rem; border-radius: 50%; color: #09130d; background: var(--lime); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .77rem; font-weight: 850; }
+    .gate-card p { margin-bottom: 0; color: var(--muted); font-size: .82rem; line-height: 1.55; }
+
+    .final-decision {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(1.6rem, 5vw, 3.1rem);
+      border: 1px solid rgba(198, 255, 97, .42);
+      border-radius: 28px;
+      background: linear-gradient(115deg, #173828, #10261c 58%, #102019);
+      box-shadow: var(--shadow);
+    }
+    .final-decision::before { position: absolute; inset: 0; opacity: .5; background-image: linear-gradient(rgba(198, 255, 97, .09) 1px, transparent 1px), linear-gradient(90deg, rgba(198, 255, 97, .09) 1px, transparent 1px); background-size: 26px 26px; mask-image: linear-gradient(to right, black, transparent 73%); content: ""; }
+    .final-decision > * { position: relative; z-index: 1; }
+    .final-decision blockquote { max-width: 850px; margin: .8rem 0 1rem; font-size: clamp(1.85rem, 4.1vw, 3.6rem); font-weight: 760; line-height: 1.06; letter-spacing: -.053em; }
+    .final-decision blockquote span { color: var(--lime); }
+    .final-decision p { max-width: 720px; margin-bottom: 0; color: #bdd1c5; font-size: 1rem; }
+    .final-decision cite { display: block; margin-top: 1.3rem; color: var(--aqua); font-size: .77rem; font-style: normal; font-weight: 750; letter-spacing: .05em; }
+
+    footer { padding: 1.5rem 0 2.6rem; border-top: 1px solid var(--line); color: var(--subtle); font-size: .76rem; }
+    footer p { margin: 0; }
+    footer code { color: var(--aqua); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+    :focus-visible { outline: 2px solid var(--lime); outline-offset: 3px; }
+    @media (max-width: 930px) {
+      .hero, .release-grid { grid-template-columns: 1fr; }
+      .hero { padding-top: 4.5rem; }
+      .decision-pulse { max-width: 540px; }
+      .decision-grid, .gate-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .page { width: min(100% - 28px, 1180px); }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .topbar nav { justify-content: flex-start; }
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric + .metric { border-top: 1px solid var(--line); border-left: 0; }
+      .decision-grid, .correction-grid, .spec-grid, .gate-grid { grid-template-columns: 1fr; }
+      .release-main-header { flex-direction: column; }
+      .section-heading { font-size: 2.15rem; }
+      main { padding-top: 3.8rem; }
+      .final-decision blockquote { font-size: 2.15rem; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .spec-list a { transition: none; } }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="page">
+    <div class="topbar">
+      <a class="brand" href="#top" aria-label="minicron product specs overview">
+        <span class="brand-mark">mc</span>
+        <span>minicron / spec atlas</span>
+      </a>
+      <nav aria-label="Page sections">
+        <a href="#scope">Release scope</a>
+        <a href="#decisions">Decisions</a>
+        <a href="#specs">Spec map</a>
+        <a href="#gates">Acceptance gates</a>
+      </nav>
+    </div>
+
+    <div class="hero" id="top">
+      <div>
+        <p class="eyebrow">Product specification suite · decision review</p>
+        <h1>One small daemon.<br><em>A sharper v0.1.</em></h1>
+        <p class="lede">minicron combines local scheduling, process supervision, SQLite run history, and a simple web UI. This view turns the draft specification suite and the 2026-08-26 Codex review into one scannable product brief.</p>
+        <div class="source-row" aria-label="Source materials">
+          <span class="source-tag">18 draft specs</span>
+          <span class="source-tag">codex-decisions.md</span>
+          <span class="source-tag">review · 2026-08-26</span>
+        </div>
+      </div>
+
+      <aside class="decision-pulse" aria-labelledby="pulse-title">
+        <p class="pulse-label">Latest recommendation</p>
+        <h2 class="pulse-title" id="pulse-title">Build local first. Earn the rest.</h2>
+        <p class="pulse-copy">Keep the first release focused on a trustworthy scheduler, supervisor, run history, and logs—not a workflow platform.</p>
+        <div class="pulse-footer"><span aria-hidden="true">↳</span><span><strong>Source:</strong> Final product opinion</span></div>
+      </aside>
+    </div>
+
+    <div class="metric-grid" aria-label="Product constraints at a glance">
+      <div class="metric"><span class="metric-value">1</span><span class="metric-label">compiled binary, no runtime service stack</span></div>
+      <div class="metric"><span class="metric-value">SQLite</span><span class="metric-label">metadata, revisions, audit, and run history</span></div>
+      <div class="metric"><span class="metric-value">7423</span><span class="metric-label">recommended loopback HTTP port</span></div>
+    </div>
+  </header>
+
+  <main class="page" id="main">
+    <section id="scope" aria-labelledby="scope-heading">
+      <p class="section-kicker">The release line</p>
+      <h2 class="section-heading" id="scope-heading">Ship the observable local loop before expanding the surface area.</h2>
+      <p class="section-intro">The review reduces the original v0.1 draft to the narrowest useful product: define a job or worker, run it safely, and understand exactly what happened.</p>
+
+      <div class="callout" role="note">
+        <div class="callout-mark" aria-hidden="true">!</div>
+        <p><strong>Review status:</strong> <code>codex-decisions.md</code> is an opinionated implementation review. It records recommendations and required consistency fixes; it does not supersede product-owner constraints or accepted ADRs.</p>
+      </div>
+
+      <div class="release-grid">
+        <article class="release-main" aria-labelledby="v01-title">
+          <div class="release-main-header">
+            <div>
+              <span class="version" style="color: var(--lime)">v0.1 · Core local mode</span>
+              <h3 id="v01-title">The dependable daily-driver</h3>
+              <p>Linux and macOS user mode, local processes, one instance of each worker, and a deliberately small operational surface.</p>
+            </div>
+            <span class="release-label">Ship first</span>
+          </div>
+          <div class="cluster">
+            <div class="cluster-title"><i aria-hidden="true"></i>Schedule &amp; supervise</div>
+            <ul class="chip-list">
+              <li class="chip">five-field cron + descriptors</li>
+              <li class="chip"><code>@every</code> ≥ 1 second</li>
+              <li class="chip">catch-up: none / latest</li>
+              <li class="chip">overlap: skip / parallel</li>
+              <li class="chip">jobs + one-instance workers</li>
+              <li class="chip">fixed restart backoff</li>
+            </ul>
+          </div>
+          <div class="cluster">
+            <div class="cluster-title"><i aria-hidden="true"></i>Define &amp; persist</div>
+            <ul class="chip-list">
+              <li class="chip">TOML bootstrap + includes</li>
+              <li class="chip">file-linked and DB-native definitions</li>
+              <li class="chip">SQLite state, revisions, audit</li>
+              <li class="chip">manual linked-file reload</li>
+              <li class="chip">TOML import / export</li>
+            </ul>
+          </div>
+          <div class="cluster">
+            <div class="cluster-title"><i aria-hidden="true"></i>Observe &amp; operate</div>
+            <ul class="chip-list">
+              <li class="chip">local file logs + windowed reads</li>
+              <li class="chip">authenticated live streaming</li>
+              <li class="chip">minimal REST API + Unix socket</li>
+              <li class="chip">bearer token authentication</li>
+              <li class="chip">dashboard, definition, run &amp; log views</li>
+              <li class="chip">essential CLI verbs</li>
+            </ul>
+          </div>
+        </article>
+
+        <div class="release-stack" aria-label="Later release scope">
+          <article class="release-card">
+            <span class="version">v0.2 · advanced local operation</span>
+            <h3>Operate with proof</h3>
+            <p>Queue/replace policies, retries, worker instances, metrics, notifications, backup/restore, typed trigger parameters, service install, and opt-in file watching.</p>
+          </article>
+          <article class="release-card v03">
+            <span class="version">v0.3 · optional integrations</span>
+            <h3>Integrate, don’t entangle</h3>
+            <p>Independently optional Docker/Podman run driver and S3 logs—both compiled in, neither required for the core daemon.</p>
+          </article>
+          <article class="release-card later">
+            <span class="version">Later security milestone</span>
+            <h3>System mode only after review</h3>
+            <p>Root multi-user tenancy waits for explicit authorization, quota, file-access, registration, and privilege-boundary review.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisions" aria-labelledby="decisions-heading">
+      <p class="section-kicker">Decision ledger</p>
+      <h2 class="section-heading" id="decisions-heading">The choices that make v0.1 smaller, safer, and easier to reason about.</h2>
+      <p class="section-intro">These are the review’s consolidated resolutions for the open questions and critical implementation seams.</p>
+
+      <div class="decision-grid">
+        <article class="decision-card" data-number="01"><span class="decision-type">Foundation</span><h3>Use <b>Go</b></h3><p>Optimize for delivery and operations. Build with <code>CGO_ENABLED=0</code> and state the local passwd/group lookup boundary honestly.</p></article>
+        <article class="decision-card" data-number="02"><span class="decision-type">Configuration</span><h3>Use <b>TOML</b></h3><p>It fits strict, multiline command definitions. Normalize internally as canonical JSON; retain JSON for the API.</p></article>
+        <article class="decision-card" data-number="03"><span class="decision-type">Authority</span><h3>One source per definition</h3><p>Keep ADR-3: linked files stay file-authoritative; UI/API-created definitions stay DB-native. No silent crossover.</p></article>
+        <article class="decision-card" data-number="04"><span class="decision-type">Scheduling</span><h3>Five fields, anchored time</h3><p>No six-field cron. Sub-minute work uses <code>@every</code>, persisted from an activation anchor—not daemon startup.</p></article>
+        <article class="decision-card" data-number="05"><span class="decision-type">Safe defaults</span><h3><b>none</b> catch-up; <b>skip</b> overlap</h3><p>Do not replay delayed destructive work by default. Ship only <code>skip</code> and <code>parallel</code> until persistence semantics are tested.</p></article>
+        <article class="decision-card" data-number="06"><span class="decision-type">Access</span><h3>Bearer token + Unix peers</h3><p>Store only a token hash, show a new token once, use session storage, and use authenticated <code>fetch()</code> streaming rather than EventSource.</p></article>
+        <article class="decision-card" data-number="07"><span class="decision-type">Interface</span><h3>Svelte 5 + Vite SPA</h3><p>Keep the browser app static and client-rendered. Start with one structured definition form, not side-by-side TOML editing.</p></article>
+        <article class="decision-card" data-number="08"><span class="decision-type">Operating shape</span><h3>Loopback on <b>7423</b></h3><p>Manual reload in v0.1; opt-in watch later. Health/readiness stay unauthenticated and deliberately low-detail.</p></article>
+        <article class="decision-card" data-number="09"><span class="decision-type">Logs</span><h3>Local first, ordered by ingestion</h3><p>Use 1 MiB chunks as the starting point and promise one sequence in daemon ingestion order—not impossible stdout/stderr interleaving.</p></article>
+        <article class="decision-card" data-number="10"><span class="decision-type">Integration boundary</span><h3>Docker after the core</h3><p>One explicit Docker/Podman driver for labeled job or worker containers; defer Compose reconciliation and import.</p></article>
+        <article class="decision-card" data-number="11"><span class="decision-type">Product boundary</span><h3>No multi-host through v1</h3><p>Keep one daemon per machine. System mode is a later security milestone, not a date on the near roadmap.</p></article>
+        <article class="decision-card" data-number="12"><span class="decision-type">Delivery</span><h3>Keep the name; use Apache-2.0</h3><p>Freeze <b>minicron</b> subject to pre-release trademark/package checks, and choose one clear license with a patent grant.</p></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="corrections-heading">
+      <p class="section-kicker">Before code starts</p>
+      <h2 class="section-heading" id="corrections-heading">Seven consistency repairs that protect the core loop.</h2>
+      <p class="section-intro">The review found several design guarantees that either conflict or cannot be kept. These corrections convert aspirational prose into implementable contracts.</p>
+      <div class="correction-grid">
+        <article class="correction"><span class="correction-number">01</span><div><h3>Reload by desired set</h3><p>Apply a user bootstrap plus includes atomically; in system mode, isolate by owner set. Reconcile processes idempotently after the metadata transaction.</p></div></article>
+        <article class="correction"><span class="correction-number">02</span><div><h3>Copy browser imports</h3><p>An uploaded file cannot remain file-authoritative. Web/API upload copies into DB authority; only daemon-local <code>--link</code> can establish a linked source.</p></div></article>
+        <article class="correction"><span class="correction-number">03</span><div><h3>Make statuses non-overlapping</h3><p>Timeout, stopped, interrupted, skipped, and missed each retain their own meaning. A successful exit code can never erase a timeout.</p></div></article>
+        <article class="correction"><span class="correction-number">04</span><div><h3>Persist time semantics</h3><p>UTC is the default. Track schedule revision and <code>@every</code> anchors; specify DST, clock step, catch-up, and capacity behavior in tests.</p></div></article>
+        <article class="correction"><span class="correction-number">05</span><div><h3>State the process boundary honestly</h3><p>Process groups control cooperative workloads, not hostile descendants. Persist verified process identity and never trust a PID alone after restart.</p></div></article>
+        <article class="correction"><span class="correction-number">06</span><div><h3>Use explicit execution inputs</h3><p>Offer exactly one of shell <code>command</code> or array <code>argv</code>; begin with a clean environment and typed secret references—not global substitution.</p></div></article>
+        <article class="correction"><span class="correction-number">07</span><div><h3>Secure the HTTP contract</h3><p>Return normal HTTP results for failed runs, give SSE stable boot-aware IDs, use optimistic edits, scope idempotency keys, and disable CORS by default.</p></div></article>
+      </div>
+    </section>
+
+    <section id="specs" aria-labelledby="specs-heading">
+      <p class="section-kicker">Specification atlas</p>
+      <h2 class="section-heading" id="specs-heading">Eighteen draft documents, arranged by the questions they answer.</h2>
+      <p class="section-intro">Read the source suite in numeric order for a full pass, or use this map to jump directly to the design seam under discussion.</p>
+      <div class="spec-grid">
+        <article class="spec-group">
+          <div class="spec-group-title"><div><h3>Product &amp; foundations</h3><p>What minicron is and how it is shaped.</p></div><span class="draft">4 docs</span></div>
+          <ul class="spec-list">
+            <li><a href="specs/00-product-vision.md"><span class="spec-number">00</span><span>Product vision &amp; roadmap</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/01-domain-model.md"><span class="spec-number">01</span><span>Domain model &amp; terminology</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/02-technology-choices.md"><span class="spec-number">02</span><span>Technology choices</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/03-system-architecture.md"><span class="spec-number">03</span><span>System architecture &amp; process model</span><span class="draft">Draft</span></a></li>
+          </ul>
+        </article>
+        <article class="spec-group">
+          <div class="spec-group-title"><div><h3>Definition &amp; runtime</h3><p>How intent becomes a scheduled process.</p></div><span class="draft">6 docs</span></div>
+          <ul class="spec-list">
+            <li><a href="specs/04-configuration.md"><span class="spec-number">04</span><span>Configuration</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/05-config-sync-import-export.md"><span class="spec-number">05</span><span>Config sync, import &amp; export</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/06-scheduler.md"><span class="spec-number">06</span><span>Scheduler &amp; cron engine</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/07-execution-and-supervision.md"><span class="spec-number">07</span><span>Execution &amp; supervision</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/08-storage-sqlite.md"><span class="spec-number">08</span><span>SQLite storage</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/09-log-pipeline-and-s3.md"><span class="spec-number">09</span><span>Log pipeline &amp; S3</span><span class="draft">Draft</span></a></li>
+          </ul>
+        </article>
+        <article class="spec-group">
+          <div class="spec-group-title"><div><h3>Interfaces &amp; hardening</h3><p>The surfaces operators and clients touch.</p></div><span class="draft">5 docs</span></div>
+          <ul class="spec-list">
+            <li><a href="specs/10-docker-integration.md"><span class="spec-number">10</span><span>Docker integration</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/11-http-api.md"><span class="spec-number">11</span><span>HTTP API &amp; SSE</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/12-web-ui.md"><span class="spec-number">12</span><span>Web UI</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/13-security.md"><span class="spec-number">13</span><span>Security &amp; privileges</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/14-cli.md"><span class="spec-number">14</span><span>CLI surface</span><span class="draft">Draft</span></a></li>
+          </ul>
+        </article>
+        <article class="spec-group">
+          <div class="spec-group-title"><div><h3>Operation &amp; expansion</h3><p>How the product grows without losing its center.</p></div><span class="draft">3 docs</span></div>
+          <ul class="spec-list">
+            <li><a href="specs/15-operations.md"><span class="spec-number">15</span><span>Install, service &amp; operations</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/16-notifications.md"><span class="spec-number">16</span><span>Notifications &amp; events</span><span class="draft">Draft</span></a></li>
+            <li><a href="specs/17-system-mode.md"><span class="spec-number">17</span><span>System mode</span><span class="draft">Draft</span></a></li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section id="gates" aria-labelledby="gates-heading">
+      <p class="section-kicker">Definition of ready</p>
+      <h2 class="section-heading" id="gates-heading">Prose alone is not the acceptance test.</h2>
+      <p class="section-intro">Before implementation, the review calls for a small normative test matrix that fixes the state machines and failure boundaries in executable form.</p>
+      <div class="gate-grid">
+        <article class="gate-card"><div class="gate-icon">01</div><h3>Run transitions</h3><p>Allowed and forbidden state changes: start errors, timeout, operator stop, crash recovery, and retry-chain final state.</p></article>
+        <article class="gate-card"><div class="gate-icon">02</div><h3>Reload &amp; authority</h3><p>Valid and invalid desired sets, removed definitions, missing sources, file moves, and authority conflicts.</p></article>
+        <article class="gate-card"><div class="gate-icon">03</div><h3>Scheduler time</h3><p>DST gap/fold, downtime, revision changes, <code>@every</code> across restart, clock jumps, overlap, and capacity.</p></article>
+        <article class="gate-card"><div class="gate-icon">04</div><h3>Process control</h3><p>UID/GID/groups, clean environment, stop ladder, crash cleanup, and PID reuse protection.</p></article>
+        <article class="gate-card"><div class="gate-icon">05</div><h3>Log integrity</h3><p>Partial and invalid lines, cap policies, ingestion order, tail handoff, resume, and an S3 outage with a full queue.</p></article>
+        <article class="gate-card"><div class="gate-icon">06</div><h3>Security &amp; migration</h3><p>Streaming auth, token rotation, CORS, source permissions, namespace isolation, SSRF boundaries, fresh DBs, and upgrades.</p></article>
+      </div>
+    </section>
+
+    <section aria-labelledby="final-heading">
+      <div class="final-decision">
+        <p class="section-kicker">The last decision in the review</p>
+        <blockquote id="final-heading">“Build the excellent small local scheduler/supervisor first. <span>Do not let the extras turn it into a workflow platform.</span>”</blockquote>
+        <p>The durable differentiator is simple run history and logs for ordinary commands—not the number of integrations in the roadmap.</p>
+        <cite>codex-decisions.md · Final product opinion · 2026-08-26</cite>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page">
+    <p>Visual summary of <code>specs/README.md</code>, the draft specification suite, and <code>codex-decisions.md</code>. The source documents remain authoritative.</p>
+  </footer>
+</body>
+</html>

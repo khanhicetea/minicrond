@@ -1,6 +1,6 @@
-# minicrond — Specification Suite
+# minicron — Specification Suite
 
-Working specs for **minicrond** (working title, see OQ-11): a single-binary cron
+Working specs for **minicron** (working title, see OQ-11): a single-binary cron
 scheduler and process supervisor with a web UI, SQLite metadata, and optional
 S3-backed log storage (direct chunk writes; SlateDB was considered and
 dropped — ADR-1).

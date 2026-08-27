@@ -17,17 +17,17 @@ Status: Draft · Auth model decision: OQ-7
 
 ## Authentication (OQ-7 — recommended: single bearer token)
 
-- **Local channel**: `minicrond.sock` (0600 in the 0700 data dir) +
+- **Local channel**: `minicron.sock` (0600 in the 0700 data dir) +
   peer-credential check (uid match or root). CLI uses this transparently —
   zero-config, zero-secrets local operation. In system mode the socket
-  moves to `/run/minicrond/minicrond.sock` (0660, `minicrond` group) and
+  moves to `/run/minicron/minicron.sock` (0660, `minicron` group) and
   the peer uid maps to a registered user — registration is the gate (`17`).
 - **Network channel**: `Authorization: Bearer <token>`.
   - Token generated on first boot: 32 bytes base64url, stored `0600` at
     `data_dir/token` (gitignored path, never in config file).
-    `minicrond token` (socket/local only) prints or `--rotate`s it.
-    Env override `MINICROND_TOKEN` for container deployments.
-  - `MINICROND_AUTH=off` disables auth entirely — allowed **only** when
+    `minicron token` (socket/local only) prints or `--rotate`s it.
+    Env override `minicron_TOKEN` for container deployments.
+  - `minicron_AUTH=off` disables auth entirely — allowed **only** when
     binding a loopback/unix address; the daemon refuses `auth=off` on a
     non-loopback bind (foot-gun guard).
 - Login throttling: 10 failed attempts / minute / source IP, then 5 min
