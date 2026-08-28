@@ -50,6 +50,7 @@ This plan follows `specs/` for product intent and uses `codex-decisions.md` to r
 - [x] Implement a versioned tagged-frame format in daemon ingestion order, including sequence IDs, timestamps, partial lines, invalid UTF-8, truncation, and size caps.
 - [x] Implement bounded local zstd chunk storage, indexing, crash recovery, retention deletion, and the in-process backlog-to-live broadcaster.
 - [x] Provide authenticated windowed reads, raw download, and resumable streaming via `fetch()`-based SSE; safely render only permitted ANSI styling.
+- [x] Archive logs into the separate `minicron-logs.db` SQLite database (ADR-6): jobs on completion, workers on `logs.worker_flush_interval` checkpoints, orphaned buffers salvaged at startup, daily prune at `logs.db_prune_at` bounded by `logs.db_keep_for`.
 
 ### Interfaces
 

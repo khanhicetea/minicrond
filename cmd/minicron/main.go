@@ -130,6 +130,9 @@ max_concurrent_runs = 32
 
 [logs]
 backend = "file"
+worker_flush_interval = "15m"
+db_prune_at = "03:30"
+db_keep_for = "720h"
 
 [defaults]
 shell = "/bin/sh"

@@ -24,6 +24,8 @@ Configuration is strict TOML. `[[job]]` supports exactly one of `command` (alway
 
 - Data defaults to `~/.local/share/minicron`; permissions are forced to 0700.
 - SQLite uses WAL and forward-only migrations. Never directly write the DB.
+- **Log storage is hybrid.** Live runs write compressed chunk files under `data/logs/<run_id>/` first (crash-safe). Finished runs are archived into the separate SQLite log database `data/minicron-logs.db` (not `minicron.db`) and the buffer files are removed. Still-running workers archive their sealed chunks every `logs.worker_flush_interval` (default 15m). Reads and streaming merge the database, buffer files, and the in-memory tail transparently. Buffers orphaned by a crash are salvaged into the archive at startup, up to the last intact frame.
+- The log archive is pruned daily at `logs.db_prune_at` (scheduler timezone); archived logs older than `logs.db_keep_for` (default 720h) are deleted. Per-run retention (`keep_runs`/`keep_for`) removes a run's logs from both tiers.
 - `/healthz` and `/readyz` are public and disclose no details. The SPA shell and bundled assets are public; every `/api/` endpoint requires a bearer token.
 - Rotate a lost token locally with `minicron token --rotate`; the existing token cannot be recovered.
 - Stop the daemon before copying its database for rollback. A binary that encounters a newer schema refuses to start. Restore by replacing `minicron.db` and restarting.

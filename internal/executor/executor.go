@@ -82,7 +82,7 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 	if maxBytes == 0 {
 		maxBytes = 100 << 20
 	}
-	writer, err := s.logs.Open(r.ID, maxBytes, 256<<10)
+	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, maxBytes, 256<<10)
 	if err != nil {
 		s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", time.Now(), 0, false)
 		if d.Kind == model.KindJob {

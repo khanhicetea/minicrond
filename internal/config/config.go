@@ -53,6 +53,14 @@ type Storage struct {
 type Logs struct {
 	Backend string `toml:"backend" json:"backend"`
 	MaxLine string `toml:"max_line" json:"max_line"`
+	// WorkerFlushInterval is how often logs of still-running runs (workers)
+	// are sealed in the file buffer and copied into the SQLite log archive.
+	WorkerFlushInterval string `toml:"worker_flush_interval" json:"worker_flush_interval"`
+	// DBKeepFor prunes archived logs older than this duration from the log
+	// database during the daily DBPruneAt sweep.
+	DBKeepFor string `toml:"db_keep_for" json:"db_keep_for"`
+	// DBPruneAt is the daily local time ("HH:MM") the prune sweep runs.
+	DBPruneAt string `toml:"db_prune_at" json:"db_prune_at"`
 }
 
 type includeFile struct {
@@ -188,6 +196,15 @@ func applyConfigDefaults(c *Config) {
 	if c.Logs.MaxLine == "" {
 		c.Logs.MaxLine = "256KiB"
 	}
+	if c.Logs.WorkerFlushInterval == "" {
+		c.Logs.WorkerFlushInterval = "15m"
+	}
+	if c.Logs.DBKeepFor == "" {
+		c.Logs.DBKeepFor = "720h"
+	}
+	if c.Logs.DBPruneAt == "" {
+		c.Logs.DBPruneAt = "03:30"
+	}
 }
 func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	if d.Shell == "" {
@@ -262,6 +279,15 @@ func validate(c *Config) error {
 	if c.Logs.Backend != "file" {
 		return errors.New("logs.backend: only file is supported in v0.1")
 	}
+	if d, err := time.ParseDuration(c.Logs.WorkerFlushInterval); err != nil || d < time.Second {
+		return errors.New("logs.worker_flush_interval: must be a duration of at least 1s")
+	}
+	if d, err := time.ParseDuration(c.Logs.DBKeepFor); err != nil || d <= 0 {
+		return errors.New("logs.db_keep_for: must be a positive duration")
+	}
+	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
+		return fmt.Errorf("logs.db_prune_at: %w", err)
+	}
 	seen := make(map[string]string)
 	for i := range c.Definitions {
 		d := &c.Definitions[i]
@@ -320,6 +346,16 @@ func ValidateDefinition(d *model.Definition) error {
 		return err
 	}
 	*d = cfg.Definitions[0]
+	return nil
+}
+
+var clockPattern = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
+
+// ValidateClock accepts a daily local time of the form "HH:MM" (24h).
+func ValidateClock(value string) error {
+	if !clockPattern.MatchString(value) {
+		return errors.New("must be HH:MM (00:00-23:59)")
+	}
 	return nil
 }
 

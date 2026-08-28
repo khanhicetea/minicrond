@@ -77,6 +77,18 @@
         },
         "max_line": {
           "type": "string"
+        },
+        "worker_flush_interval": {
+          "type": "string",
+          "default": "15m"
+        },
+        "db_keep_for": {
+          "type": "string",
+          "default": "720h"
+        },
+        "db_prune_at": {
+          "type": "string",
+          "default": "03:30"
         }
       }
     },

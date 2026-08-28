@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/minicron/minicron/internal/api"
 	"github.com/minicron/minicron/internal/config"
 	"github.com/minicron/minicron/internal/executor"
+	"github.com/minicron/minicron/internal/logdb"
 	"github.com/minicron/minicron/internal/logstore"
 	"github.com/minicron/minicron/internal/scheduler"
 	"github.com/minicron/minicron/internal/store"
@@ -27,6 +30,7 @@ type Daemon struct {
 	cfg                          *config.Config
 	lock                         *os.File
 	store                        *store.Store
+	ldb                          *logdb.LogDB
 	logs                         *logstore.Store
 	exec                         *executor.Service
 	sched                        *scheduler.Scheduler
@@ -57,6 +61,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Long-term logs live in their own SQLite file, separate from minicron.db:
+	// the file buffer stays the crash-safe hot path, the archive is the
+	// durable, prunable history.
+	ldb, err := logdb.Open(d.DataDir)
+	if err != nil {
+		return err
+	}
+	defer ldb.Close()
+	d.ldb = ldb
+	logs.AttachDB(ldb)
 	d.logs = logs
 	d.exec = executor.New(st, logs, cfg.Scheduler.MaxConcurrentRuns)
 	recoverable, err := st.Recoverable(ctx)
@@ -66,6 +80,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.exec.CleanupRecovered(recoverable)
 	if err = st.Recover(ctx); err != nil {
 		return err
+	}
+	// Buffers orphaned by a crash (runs that never reached Close) are swept
+	// into the archive so their pre-crash output is not lost.
+	if err = logs.ArchiveOrphans(); err != nil {
+		slog.Error("orphaned log sweep failed", "error", err)
 	}
 	d.sched = scheduler.New(st, d.exec)
 	d.super = supervisor.New(st, d.exec)
@@ -92,6 +111,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.api.SetReady(true)
 	go d.retentionLoop(ctx)
+	go d.workerFlushLoop(ctx)
+	go d.logPruneLoop(ctx)
 	slog.Info("minicron ready", "bind", cfg.Server.Bind, "socket", socket)
 	<-ctx.Done()
 	d.api.SetReady(false)
@@ -172,6 +193,103 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// workerFlushLoop periodically seals the file buffers of still-running runs
+// (workers) and copies the sealed chunks into the SQLite log archive, keeping
+// the live buffer small without losing long-running output.
+func (d *Daemon) workerFlushLoop(ctx context.Context) {
+	interval := d.logFlushInterval()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.logs.FlushActive()
+			if next := d.logFlushInterval(); next != interval {
+				interval = next
+				ticker.Reset(next)
+			}
+		}
+	}
+}
+func (d *Daemon) logFlushInterval() time.Duration {
+	d.mu.Lock()
+	value := d.cfg.Logs.WorkerFlushInterval
+	d.mu.Unlock()
+	if parsed, err := time.ParseDuration(value); err == nil && parsed >= time.Second {
+		return parsed
+	}
+	return 15 * time.Minute
+}
+
+// logPruneLoop runs the daily log-archive prune sweep at the configured local
+// time and deletes archived logs older than logs.db_keep_for. The wait is
+// capped at one hour so config reloads take effect without a restart.
+func (d *Daemon) logPruneLoop(ctx context.Context) {
+	for {
+		d.mu.Lock()
+		clock := d.cfg.Logs.DBPruneAt
+		tzName := d.cfg.Scheduler.Timezone
+		d.mu.Unlock()
+		next := nextDaily(time.Now(), clock, tzName)
+		wait := min(time.Until(next), time.Hour)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			if time.Now().Before(next) {
+				continue // hourly re-check, prune time not reached yet
+			}
+			d.pruneLogs(ctx)
+		}
+	}
+}
+func (d *Daemon) pruneLogs(ctx context.Context) {
+	d.mu.Lock()
+	keepFor := d.cfg.Logs.DBKeepFor
+	d.mu.Unlock()
+	duration, err := time.ParseDuration(keepFor)
+	if err != nil || duration <= 0 {
+		slog.Error("log prune skipped: invalid logs.db_keep_for", "value", keepFor)
+		return
+	}
+	n, err := d.ldb.Prune(ctx, time.Now().Add(-duration))
+	if err != nil {
+		slog.Error("log prune failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("pruned archived logs", "runs", n, "keep_for", keepFor)
+	}
+}
+
+// nextDaily returns the next occurrence of the "HH:MM" clock time in the
+// given timezone after now.
+func nextDaily(now time.Time, clock, tzName string) time.Time {
+	tz, err := time.LoadLocation(tzName)
+	if err != nil {
+		tz = time.UTC
+	}
+	hour, minute := 3, 30
+	if hh, mm, ok := strings.Cut(clock, ":"); ok {
+		if h, err := strconv.Atoi(hh); err == nil && h >= 0 && h <= 23 {
+			hour = h
+		}
+		if m, err := strconv.Atoi(mm); err == nil && m >= 0 && m <= 59 {
+			minute = m
+		}
+	}
+	local := now.In(tz)
+	candidate := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, tz)
+	if !candidate.After(local) {
+		candidate = candidate.Add(24 * time.Hour)
+	}
+	return candidate
 }
 
 func (d *Daemon) acquireLock() error {

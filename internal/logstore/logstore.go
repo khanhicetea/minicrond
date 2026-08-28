@@ -3,11 +3,15 @@ package logstore
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/minicron/minicron/internal/logdb"
 )
 
 const Version byte = 1
@@ -47,11 +53,12 @@ type Frame struct {
 	Payload   []byte    `json:"payload"`
 }
 type chunkMeta struct {
-	Number int    `json:"number"`
-	First  uint64 `json:"first"`
-	Last   uint64 `json:"last"`
-	Bytes  int64  `json:"bytes"`
-	Raw    int64  `json:"raw"`
+	Number   int    `json:"number"`
+	First    uint64 `json:"first"`
+	Last     uint64 `json:"last"`
+	Bytes    int64  `json:"bytes"`
+	Raw      int64  `json:"raw"`
+	Archived bool   `json:"archived,omitempty"`
 }
 type index struct {
 	Version   int         `json:"version"`
@@ -60,8 +67,16 @@ type index struct {
 	Truncated bool        `json:"truncated"`
 }
 
+// Store keeps live run logs in compressed chunk files under root. When a
+// logdb archive is attached, sealed chunks are also copied into the separate
+// SQLite log database: finished runs archive wholesale on Close, long-running
+// workers archive incrementally via FlushActive, and leftover buffers from a
+// crash are swept into the archive at startup by ArchiveOrphans. Reads merge
+// the database, the buffer files, and the in-memory tail transparently, so
+// callers never need to know where a frame currently lives.
 type Store struct {
 	root    string
+	db      *logdb.LogDB
 	mu      sync.Mutex
 	writers map[string]*Writer
 }
@@ -72,12 +87,16 @@ func New(root string) (*Store, error) {
 	}
 	return &Store{root: root, writers: make(map[string]*Writer)}, nil
 }
-func (s *Store) Open(runID string, maxBytes int64, maxLine int) (*Writer, error) {
+
+// AttachDB enables SQLite archival into the given log database.
+func (s *Store) AttachDB(db *logdb.LogDB) { s.db = db }
+
+func (s *Store) Open(runID, job, kind string, maxBytes int64, maxLine int) (*Writer, error) {
 	dir := filepath.Join(s.root, runID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	w := &Writer{dir: dir, maxBytes: maxBytes, maxLine: maxLine, subs: make(map[chan Frame]chan struct{})}
+	w := &Writer{runID: runID, job: job, kind: kind, dir: dir, maxBytes: maxBytes, maxLine: maxLine, subs: make(map[chan Frame]chan struct{})}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -91,6 +110,11 @@ func (s *Store) Active(runID string) *Writer {
 	defer s.mu.Unlock()
 	return s.writers[runID]
 }
+
+// Close finalizes a run's buffer. With an attached archive it then moves every
+// chunk into the SQLite log database and removes the buffer directory; the log
+// stays queryable through Read afterwards. Without an archive the files remain
+// on disk (pure file backend).
 func (s *Store) Close(runID string) error {
 	s.mu.Lock()
 	w := s.writers[runID]
@@ -99,11 +123,170 @@ func (s *Store) Close(runID string) error {
 	if w == nil {
 		return nil
 	}
-	return w.Close()
+	err := w.Close()
+	if s.db != nil {
+		w.mu.Lock()
+		aerr := s.archiveSealedLocked(w)
+		// Remove the buffer only when the writer finalized cleanly; a failed
+		// close leaves the directory for the startup salvage sweep.
+		if aerr == nil && err == nil {
+			aerr = os.RemoveAll(w.dir)
+		}
+		w.mu.Unlock()
+		err = errors.Join(err, aerr)
+	}
+	return err
+}
+
+// FlushActive seals and archives the on-disk chunks of every open writer.
+// It is the periodic checkpoint for long-running worker logs: the live buffer
+// stays bounded while older output remains readable from the archive.
+func (s *Store) FlushActive() {
+	if s.db == nil {
+		return
+	}
+	s.mu.Lock()
+	ids := slices.Collect(maps.Keys(s.writers))
+	s.mu.Unlock()
+	for _, id := range ids {
+		w := s.Active(id)
+		if w == nil {
+			continue
+		}
+		if err := w.Flush(s); err != nil {
+			slog.Error("log archive flush failed", "run", id, "error", err)
+		}
+	}
+}
+
+// ArchiveOrphans sweeps buffer directories left behind by a crash (no active
+// writer) into the archive and deletes them. Chunk files that were mid-write
+// when the daemon died are salvaged up to the last intact frame.
+func (s *Store) ArchiveOrphans() error {
+	if s.db == nil {
+		return nil
+	}
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		runID := e.Name()
+		if s.Active(runID) != nil {
+			continue
+		}
+		if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
+			errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// archiveSealedLocked copies every not-yet-archived sealed chunk of an open or
+// closed writer into the archive, marks it archived in the index, and removes
+// the buffer file. Database first, file removal second: a crash in between is
+// healed by the upsert on the next attempt. Callers must hold w.mu.
+func (s *Store) archiveSealedLocked(w *Writer) error {
+	if s.db == nil {
+		return nil
+	}
+	var pending []logdb.Chunk
+	for _, m := range w.idx.Chunks {
+		if m.Archived {
+			continue
+		}
+		blob, err := os.ReadFile(w.chunkPath(m.Number))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // already removed by retention or an earlier flush
+		}
+		if err != nil {
+			return err
+		}
+		pending = append(pending, logdb.Chunk{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if err := s.db.PutChunks(context.Background(), w.runID, w.job, w.kind, time.Now(), pending); err != nil {
+		return err
+	}
+	for _, c := range pending {
+		for i := range w.idx.Chunks {
+			if w.idx.Chunks[i].Number == c.Number {
+				w.idx.Chunks[i].Archived = true
+			}
+		}
+		if err := os.Remove(w.chunkPath(c.Number)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return w.writeIndex()
+}
+
+// archiveOrphan recovers one orphaned buffer directory. Sealed chunks named in
+// index.json are archived verbatim; chunk files missing from the index (or a
+// missing index) were mid-write at the crash and are salvaged frame by frame.
+func (s *Store) archiveOrphan(runID, dir string) error {
+	sealed := make(map[int]chunkMeta)
+	if b, err := os.ReadFile(filepath.Join(dir, "index.json")); err == nil {
+		var idx index
+		if json.Unmarshal(b, &idx) == nil {
+			for _, m := range idx.Chunks {
+				sealed[m.Number] = m
+			}
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.zst"))
+	if err != nil {
+		return err
+	}
+	slices.Sort(files)
+	var chunks []logdb.Chunk
+	for _, path := range files {
+		number, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(path), ".zst"))
+		if err != nil {
+			continue
+		}
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if m, ok := sealed[number]; ok {
+			chunks = append(chunks, logdb.Chunk{Number: number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
+			continue
+		}
+		frames := salvageFrames(blob)
+		if len(frames) == 0 {
+			continue
+		}
+		var raw int64
+		for _, f := range frames {
+			raw += int64(24 + len(f.Payload))
+		}
+		reenc, err := encodeFrames(frames)
+		if err != nil {
+			return err
+		}
+		chunks = append(chunks, logdb.Chunk{Number: number, First: frames[0].Sequence, Last: frames[len(frames)-1].Sequence, RawBytes: raw, Blob: reenc})
+	}
+	if len(chunks) == 0 {
+		return os.RemoveAll(dir)
+	}
+	if err := s.db.PutChunks(context.Background(), runID, "", "", time.Now(), chunks); err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
 }
 
 type Writer struct {
 	mu         sync.Mutex
+	runID      string
+	job        string
+	kind       string
 	dir        string
 	file       *os.File
 	enc        *zstd.Encoder
@@ -121,6 +304,24 @@ type Writer struct {
 	closed     bool
 }
 
+func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
+
+// Flush seals the current chunk (if it has data) and archives all sealed
+// chunks of this writer.
+func (w *Writer) Flush(s *Store) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || s.db == nil {
+		return nil
+	}
+	if w.chunkRaw > 0 {
+		if err := w.rotate(); err != nil {
+			return err
+		}
+	}
+	return s.archiveSealedLocked(w)
+}
+
 func (w *Writer) rotate() error {
 	if w.enc != nil {
 		if err := w.finishChunk(); err != nil {
@@ -128,8 +329,7 @@ func (w *Writer) rotate() error {
 		}
 	}
 	w.chunk++
-	path := filepath.Join(w.dir, fmt.Sprintf("%06d.zst", w.chunk))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(w.chunkPath(w.chunk), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -156,7 +356,7 @@ func (w *Writer) finishChunk() error {
 		return err
 	}
 	if w.seq >= w.chunkFirst {
-		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.seq, info.Size(), int64(w.chunkRaw)})
+		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.seq, info.Size(), int64(w.chunkRaw), false})
 	}
 	return w.writeIndex()
 }
@@ -189,7 +389,7 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 		w.truncated = true
 		for len(w.idx.Chunks) > 0 && w.total+int64(frameSize) > w.maxBytes {
 			oldest := w.idx.Chunks[0]
-			_ = os.Remove(filepath.Join(w.dir, fmt.Sprintf("%06d.zst", oldest.Number)))
+			_ = os.Remove(w.chunkPath(oldest.Number))
 			w.total -= oldest.Raw
 			w.idx.Chunks = w.idx.Chunks[1:]
 		}
@@ -325,14 +525,84 @@ func decode(src io.Reader) (Frame, error) {
 	_, err := io.ReadFull(src, f.Payload)
 	return f, err
 }
+
+// salvageFrames decodes frames from a possibly torn chunk stream, stopping at
+// the first corruption and returning everything recovered before it.
+func salvageFrames(blob []byte) []Frame {
+	dec, err := zstd.NewReader(bytes.NewReader(blob))
+	if err != nil {
+		return nil
+	}
+	defer dec.Close()
+	var frames []Frame
+	for {
+		f, err := decode(dec)
+		if err != nil {
+			return frames
+		}
+		frames = append(frames, f)
+	}
+}
+
+func encodeFrames(frames []Frame) ([]byte, error) {
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range frames {
+		if err := encode(enc, f); err != nil {
+			enc.Close()
+			return nil, err
+		}
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Read returns up to limit frames with a sequence greater than after, merged
+// across the three storage tiers: archived chunks in the log database, sealed
+// chunk files in the buffer directory, and the active writer's memory tail.
 func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 	limit = min(max(limit, 1), 5000)
+	out := make([]Frame, 0, min(limit, 100))
+	last := after
+	if s.db != nil {
+		err := s.db.EachChunk(context.Background(), runID, last, func(c logdb.Chunk) (bool, error) {
+			dec, err := zstd.NewReader(bytes.NewReader(c.Blob))
+			if err != nil {
+				return false, err
+			}
+			defer dec.Close()
+			for len(out) < limit {
+				frame, err := decode(dec)
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					break
+				}
+				if err != nil {
+					return false, err
+				}
+				if frame.Sequence > last {
+					out = append(out, frame)
+					last = frame.Sequence
+				}
+			}
+			return len(out) < limit, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(out) >= limit {
+			return out, nil
+		}
+	}
 	entries, err := filepath.Glob(filepath.Join(s.root, runID, "*.zst"))
 	if err != nil {
 		return nil, err
 	}
 	slices.Sort(entries)
-	out := make([]Frame, 0, min(limit, 100))
 	for _, path := range entries {
 		f, err := os.Open(path)
 		if err != nil {
@@ -353,8 +623,9 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 				f.Close()
 				return nil, err
 			}
-			if frame.Sequence > after {
+			if frame.Sequence > last {
 				out = append(out, frame)
+				last = frame.Sequence
 			}
 		}
 		dec.Close()
@@ -364,10 +635,6 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 		}
 	}
 	if active := s.Active(runID); active != nil && len(out) < limit {
-		last := after
-		if len(out) > 0 {
-			last = out[len(out)-1].Sequence
-		}
 		out = append(out, active.Snapshot(last, limit-len(out))...)
 	}
 	return out, nil
@@ -395,7 +662,16 @@ func (s *Store) Raw(runID string, w io.Writer) error {
 		}
 	}
 }
-func (s *Store) Delete(runID string) error { return os.RemoveAll(filepath.Join(s.root, runID)) }
+
+// Delete removes a run's logs from both the archive and the buffer directory.
+func (s *Store) Delete(runID string) error {
+	if s.db != nil {
+		if err := s.db.DeleteRun(context.Background(), runID); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(filepath.Join(s.root, runID))
+}
 func ParseBytes(value string) (int64, error) {
 	value = strings.TrimSpace(value)
 	units := map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "B": 1}

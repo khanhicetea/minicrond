@@ -18,7 +18,9 @@ keep_runs_default = 100
 keep_for_default = "24h"
 
 [logs]
-backend = "file"
+worker_flush_interval = "15m"   # worker log checkpoint cadence                                                         
+db_keep_for = "720h"            # archive retention                                                                     
+db_prune_at = "03:30"           # daily prune time
 
 [defaults]
 shell = "/bin/sh"

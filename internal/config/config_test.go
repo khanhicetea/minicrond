@@ -99,3 +99,41 @@ func TestExportTOMLRoundTrip(t *testing.T) {
 		t.Fatalf("canonical hash changed across round trip:\n%s", body)
 	}
 }
+
+func TestLogArchiveDefaults(t *testing.T) {
+	dir := t.TempDir()
+	bootstrap := filepath.Join(dir, "minicron.toml")
+	mustWrite(t, bootstrap, "[logs]\nbackend='file'\n")
+	cfg, err := Load(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Logs.WorkerFlushInterval != "15m" || cfg.Logs.DBKeepFor != "720h" || cfg.Logs.DBPruneAt != "03:30" {
+		t.Fatalf("log archive defaults = %#v", cfg.Logs)
+	}
+}
+
+func TestLogArchiveValidation(t *testing.T) {
+	for _, invalid := range []string{
+		"[logs]\nworker_flush_interval='500ms'\n",
+		"[logs]\nworker_flush_interval='nope'\n",
+		"[logs]\ndb_keep_for='0h'\n",
+		"[logs]\ndb_keep_for='x'\n",
+		"[logs]\ndb_prune_at='25:00'\n",
+		"[logs]\ndb_prune_at='3:5'\n",
+		"[logs]\ndb_prune_at='noon'\n",
+	} {
+		dir := t.TempDir()
+		bootstrap := filepath.Join(dir, "minicron.toml")
+		mustWrite(t, bootstrap, invalid)
+		if _, err := Load(bootstrap); err == nil {
+			t.Errorf("accepted %q", invalid)
+		}
+	}
+	dir := t.TempDir()
+	bootstrap := filepath.Join(dir, "minicron.toml")
+	mustWrite(t, bootstrap, "[logs]\nworker_flush_interval='5m'\ndb_keep_for='168h'\ndb_prune_at='23:45'\n")
+	if _, err := Load(bootstrap); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -228,7 +228,7 @@ func (s *Server) routes() *http.ServeMux {
 	return m
 }
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": []string{"local", "file-logs"}, "token_fingerprint": fingerprint(s.tokenHash.Load().(string))})
+	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": []string{"local", "file-logs", "sqlite-log-archive"}, "token_fingerprint": fingerprint(s.tokenHash.Load().(string))})
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.reload(r.Context()); err != nil {
