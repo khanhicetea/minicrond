@@ -56,8 +56,9 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
   queue semantics.
 - **Sync trigger** (`?wait=true`): holds the request, streams nothing, returns
   `{run_id, status, exit_code, duration_ms}`; cap 240 s; for CI ergonomics
-  the HTTP status is 200 for succeeded and 500-ish (`472`) for failed runs so
-  plain scripts can branch without parsing.
+  the HTTP status is 200 for every completed run (including application failure), while a wait
+  limit reached with the run still active returns 202. The CLI maps final run
+  status/exit code for scripts.
 - **Pagination**: cursor tokens (`?cursor=`, `?limit=` default 50 max 500);
   runs default order newest-first.
 - **Concurrency responses**: triggering a `skip` job that's active returns
@@ -68,10 +69,10 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
 
 ## SSE conventions
 
-- One event type per stream endpoint; events carry monotonically increasing
-  `id:` (per-connection sequence, resumable via `Last-Event-ID` where the
-  underlying data allows — log streams resume to line, events replay from an
-  in-memory ring of the last 256).
+- One event type per stream endpoint; log events carry stable per-run sequence IDs and resume from
+  `Last-Event-ID`. Browser clients use authenticated `fetch()` streaming,
+  never native EventSource or query-string tokens. Global events use
+  boot-aware IDs and emit `resync` when replay is unavailable.
 - Heartbeat comment every 15 s keeps proxies from idling out.
 - Limits: max 64 concurrent SSE connections, 8 per source IP — generous for
   a single-machine tool, protective against runaway tabs.
@@ -80,7 +81,7 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
 
 - Local Unix socket channel: OS peer credentials, no token needed.
 - TCP: `Authorization: Bearer <token>` (or `X-minicron-Token`); web UI uses
-  the same token via a login screen → memory only (no cookie persistence v1;
+  the same token via a login screen → `sessionStorage` only (no cookie persistence v1;
   OQ-7).
 - All endpoints except `/healthz` require auth when a token is configured
   (default on).

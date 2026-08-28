@@ -56,7 +56,7 @@ It manages processes, and can drive Docker too.
 - DAG / workflow orchestration with inter-job dependencies beyond worker
   boot ordering.
 - Cloud sync, accounts, telemetry, phone-home.
-- Windows (Linux + macOS first; WSL works because it's Linux).
+- Windows (Linux first; WSL works because it's Linux).
 - Web-based terminal / arbitrary command execution outside defined jobs.
 - A TUI — the web UI and CLI are the only interfaces (ADR-2).
 

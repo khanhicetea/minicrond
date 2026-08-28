@@ -1,0 +1,5 @@
+# local sandbox artifacts
+.env
+env.local
+.data/
+.bin/

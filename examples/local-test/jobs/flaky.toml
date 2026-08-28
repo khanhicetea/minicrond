@@ -1,0 +1,11 @@
+# Failing job: exits 42. With the default success_codes = [0] the run is
+# recorded as failed with exit_code 42 — used by smoke.sh to verify the
+# failure path. Trigger manually; it also runs every 10 minutes.
+[[job]]
+name = "flaky"
+schedule = "@every 10m"
+env_file = "env.local"
+command = 'exec "$EXAMPLE_DIR/scripts/fail.sh" 42'
+catch_up = "none"
+on_overlap = "skip"
+labels = { tier = "example", expects = "failure" }

@@ -64,16 +64,18 @@ gone.
 Requirements: embedded static SPA (no server-side JS), small bundle, good
 DX, SSE-friendly, TypeScript.
 
-**Recommendation: Svelte 5 + Vite**, static build (`adapter-static`), ~50–150 KB
-gzip. Alternatives: SolidJS (equal fit), Preact (smallest, fewer ergonomics).
-No server framework; the daemon serves `index.html` + hashed assets and a
-catch-all route; data over the REST/SSE API only.
+**Decision: React 19 + Vite** with the React Compiler enabled, wouter for
+hash-based client routing, daisyUI 5 (Tailwind CSS 4) for components, and
+TanStack Query for server-state management. The daemon serves `index.html`
+plus hashed assets; data flows over the REST/SSE API only. Alternatives
+considered: Svelte 5 (equal fit, smaller baseline), SolidJS, Preact.
+No server framework.
 
 ## Build & release
 
 - Go: `CGO_ENABLED=0`, `GOOS`/`GOARCH` matrix — `linux/amd64`,
-  `linux/arm64`, `darwin/amd64`, `darwin/arm64` (all static, one command
-  each). Rust path (if chosen): musl + osxcross/CI runners.
+  `linux/arm64` (all static, one command each). Rust path (if chosen):
+  musl on CI runners.
 - Release channels: GitHub Releases tarballs (+ checksums), one-line install
   script, Homebrew tap, Docker images `minicron` and `minicron:dind`
   (docker-cli variant) — see `10`.
@@ -91,7 +93,8 @@ We are not deriving from GPL code; `learn/` is reference-only and gitignored
 ## Open questions
 
 - OQ-1: Go (recommended post-ADR-1) vs Rust veto?
-- OQ-9: Svelte 5 (recommended) vs SolidJS vs Preact.
+- OQ-9: React 19 + wouter + daisyUI 5 + TanStack Query (resolved; was Svelte 5
+  vs SolidJS vs Preact).
 - OpenAPI style if Go: `huma` (handler-first, like the reference product's
   approach) vs `oapi-codegen` (spec-first — the spec `11` doc then becomes
   generative input). Lean `huma`; decide at kickoff.

@@ -11,28 +11,27 @@ Order of operations, precisely:
    with `start_error` and a `disk.low` event).
 2. Persist `pending` run → allocate `run_id` (UUIDv7), open the LogSink.
 3. Build environment, layered:
-   `env_base` (`inherit` = daemon's env minus `minicron_*`; `clean` =
+   `env_base` (`inherit` = daemon's env minus `MINICRON_*`; `clean` =
    `PATH=/usr/bin:/bin`, `HOME`, `TZ`) → `env_file` → `env` → `secret_env` →
    injected context vars:
-   `minicron_JOB`, `minicron_RUN_ID`, `minicron_TRIGGER`,
-   `minicron_ATTEMPT`, `minicron_LOG_PATH` (file backend), and for worker
-   instances `minicron_INSTANCE` (1-based).
+   `MINICRON_JOB`, `MINICRON_RUN_ID`, `MINICRON_TRIGGER`,
+   `MINICRON_ATTEMPT`, and for worker
+   instances `MINICRON_INSTANCE` (1-based).
 4. Resolve identity: `run_as` `user[:group]` (name or numeric; resolved via
    the system user database; `~` in `working_dir` resolves against that
    user's home). Root daemon required for dropping — otherwise validation
    error up front (D-5). In system mode, user-owned definitions are locked
    to the owner's uid/gid — any other `run_as` in a user scope is a
    validation error, never a silent override (`17`).
-5. Create **process group** (`setsid`): every descendant is killable by the
-   daemon, and nothing escapes the stop ladder.
-6. Set `umask`, `rlimits` (`limits`: `cpu_seconds`, `memory_bytes`, `nproc`,
-   `fsize`) [v0.2], `chdir(working_dir)` (default `/tmp`; missing dir =
-   `start_error`).
-7. Spawn:
-   - single-line `command` → `shell -c command`;
-   - multi-line `command` → written to a `0700` temp file under the data dir,
-     executed as `shell file`, deleted after exit; commands fail-fast
-     (script runs with `-e` semantics).
+5. Create a **process group**. The daemon signals the group; deliberate
+   daemonization/new-session escape is unsupported and requires containers or
+   future cgroups for containment.
+6. `chdir(working_dir)` (default effective-user home; missing dir =
+   `start_error`). Concurrent per-child umask/rlimits are deferred until the
+   v0.2 internal launcher protocol.
+7. Spawn exactly one of:
+   - `command` → `shell -c command`, identically for single/multiline strings;
+   - `argv` → direct exec with no shell.
 8. Pump stdout/stderr concurrently into the LogSink as **tagged lines**
    (`stdout` / `stderr` / `system`; see `09`). Oversized lines truncated at
    `logs.max_line` with a `system` marker noting the truncation.
@@ -62,9 +61,9 @@ send stop_signal (default SIGTERM)
 ## Timeouts
 
 `timeout` is wall-clock from process start (not queue admission). At
-deadline: ladder → final status `timeout` (a flavor of `failed` unless
-`success_codes` covers the post-kill exit code, which it normally shouldn't).
-Retries apply to timeouts like any failure unless `retry_on_timeout = false`.
+deadline the stop ladder runs and final status is always the distinct terminal
+state `timeout`, regardless of the resulting signal or exit code. Job retries
+are deferred to v0.2 and will not retry timeout by default.
 
 ## Retries (jobs)
 
@@ -119,8 +118,7 @@ visible in history).
 
 - cgroup-based containment (beyond rlimits) — MAY post-1.0, Linux only.
 - CPU/IO priority (`nice`, `ionice`) — trivially addable; not core.
-- Arbitrary-argv mode (`command_argv`, no shell) — reserved key, v1.0+; the
-  shell form with params (v0.2) covers the injection-safe path meanwhile.
+- Hostile-workload containment; argv execution is included in v0.1.
 
 ## Open questions
 

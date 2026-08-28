@@ -35,8 +35,7 @@ Status: Draft
 
 ## Components
 
-- **Config Loader** — reads `minicron.toml` + include globs, applies
-  substitutions, validates (strict, positional errors), computes a content
+- **Config Loader** — reads `minicron.toml` + include globs, keeps values literal, resolves only typed environment/file references, validates (strict, positional errors), computes a content
   fingerprint. Produces a desired-state definition set. Never talks to the
   executor directly.
 - **Registry** — SQLite holds the definition set: authoritative copies of
@@ -52,14 +51,15 @@ Status: Draft
   restart policy/backoff, tracks health, orders boot by `priority` and gates
   on `depends_on` (boot ordering only, never a DAG).
 - **Executor Pool** — spawns actual OS processes: builds env, resolves
-  `run_as`, sets umask/rlimits, creates a new process group (so children die
-  with the run), enforces timeout via the stop ladder, collects exit
-  status. One tokio task per run; bounded global concurrency.
+  `run_as`, creates a new process group, enforces timeout via the stop ladder, and
+  collects exit status. One goroutine set per run; bounded global job
+  concurrency. Per-child umask/rlimits require the v0.2 launcher protocol.
+  Deliberately daemonized descendants can escape process-group control.
 - **LogSink** — append-only, tagged-line stream per run; `FileSink` default,
   `S3Sink` optional (`09`).
-- **Run Store** — async persistence of run state through a bounded queue;
-  state changes are idempotent upserts so a crash mid-write loses at most the
-  last transition (recovered as `interrupted`).
+- **Run Store** — committed SQLite lifecycle writes. Callers await commit
+  acknowledgement before spawning a process or reporting API success; crash
+  recovery marks unobservable active transitions `interrupted`.
 - **Event Bus** — in-process broadcast: run lifecycle events → SSE clients,
   notification router, metrics recorder.
 - **Retention Sweeper** — periodic task enforcing `keep_runs`/`keep_for`,
@@ -113,9 +113,9 @@ registry → compute diff classes:
 Restart-only settings (bind address, data dir, storage backend) are rejected
 in hot reload with a clear "requires restart" error listing the keys.
 
-Each import source validates **independently**: an invalid source is
-rejected alone, leaving every other source (including other users' sources
-in system mode) to apply normally (`17`).
+In user mode the bootstrap and every include are one desired set: any invalid
+file rejects the complete reload. Future system mode uses one independent
+atomic desired set per owner (`17`).
 
 ## Concurrency & footguns
 

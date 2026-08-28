@@ -1,0 +1,6 @@
+[[job]]
+name = "hello"
+schedule = "@every 1h"
+argv = ["/bin/echo", "hello from minicron"]
+catch_up = "none"
+on_overlap = "skip"

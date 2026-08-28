@@ -26,12 +26,12 @@ One parser, one AST, used by validation, scheduling, and UI preview
 ## Evaluation model
 
 - Each job computes its **next fire instant** in its own timezone (default
-  from `[scheduler] timezone`, default system local, fallback UTC if unknown;
+  from `[scheduler] timezone`, which defaults to UTC; an unknown zone fails validation;
   source tagged in UI). IANA tzdata is bundled into the binary.
 - The scheduler sleeps on the earliest next-fire across all jobs (a binary
   heap keyed by instant); config changes rebuild the heap. Evaluation is
-  wall-clock aligned for cron forms (`@every` anchors to daemon start, not
-  wall grid).
+  wall-clock aligned for cron forms. `@every` uses a persisted activation
+  anchor and schedule hash, so daemon restart cannot introduce drift.
 - A fire produces a **trigger request** that passes admission (overlap/queue
   policy, global concurrency, disk-space precheck) before a `pending` run is
   persisted. Admission rejection is recorded as a run with `skipped` /
@@ -59,7 +59,7 @@ On startup, for each job, compute schedule fires between
 |---|---|
 | `none` (default, OQ-6) | record one `missed` run summarizing the count; nothing executes (crond parity — quiet) |
 | `latest` | execute one run now (with `trigger = schedule`, annotated `caught_up`) |
-| `all` | execute each missed fire, capped by `[scheduler] max_catchup` (default 5); beyond the cap, recorded `missed` |
+| `all` | deferred to v0.2; rejected by v0.1 validation |
 
 Disabled jobs and workers skip catch-up entirely.
 
@@ -79,8 +79,8 @@ When a trigger arrives while another run of the same job is active:
 |---|---|
 | `parallel` | classic crond: overlap freely |
 | `skip` (recommended default — OQ-16) | new trigger → run recorded `skipped` (`overlap_skip`) |
-| `queue` | new trigger → `pending` in FIFO queue, cap `max_queued` (default 10); over cap → `skipped` (`queue_full`) |
-| `replace` | stop the active run via stop ladder, start the new one; old run → `stopped` (`overlap_replace`) |
+| `queue` | deferred to v0.2; rejected by v0.1 validation |
+| `replace` | deferred to v0.2; rejected by v0.1 validation |
 
 Global cap: `[scheduler] max_concurrent_runs` (default 32) applies across all
 jobs; over-cap triggers follow the job's queue policy or `queue_full`.

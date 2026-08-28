@@ -85,16 +85,20 @@ prune_missing = false
 - Run history is not part of settings export; separate `minicron export
   --runs` (JSONL/CSV) [v0.2].
 
-**Import** (same page, or `minicron import <path>`):
+**Import** (same page, or `minicron import --copy <path>`):
+
+Browser/API uploads and CLI `--copy` always create DB-authority copies.
+`minicron import --link PATH` alone registers a persistent daemon-local
+file-authority source. Preview/apply is bound to the SHA-256 of the exact
+uploaded bytes; a changed body returns 409.
 
 1. Paste or upload file(s).
 2. Parse + validate. Errors (with positions) block that item only.
 3. **Dry-run diff table**: per name → `new` / `changed` (field-level diff
    view) / `unchanged` / `conflict` (registry entry is db-authority).
-4. Operator resolves conflicts: `skip` (default) / `takeover` (converts
-   db-authority → file authority; the conversion is audited) /
-   `rename-import` (`backup-db → backup-db-2`). Bulk-apply per column.
-5. Apply → single transaction → file-authority references upserted,
+4. Copy conflicts default to rejection or an explicit rename. `takeover`
+   exists only for daemon-local `--link`, never for a browser upload.
+5. Apply → single transaction → DB-authority copies upserted,
    revisions/audit written where applicable → live reconciliation (same
    diff classes as reload) → summary with "trigger now" links.
 

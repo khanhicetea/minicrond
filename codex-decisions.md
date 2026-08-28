@@ -48,7 +48,7 @@ state machines, and only then begin implementation.
 | OQ-6 catch-up default | **`none`** | Running delayed jobs can repeat destructive work. Record a summarized missed occurrence; do not execute by default. |
 | OQ-7 auth | **One high-entropy bearer token plus Unix peer credentials** | Smallest understandable model. Store only a token hash, show a new token once, and use `sessionStorage` rather than persistent `localStorage` in the UI. Use authenticated `fetch()` streaming, not native `EventSource`, because EventSource cannot set an Authorization header. |
 | OQ-8 port | **7423** | No material reason to spend more design time on it. Bind loopback by default. |
-| OQ-9 UI | **Svelte 5 + Vite, static SPA** | Small output and good development ergonomics. This is a client-rendered SPA; remove claims that it works as server-rendered navigation without JavaScript. |
+| OQ-9 UI | **React 19 + Vite static SPA** (React Compiler, wouter, daisyUI 5, TanStack Query; revised from Svelte 5) | Client-rendered SPA; compiler-driven memoization and a mainstream component/query ecosystem. Remove claims that it works as server-rendered navigation without JavaScript. |
 | OQ-11 name | **Keep `minicron`** | Freeze the name now, subject to a package/domain/trademark check before the first public release. |
 | OQ-12 license | **Apache-2.0** | Clear patent grant and one simple license. |
 | OQ-13 file watch | **Manual reload in v0.1; opt-in watch later** | Correct rename/debounce/error behavior is not core. When added, default it off. |
@@ -104,7 +104,7 @@ changes the threat model.
 
 Ship only:
 
-- user mode on Linux and macOS;
+- user mode on Linux;
 - local jobs and one-instance local workers;
 - five-field cron, descriptors, `@every`, and `catch_up = "none" | "latest"`;
 - overlap `skip | parallel`;
@@ -257,7 +257,7 @@ For Go specifically:
   AWS/cloud/service credentials must not flow into unprivileged jobs.
 - Default `working_dir` to the effective user's home, with an explicit fallback
   if it is unavailable.
-- Remove `minicron_LOG_PATH`; it leaks an internal path that the run-as user
+- Remove `MINICRON_LOG_PATH`; it leaks an internal path that the run-as user
   generally cannot access and encourages mutation of daemon-owned logs.
 - `enabled = false` should prevent all new starts, including manual starts.
   Re-enable first; do not give the word “disabled” a partial meaning.
@@ -369,7 +369,7 @@ Remove or defer these ideas:
 
 - “copy as curl everywhere” — it adds visual noise and risks copying a token;
   provide a developer menu on relevant detail/action views and use
-  `$minicron_TOKEN` placeholders;
+  `$MINICRON_TOKEN` placeholders;
 - side-by-side form and TOML editors — ship one structured editor first;
 - progressive enhancement/server-rendered navigation — incompatible with the
   selected embedded static SPA unless a second rendering implementation is
@@ -402,9 +402,7 @@ System mode has unresolved privilege-escalation paths in the current draft:
 - User-configurable webhook URLs or S3 endpoints would create root-daemon SSRF.
   Channels and storage endpoints remain admin-owned; definitions only select
   predeclared channel names.
-- System mode should initially be Linux-only unless peer credentials,
-  privilege dropping, service installation, and path access are separately
-  tested on macOS.
+- System mode is Linux-only; macOS is not a supported platform.
 
 ### 13. Simplify Docker scope
 
@@ -443,7 +441,7 @@ System mode has unresolved privilege-escalation paths in the current draft:
 - Treat `<25 MB` binary and `<30 MB` RSS as benchmark goals, not hard product
   requirements, until measured with SQLite, the embedded UI, zstd, and the S3
   SDK compiled in.
-- Under systemd/launchd, log the daemon to stderr and let the service manager
+- Under systemd, log the daemon to stderr and let the service manager
   rotate it. Do not also write `daemon.log` by default and build another
   rotation system.
 - `/readyz` means the DB, scheduler, and local log ingestion path can accept

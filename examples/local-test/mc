@@ -1,0 +1,11 @@
+#!/bin/sh
+# Convenience wrapper around the minicron CLI with the sandbox env applied.
+# Usage: ./mc list | ./mc status | ./mc run hello --wait | ./mc logs RUN_ID | ./mc reload
+set -eu
+
+. "$(dirname -- "$0")/common.sh"
+
+load_env >/dev/null 2>&1
+resolve_bin
+
+exec "$BIN" "$@"

@@ -1,0 +1,11 @@
+# Slow job: sleeps 30s but is killed by its own 3s timeout (+2s grace).
+# smoke.sh triggers it and expects the terminal status "timeout".
+[[job]]
+name = "slow"
+schedule = "@every 6h"
+env_file = "env.local"
+command = 'exec "$EXAMPLE_DIR/scripts/slow.sh" 30'
+timeout = "3s"
+grace = "2s"
+catch_up = "none"
+on_overlap = "skip"

@@ -22,11 +22,15 @@ Config keys: spec `04`
 A run's log is a sequence of **frames**:
 
 ```
-frame := stream_tag line
-stream_tag := 0x01 (stdout) | 0x02 (stderr) | 0x03 (system)
+frame := version:u8 stream:u8 flags:u8 reserved:u8 sequence:u64
+         timestamp_unix_us:u64 payload_length:u32 payload:bytes
+stream := 0x01 (stdout) | 0x02 (stderr) | 0x03 (system)
 ```
 
-- Frames are batched into **chunks** (default 256 KiB, zstd-compressed)
+- Flags identify partial final lines, invalid UTF-8, and truncation. Payload
+  bytes are preserved. Stream order is daemon ingestion order, not an
+  impossible promise about kernel stdout/stderr write order.
+- Frames are batched into **chunks** (default 1 MiB, zstd-compressed)
   — the unit of storage, transfer, and retention in both backends.
 - A per-run **index** maps line number → chunk offset, rebuilt cheaply from
   chunk footers (each chunk footer records first/last line number and byte
@@ -57,18 +61,15 @@ The executor pumps pipes into `StreamWriter`; the HTTP layer reads through
 
 ## FileSink (default)
 
-- Layout: `logs/<job>/<YYYY>/<MM>/<DD>/<run_id>.log` — gzipped chunks
-  sidecar `<run_id>.idx` (chunk index) + `<run_id>.meta` (footer: status,
-  truncation flags). Plain text is the union of decompressed chunks in order;
-  a `zcat` one-liner works (documented).
+- Layout: `logs/<run_id>/<seq>.zst` plus atomic `index.json`. Raw download is
+  generated through the API; `.zst` chunks can be inspected with `zstdcat`.
 - Writes: async pump task per run, chunk-buffered, fsync on chunk flush
   (cheap, few per run); crash mid-run leaves complete chunks only — the
   recovery pass marks the run `interrupted` and appends a closing system
   line.
-- Reads: index seek → decompress one chunk → scan. Tail = poll at 250 ms +
-  inotify/fsevents where available (polling fallback is fine locally).
-- `minicron_LOG_PATH` env var is injected into runs (file backend only) so
-  scripts can self-reference.
+- Reads use the index and stable sequence IDs. Live tail uses a bounded
+  in-process backlog-to-live broadcaster; clients subscribe before reading
+  backlog and deduplicate by sequence, so the handoff has no gap.
 
 ## S3Sink [v0.3] (D-4 as amended)
 

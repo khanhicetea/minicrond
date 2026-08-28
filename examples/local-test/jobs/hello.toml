@@ -1,0 +1,13 @@
+# Hello job: runs once on daemon start, then every minute.
+# Demonstrates run_on_start, injected MINICRON_* metadata, and tagged stdout.
+# env_file is provided by start.sh (env.local) and defines EXAMPLE_DIR so the
+# command can reference the checked-in scripts without a hardcoded path.
+[[job]]
+name = "hello"
+schedule = "@every 1m"
+run_on_start = true
+env_file = "env.local"
+command = 'exec "$EXAMPLE_DIR/scripts/hello.sh" "from config"'
+catch_up = "none"
+on_overlap = "skip"
+labels = { tier = "example" }

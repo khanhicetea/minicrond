@@ -1,0 +1,10 @@
+# Ticker worker: supervisor-managed long-running process, started on daemon
+# boot, printing a line every 5s. Workers have no schedule; control them via
+# the API (/api/v1/workers/ticker/start|stop|restart) or the web UI.
+[[worker]]
+name = "ticker"
+env_file = "env.local"
+command = 'exec "$EXAMPLE_DIR/scripts/loop-date.sh" 5'
+autostart = true
+restart = "on-failure"
+restart_delay = "2s"

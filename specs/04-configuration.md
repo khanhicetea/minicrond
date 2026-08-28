@@ -17,14 +17,14 @@ Status: Draft · Format decision: OQ-2 (TOML recommended) · Table style: OQ-4
 
 ## File discovery (first match wins; all paths logged at startup)
 
-1. `--config PATH` / `minicron_CONFIG` env
+1. `--config PATH` / `MINICRON_CONFIG` env
 2. `./minicron.toml`
 3. `$XDG_CONFIG_HOME/minicron/minicron.toml` (`~/.config/...`)
 4. `/etc/minicron/minicron.toml` (typical when running as root)
 
 If none exists: interactive `minicron` prompts to scaffold; `minicron
 daemon` (headless) exits non-zero. Data dir resolution mirrors this:
-`--data-dir` / `minicron_DATA` → `~/.local/share/minicron` (unprivileged)
+`--data-dir` / `MINICRON_DATA` → `~/.local/share/minicron` (unprivileged)
 or `/var/lib/minicron` (root).
 
 ## Full example (vocabulary reference)
@@ -126,41 +126,40 @@ stop_signal = "SIGTERM"
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `name` | string | required | unique across kinds; `^[a-z0-9][a-z0-9_.-]{0,99}$` |
-| `command` | string | required | shell string; multiline = script written to temp file, fail-fast |
+| `command` / `argv` | string / [string] | exactly one required | command always runs as `shell -c`; argv bypasses the shell |
 | `shell` | path | `/bin/sh` | used for `command` |
 | `run_as` | `user` or `user:group` | daemon user | name or numeric; root daemon only |
-| `working_dir` | path | `/tmp` | `~` = run_as home |
+| `working_dir` | path | effective user's home | `~` = run_as home |
 | `env` | map | — | visible in UI/API |
 | `env_file` | path | — | dotenv; shown as path only |
-| `secret_env` | map | — | values via `${file:path}` or env refs; masked everywhere (spec 13) |
-| `env_base` | `inherit`\|`clean` | `inherit` | `clean` = minimal PATH/HOME/TZ only |
+| `secret_env` | map | — | explicit `file:/path` or `env:NAME` references; masked everywhere (spec 13) |
+| `env_base` | `inherit`\|`clean` | `clean` | `clean` = minimal PATH/HOME/TZ only |
 | `umask` | string | inherit | octal, e.g. `"027"` |
 | `limits` | map | — | `cpu_seconds`, `memory_bytes`, `nproc`, `fsize` (setrlimit) [v0.2] |
 | `timeout` | duration | `0` | wall clock; 0 = none |
 | `grace` | duration | `10s` | stop-ladder window, all kill paths |
 | `stop_signal` | signal | `SIGTERM` | |
-| `retries`* / `retry_delay` / `retry_backoff` | int/dur/enum | 0/`10s`/`exponential` | jobs only |
+| retries | — | — | deferred to v0.2 |
 | `success_codes` | [int] | `[0]` | exit codes counted as success |
 | `on_overlap` / `max_queued` | enum/int | see OQ-16 | jobs only |
 | `keep_runs` / `keep_for` | int/duration | from `[storage]` | retention |
 | `log_max` / `log_on_full` | dur/enum | `100MiB`/`drop_old` | `drop_old`\|`drop_new`\|`kill` |
 | `notify` | [event] | inherit `[notify]` | e.g. `["on-failure", "on-timeout"]` |
 | `labels` | map | — | UI/API filtering |
-| `enabled` | bool | `true` | false = scheduled but never fires; manual trigger still allowed |
+| `enabled` | bool | `true` | false prevents every new start, including manual starts |
 | `driver` | enum | `local` | `local` \| `docker` (spec 10) |
 
 Job-only: `schedule`, `timezone`, `jitter`, `catch_up` (`latest`\|`all`\|`none`),
 `run_on_start` (bool). Worker-only: `instances` (1–64), `restart*`,
 `healthy_after`, `priority`, `depends_on`, `autostart`.
 
-## Substitution rules
+## Reference rules
 
-- `${VAR}` and `${file:/path}` expand in **all** string values **except**
-  `command` (left to the shell — prevents double-expansion surprises) and
-  inside `env_file`/`secret_env` file contents (read literally).
-- Missing `${VAR}` at load time = validation error (fail loudly, no empty
-  strings sneaking through). `${VAR:-default}` supported.
-- `secret_env` values are stored hashed-in-audit, masked in UI/API/logs.
+- Configuration values are literal; there is no global interpolation.
+- `secret_env` alone accepts explicit `env:NAME` and absolute `file:/path`
+  references. Resolved values are never persisted, returned, or audited.
+- Relative `env_file` paths are allowed only for linked-file definitions and
+  resolve against that source file. DB-authority paths are absolute.
 
 ## Validation
 

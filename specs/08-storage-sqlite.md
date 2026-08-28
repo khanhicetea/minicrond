@@ -1,6 +1,13 @@
 # 08 — Storage: SQLite
 
-Status: Draft
+Status: v0.1 contract corrected by `codex-decisions.md`
+
+The implemented schema uses surrogate `definition_id` identity, keys
+revisions/schedule state by that identity, stores timestamps as integer Unix
+microseconds, and carries definition hash, boot ID, PGID, process-start
+identity, scheduled time, missed count, and scoped idempotency records. The
+older illustrative SQL below is retained only as design history and is not a
+stable/public schema; `migrations/` is normative.
 
 ## Data directory layout (D-2)
 

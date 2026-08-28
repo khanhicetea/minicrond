@@ -12,8 +12,6 @@ Status: Draft
     when root, or `--user` (`~/.config/systemd/user/` + `loginctl
     enable-linger`) when not. System installs also create the `minicron`
     group and the `/run/minicron` socket dir for system mode (`17`).
-  - macOS: launchd plist `~/Library/LaunchAgents/dev.minicron.plist`
-    (`--user` only).
   - Generated files carry a `# managed by minicron service install` header
     + config hash; drift (header edited) prompts unless `--force`.
     `service uninstall` keeps data; `--purge` deletes the data dir behind a
@@ -44,17 +42,16 @@ Health: `/healthz` (process alive), `/readyz` (scheduler loaded + db writable
 
 ## Resource envelope (targets, verified in CI benchmarks)
 
-- Idle RSS < 30 MB; startup < 1 s; binary < 25 MB (Rust, musl, release +
-  strip + LTO).
+- Idle RSS < 30 MB; startup < 1 s; binary < 25 MB are measured Go build
+  goals, not contractual limits.
 - Scheduler tick cost < 1 ms at 1k definitions.
 - Log pump overhead < 2% CPU at 10 MB/s throughput (worst-case verbose
   worker).
 
 ## Daemon's own logging
 
-- `tracing` structured logs to stderr (foreground) or `daemon.log` +
-  stderr (service mode); `minicron_LOG_FORMAT=json` for collectors;
-  `minicron_LOG_LEVEL` (default `info`).
+- Go `slog` structured logs go to stderr; systemd owns rotation; `MINICRON_LOG_FORMAT=json` for collectors;
+  `MINICRON_LOG_LEVEL` (default `info`).
 - Rotation of `daemon.log`: `SIGHUP`-safe; recommend journald/logrotate in
   docs; internal size cap (default 50 MB, rotate ×3) as a net regardless.
 

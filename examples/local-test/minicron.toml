@@ -1,0 +1,26 @@
+# Bootstrap config for the local-test sandbox. Loaded by start.sh via
+# MINICRON_CONFIG / `daemon --config`. Include paths are resolved relative
+# to this file, so jobs/*.toml below are the checked-in example jobs.
+
+[server]
+bind = "0.0.0.0:7423"
+unix_socket = true
+
+[include]
+paths = ["jobs/*.toml"]
+
+[scheduler]
+timezone = "UTC"
+max_concurrent_runs = 8
+
+[storage]
+keep_runs_default = 100
+keep_for_default = "24h"
+
+[logs]
+backend = "file"
+
+[defaults]
+shell = "/bin/sh"
+env_base = "clean"
+grace = "5s"

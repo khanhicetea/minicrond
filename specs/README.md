@@ -1,5 +1,19 @@
 # minicron — Specification Suite
 
+> **Precedence note (v0.1):** the draft documents below predate the settled
+> decisions in `codex-decisions.md` and `docs/adr/0005-v01-foundations.md`.
+> Where any draft text conflicts with those documents (run-status vocabulary,
+> reload atomicity, import modes, scheduler persistence, process guarantees,
+> logging format, SQLite identity, SSE auth/resume), the decided documents
+> govern the v0.1 implementation and its acceptance tables in
+> `docs/acceptance-v0.1.md`. A full editorial rewrite of the drafts is still
+> pending.
+
+> **Normative order for v0.1:** accepted ADRs, `codex-decisions.md`,
+> `docs/acceptance-v0.1.md`, checked-in schemas/migrations, then individual
+> draft chapters. Features explicitly deferred by that order are not v0.1
+> promises even where historical examples below still mention them.
+
 Working specs for **minicron** (working title, see OQ-11): a single-binary cron
 scheduler and process supervisor with a web UI, SQLite metadata, and optional
 S3-backed log storage (direct chunk writes; SlateDB was considered and

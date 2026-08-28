@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+}
+
+/* Log viewer: fixed dark surface in both themes. */
+.log-view {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.2em;
+}
+
+.log-stderr {
+  color: #fda4af;
+}
+
+.log-system {
+  color: #93c5fd;
+  font-style: italic;
+}
+
+/* Allow-list of safe ANSI SGR styling produced by parseAnsi(). */
+.ansi-bold {
+  font-weight: 700;
+}
+
+.ansi-red {
+  color: #f87171;
+}
+
+.ansi-green {
+  color: #4ade80;
+}
+
+.ansi-yellow {
+  color: #facc15;
+}
+
+.ansi-blue {
+  color: #60a5fa;
+}
+
+.ansi-magenta {
+  color: #e879f9;
+}
+
+.ansi-cyan {
+  color: #22d3ee;
+}

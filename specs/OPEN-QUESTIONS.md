@@ -58,9 +58,10 @@ ADR and update the referencing spec's Status.
 - Impact: docs, docker examples, muscle memory. Decide once, never change.
 - Specs: [04](04-configuration.md) [11](11-http-api.md).
 
-### OQ-9 — Web UI framework
-- Options: **Svelte 5 + Vite static** (recommended) / SolidJS / Preact.
-- All meet the constraints (< 150 KB, SSE-friendly, embedded static).
+### OQ-9 — Web UI framework — RESOLVED
+- Resolved: **React 19 + Vite** with the React Compiler, wouter (hash
+  routing), daisyUI 5 (Tailwind CSS 4), and TanStack Query. All options met
+  the constraints (< 150 KB gzip, SSE-friendly, embedded static).
 - Specs: [12](12-web-ui.md) [02](02-technology-choices.md).
 
 ### OQ-10 — ~~SlateDB spike + version pin~~ — RESOLVED

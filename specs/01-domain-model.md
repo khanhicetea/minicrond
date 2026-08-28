@@ -96,9 +96,9 @@ SQLite, capped.
 ## State machines
 
 ```
-Run:    pending ──▶ running ──▶ succeeded | failed | stopped | interrupted
-          │                       ▲
-          └──────▶ skipped        └─ timeout (subcase of failed/stopped)
+Run:    pending ──▶ running ──▶ succeeded | failed | timeout | stopped | interrupted
+          ├──────▶ skipped
+          └──────▶ missed
 
 Worker (per instance):
   stopped → starting → running ⇄ restarting (backoff) → fatal (gave up)
@@ -112,8 +112,8 @@ Worker (per instance):
 
 ## Counting rules
 
-- Retries are separate runs linked by `parent_run_id`; job "last status" =
-  final attempt's status.
+- Retries are deferred to v0.2. When added, separate `retry_root_run_id` and
+  `attempt` fields identify chains; v0.1 does not overload `parent_run_id`.
 - Success = exit code ∈ `success_codes` (default `[0]`), after retries.
 - Duration includes process runtime only, not queue wait (queue wait is its
   own column).

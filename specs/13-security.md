@@ -12,7 +12,7 @@ Status: Draft · Auth model decision: OQ-7
 | Secret leakage via UI/API/logs/exports | `secret_env` masking everywhere, hashed in audit, stripped from exports |
 | Malicious/compromised registered user (system mode) | `run_as` locked to owner uid; scoped API surface; per-source reload isolation (`17`) |
 | Log-forging via job output | ANSI is rendered but never interpreted as HTML; log lines are data |
-| CSRF on the API | UI stores token in memory only (no cookies v1) → CSRF is structurally moot; if cookie sessions arrive (OQ-7), they get `SameSite=Strict` + CSRF tokens |
+| CSRF on the API | UI stores token in per-tab `sessionStorage` only (no cookies v0.1) → CSRF is structurally moot; if cookie sessions arrive (OQ-7), they get `SameSite=Strict` + CSRF tokens |
 | Docker socket abuse (Mode B) | Explicit config only, never auto-discovered; docs carry root-equivalence warning |
 
 ## Authentication (OQ-7 — recommended: single bearer token)
@@ -23,11 +23,11 @@ Status: Draft · Auth model decision: OQ-7
   moves to `/run/minicron/minicron.sock` (0660, `minicron` group) and
   the peer uid maps to a registered user — registration is the gate (`17`).
 - **Network channel**: `Authorization: Bearer <token>`.
-  - Token generated on first boot: 32 bytes base64url, stored `0600` at
-    `data_dir/token` (gitignored path, never in config file).
-    `minicron token` (socket/local only) prints or `--rotate`s it.
-    Env override `minicron_TOKEN` for container deployments.
-  - `minicron_AUTH=off` disables auth entirely — allowed **only** when
+  - Token generated on first boot: 32 bytes base64url, printed once, and stored
+    only as a SHA-256 hash in SQLite. `minicron token --rotate` (socket/local
+    only) returns the replacement once; the current token is unrecoverable.
+    Env override `MINICRON_TOKEN` for container deployments.
+  - `MINICRON_AUTH=off` disables auth entirely — allowed **only** when
     binding a loopback/unix address; the daemon refuses `auth=off` on a
     non-loopback bind (foot-gun guard).
 - Login throttling: 10 failed attempts / minute / source IP, then 5 min

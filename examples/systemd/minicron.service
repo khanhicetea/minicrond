@@ -1,0 +1,13 @@
+[Unit]
+Description=minicron user daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/minicron daemon --config %h/.config/minicron/minicron.toml
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

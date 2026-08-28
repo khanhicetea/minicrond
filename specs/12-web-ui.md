@@ -103,8 +103,9 @@ Status: Draft · Framework: OQ-9 · Constraint D-6: simple, DX-friendly
 
 ## Open questions
 
-- OQ-9: Svelte 5 (recommended) vs SolidJS vs Preact — bundle-size and DX
-  baselines are close; decide by contributor familiarity.
+- OQ-9: resolved — React 19 (React Compiler) + wouter + daisyUI 5 +
+  TanStack Query; bundle-size and DX baselines were close, the deciding
+  factors were ecosystem familiarity and compiler-driven memoization.
 - ~~TUI~~ — decided: **no TUI, ever** (ADR-2). The web UI + CLI are the only
   interfaces; SSH port-forwarding covers the headless case.
 - Web UI namespace scoping for system-mode users (`17`) is v1.1; v1 UI is
