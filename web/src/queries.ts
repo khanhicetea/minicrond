@@ -1,6 +1,6 @@
-import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
-import type { Definition } from './types';
+import type { Definition, WorkerState } from './types';
 import { isActiveRun } from './types';
 
 export const keys = {
@@ -12,7 +12,7 @@ export const keys = {
 };
 
 export const daemonQuery = () =>
-  queryOptions({ queryKey: keys.daemon, queryFn: api.daemon, staleTime: 15_000 });
+  queryOptions({ queryKey: keys.daemon, queryFn: api.daemon, staleTime: 15_000, refetchInterval: 30_000 });
 
 export const jobsQuery = () =>
   queryOptions({ queryKey: keys.jobs, queryFn: api.listJobs, select: data => data.items });
@@ -24,7 +24,7 @@ export const runsQuery = (job = '', limit = 50) =>
     queryKey: keys.runs(job, limit),
     queryFn: () => api.listRuns(job, limit),
     select: data => data.items,
-    refetchInterval: query => (query.state.data?.items.some(isActiveRun) ? 4_000 : false),
+    refetchInterval: query => (query.state.data?.items?.some(isActiveRun) ? 4_000 : false),
   });
 
 /** Poll the run detail only while it can still change. */
@@ -34,6 +34,26 @@ export const runQuery = (id: string) =>
     queryFn: () => api.getRun(id),
     refetchInterval: query => (query.state.data && isActiveRun(query.state.data) ? 3_000 : false),
   });
+
+/**
+ * Fetch worker runtime state (active/held/failures) for each worker name.
+ * Used by the jobs list, overview, and metrics pages.
+ */
+export function useWorkerStates(names: string[]): Record<string, WorkerState | undefined> {
+  const queries = useQueries({
+    queries: names.map(name => ({
+      queryKey: keys.job(name),
+      queryFn: () => api.getJob(name),
+      staleTime: 10_000,
+      refetchInterval: 15_000,
+    })),
+  });
+  const states: Record<string, WorkerState | undefined> = {};
+  queries.forEach((query, index) => {
+    if (query.data) states[names[index]] = query.data.worker_state;
+  });
+  return states;
+}
 
 function invalidateRuns(client: ReturnType<typeof useQueryClient>) {
   void client.invalidateQueries({ queryKey: ['runs'] });

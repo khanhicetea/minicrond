@@ -1,56 +1,940 @@
 @import "tailwindcss";
 
 @plugin "daisyui" {
-  themes: light --default, dark --prefersdark;
+  themes: false;
 }
 
-/* Log viewer: fixed dark surface in both themes. */
-.log-view {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+/* Dark theme matches the reference design: near-black canvas, elevated
+   panels, blue accent, tinted status chips. */
+@plugin "daisyui/theme" {
+  name: "dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: #12151a;
+  --color-base-200: #0b0d10;
+  --color-base-300: #262c36;
+  --color-base-content: #e8ebf0;
+  --color-primary: #3b82f6;
+  --color-primary-content: #ffffff;
+  --color-secondary: #8b95a5;
+  --color-secondary-content: #0b0d10;
+  --color-accent: #22c55e;
+  --color-accent-content: #052e16;
+  --color-neutral: #1a1f27;
+  --color-neutral-content: #a8b3c1;
+  --color-info: #38bdf8;
+  --color-info-content: #082f49;
+  --color-success: #22c55e;
+  --color-success-content: #052e16;
+  --color-warning: #f59e0b;
+  --color-warning-content: #451a03;
+  --color-error: #ef4444;
+  --color-error-content: #450a0a;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "light";
+  color-scheme: light;
+  --color-base-100: #ffffff;
+  --color-base-200: #f4f6f8;
+  --color-base-300: #dde2e9;
+  --color-base-content: #171b22;
+  --color-primary: #2563eb;
+  --color-primary-content: #ffffff;
+  --color-secondary: #5b6675;
+  --color-secondary-content: #ffffff;
+  --color-accent: #16a34a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #e6e9ee;
+  --color-neutral-content: #3a424d;
+  --color-info: #0284c7;
+  --color-info-content: #ffffff;
+  --color-success: #16a34a;
+  --color-success-content: #ffffff;
+  --color-warning: #d97706;
+  --color-warning-content: #ffffff;
+  --color-error: #dc2626;
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-primary) 35%, transparent);
+}
+
+/* ---------- Application shell ---------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--color-base-200);
+  color: var(--color-base-content);
+}
+
+/* Single compact header: brand + primary nav + global search + session controls. */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.875rem;
+  padding: 0.5rem 1.25rem;
+  border-bottom: 1px solid var(--color-base-300);
+  background: color-mix(in srgb, var(--color-base-200) 88%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+}
+
+.brand-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.65rem;
+  border-radius: 0.5rem;
   font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--color-base-content) 72%, transparent);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.nav-link:hover {
+  background: color-mix(in srgb, var(--color-base-300) 55%, transparent);
+  color: var(--color-base-content);
+}
+
+.nav-link.active {
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* Wide content column: spans the viewport, guarded for ultrawide monitors. */
+.page {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 1760px;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem;
+}
+
+@media (max-width: 1180px) {
+  /* Keep the header one compact row: icons-only nav, labels stay in tooltips. */
+  .nav-label {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    padding: 0.5rem 1rem;
+  }
+  .page {
+    padding: 1rem;
+  }
+}
+
+/* ---------- Panels, chips, controls ---------- */
+
+.panel {
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
+}
+
+.panel-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.muted {
+  color: color-mix(in srgb, var(--color-base-content) 55%, transparent);
+}
+
+.faint {
+  color: color-mix(in srgb, var(--color-base-content) 40%, transparent);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.4rem;
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.375rem;
+  background: var(--color-base-200);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--color-base-content) 60%, transparent);
+}
+
+/* Status chips: tinted background + border + icon, like the reference. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 0.375rem;
+  border: 1px solid transparent;
+  font-size: 0.75rem;
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.1;
+}
+
+.chip-success {
+  color: #4ade80;
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+  border-color: color-mix(in srgb, #22c55e 32%, transparent);
+}
+.chip-error {
+  color: #f87171;
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border-color: color-mix(in srgb, #ef4444 32%, transparent);
+}
+.chip-warn {
+  color: #fbbf24;
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  border-color: color-mix(in srgb, #f59e0b 32%, transparent);
+}
+.chip-info {
+  color: #60a5fa;
+  background: color-mix(in srgb, #3b82f6 12%, transparent);
+  border-color: color-mix(in srgb, #3b82f6 32%, transparent);
+}
+.chip-neutral {
+  color: color-mix(in srgb, var(--color-base-content) 62%, transparent);
+  background: color-mix(in srgb, var(--color-base-content) 7%, transparent);
+  border-color: color-mix(in srgb, var(--color-base-content) 14%, transparent);
+}
+.chip-outline {
+  color: #4ade80;
+  background: transparent;
+  border-color: color-mix(in srgb, #22c55e 45%, transparent);
+}
+.chip-outline-job {
+  color: #60a5fa;
+  background: transparent;
+  border-color: color-mix(in srgb, #3b82f6 45%, transparent);
+}
+
+/* Colored square icon container (job/worker rows, daemon banner). */
+.icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  flex-shrink: 0;
+}
+.icon-blue {
+  color: #60a5fa;
+  background: color-mix(in srgb, #3b82f6 14%, transparent);
+  border: 1px solid color-mix(in srgb, #3b82f6 30%, transparent);
+}
+.icon-green {
+  color: #4ade80;
+  background: color-mix(in srgb, #22c55e 14%, transparent);
+  border: 1px solid color-mix(in srgb, #22c55e 30%, transparent);
+}
+.icon-red {
+  color: #f87171;
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+}
+.icon-amber {
+  color: #fbbf24;
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 30%, transparent);
+}
+.icon-gray {
+  color: color-mix(in srgb, var(--color-base-content) 60%, transparent);
+  background: color-mix(in srgb, var(--color-base-content) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-base-content) 14%, transparent);
+}
+
+/* Round colored status dots. */
+.dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+.dot-green {
+  background: #22c55e;
+}
+.dot-amber {
+  background: #f59e0b;
+}
+.dot-red {
+  background: #ef4444;
+}
+.dot-gray {
+  background: color-mix(in srgb, var(--color-base-content) 35%, transparent);
+}
+.dot-blue {
+  background: #3b82f6;
+}
+.dot-pulse {
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Filter pills. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-base-300);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-base-content) 72%, transparent);
+  cursor: pointer;
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+.pill:hover {
+  border-color: color-mix(in srgb, var(--color-base-content) 25%, transparent);
+  color: var(--color-base-content);
+}
+.pill.active {
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  color: #93c5fd;
+}
+.pill .count {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* Buttons: subtle outline variant used across the design. */
+.btn-sub {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-base-300);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-base-content) 82%, transparent);
+  cursor: pointer;
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+.btn-sub:hover {
+  border-color: color-mix(in srgb, var(--color-base-content) 30%, transparent);
+  background: color-mix(in srgb, var(--color-base-content) 5%, transparent);
+}
+.btn-sub:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  background: var(--color-primary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-primary-content);
+  cursor: pointer;
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+.btn-primary-x:hover {
+  background: color-mix(in srgb, var(--color-primary) 85%, black);
+}
+.btn-primary-x:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn-danger-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, #ef4444 45%, transparent);
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: #f87171;
+  cursor: pointer;
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+.btn-danger-x:hover {
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+}
+.btn-danger-x:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-ghost-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 0.8125rem;
+  color: color-mix(in srgb, var(--color-base-content) 70%, transparent);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.btn-ghost-x:hover {
+  background: color-mix(in srgb, var(--color-base-content) 7%, transparent);
+  color: var(--color-base-content);
+}
+
+/* Icon-only small button. */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.5rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-base-content) 60%, transparent);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+.btn-icon:hover {
+  background: color-mix(in srgb, var(--color-base-content) 8%, transparent);
+  color: var(--color-base-content);
+}
+
+/* Dropdown action menu. */
+.menu-pop {
+  position: absolute;
+  z-index: 40;
+  min-width: 11rem;
+  padding: 0.3rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--color-base-300);
+  background: var(--color-base-100);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 0;
+  background: transparent;
+  font-size: 0.8125rem;
+  text-align: left;
+  color: var(--color-base-content);
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: color-mix(in srgb, var(--color-base-content) 7%, transparent);
+}
+.menu-item.danger {
+  color: #f87171;
+  border-top: 1px solid var(--color-base-300);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  margin-top: 0.15rem;
+  padding-top: 0.55rem;
+}
+.menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Tables. */
+.mc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.mc-table th {
+  padding: 0.625rem 1rem;
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--color-base-content) 50%, transparent);
+  border-bottom: 1px solid var(--color-base-300);
+  white-space: nowrap;
+}
+.mc-table td {
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-base-300) 55%, transparent);
+  vertical-align: middle;
+}
+.mc-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.mc-table tbody tr:hover {
+  background: color-mix(in srgb, var(--color-base-content) 3%, transparent);
+}
+.mc-table .num {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* Tabs (underline style). */
+.tab-line {
+  position: relative;
+  padding: 0.55rem 0.15rem;
+  margin-right: 1.25rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-base-content) 55%, transparent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.tab-line:hover {
+  color: var(--color-base-content);
+}
+.tab-line.active {
+  color: #93c5fd;
+}
+.tab-line.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--color-primary);
+}
+
+/* Segmented tabs (Form | TOML source, Job | Worker). */
+.tab-seg {
+  display: inline-flex;
+  padding: 0.2rem;
+  gap: 0.2rem;
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.55rem;
+  background: var(--color-base-200);
+}
+.tab-seg button {
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.4rem;
+  border: 0;
+  background: transparent;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-base-content) 65%, transparent);
+  cursor: pointer;
+}
+.tab-seg button.active {
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  border: 1px solid var(--color-base-300);
+  padding: 0.28rem 0.82rem;
+}
+
+/* Form fields. */
+.field-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--color-base-content) 75%, transparent);
+  margin-bottom: 0.35rem;
+}
+.field-help {
+  margin-top: 0.3rem;
+  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--color-base-content) 45%, transparent);
+}
+.mc-input,
+.mc-select {
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-base-300);
+  background: var(--color-base-200);
+  font-size: 0.8125rem;
+  color: var(--color-base-content);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.mc-input:focus,
+.mc-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.mc-input:disabled,
+.mc-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.mc-input.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+textarea.mc-input {
+  resize: vertical;
+  min-height: 4.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
   line-height: 1.5;
 }
-
-.log-line {
-  white-space: pre-wrap;
-  word-break: break-word;
-  min-height: 1.2em;
+.mc-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238b95a5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  padding-right: 2rem;
 }
 
-.log-stderr {
-  color: #fda4af;
+/* Toggle switch (design-style iOS switch). */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 2.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch .track {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: var(--color-base-300);
+  transition: background 150ms ease;
+  cursor: pointer;
+}
+.switch .track::after {
+  content: "";
+  position: absolute;
+  top: 0.125rem;
+  left: 0.125rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  background: #fff;
+  transition: transform 150ms ease;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+.switch input:checked + .track {
+  background: var(--color-primary);
+}
+.switch input:checked + .track::after {
+  transform: translateX(1rem);
+}
+.switch input:disabled + .track {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
-.log-system {
+/* Toggle switch on (green) variant for "Live SSE". */
+.switch.green input:checked + .track {
+  background: #22c55e;
+}
+
+/* Breadcrumbs. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  color: color-mix(in srgb, var(--color-base-content) 55%, transparent);
+}
+.crumbs a {
+  color: #93c5fd;
+}
+.crumbs a:hover {
+  text-decoration: underline;
+}
+
+/* Log viewer. */
+.log-view {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.65;
+  background: #0a0c0f;
+  color: #d5dae2;
+}
+.log-row {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+}
+.log-row:hover {
+  background: rgb(255 255 255 / 0.03);
+}
+.log-num {
+  color: #4b5563;
+  user-select: none;
+  flex-shrink: 0;
+  width: 3.25em;
+  text-align: right;
+}
+.log-ts {
+  color: #5d6570;
+  user-select: none;
+  flex-shrink: 0;
+}
+.log-tag {
+  flex-shrink: 0;
+  width: 3.75em;
+  user-select: none;
+}
+.log-tag.stdout {
+  color: #4ade80;
+}
+.log-tag.stderr {
+  color: #f87171;
+}
+.log-tag.system {
   color: #93c5fd;
   font-style: italic;
+}
+.log-text {
+  white-space: pre;
+  word-break: normal;
+  min-width: 0;
+}
+.log-wrap .log-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-stderr .log-text {
+  color: #fda4af;
+}
+.log-system .log-text {
+  color: #93c5fd;
 }
 
 /* Allow-list of safe ANSI SGR styling produced by parseAnsi(). */
 .ansi-bold {
   font-weight: 700;
 }
-
 .ansi-red {
   color: #f87171;
 }
-
 .ansi-green {
   color: #4ade80;
 }
-
 .ansi-yellow {
   color: #facc15;
 }
-
 .ansi-blue {
   color: #60a5fa;
 }
-
 .ansi-magenta {
   color: #e879f9;
 }
-
 .ansi-cyan {
   color: #22d3ee;
+}
+
+/* TOML source viewer. */
+.toml-view {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.7;
+}
+.toml-line {
+  display: flex;
+}
+.toml-num {
+  width: 2.5rem;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 1rem;
+  color: #4b5563;
+  user-select: none;
+}
+.toml-key {
+  color: #93c5fd;
+}
+.toml-string {
+  color: #4ade80;
+}
+.toml-number {
+  color: #fbbf24;
+}
+.toml-comment {
+  color: #6b7280;
+  font-style: italic;
+}
+.toml-section {
+  color: #c4b5fd;
+  font-weight: 600;
+}
+
+/* Stat cards (metrics page). */
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 1rem 1.1rem;
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
+}
+.stat-card .label {
+  font-size: 0.8125rem;
+  color: color-mix(in srgb, var(--color-base-content) 65%, transparent);
+}
+
+/* Alert cards (overview). */
+.alert-card {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1rem 1.1rem;
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease;
+  width: 100%;
+}
+.alert-card:hover {
+  border-color: color-mix(in srgb, var(--color-base-content) 28%, transparent);
+}
+
+/* Scrollbars. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-base-content) 16%, transparent);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-base-content) 28%, transparent);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Spin animation for live icons. */
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Number badge in Up Next list. */
+.rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--color-base-300);
+  background: var(--color-base-200);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: color-mix(in srgb, var(--color-base-content) 60%, transparent);
+  flex-shrink: 0;
 }

@@ -114,11 +114,14 @@ func TestSecurityHeadersAndURLCap(t *testing.T) {
 	for header, want := range map[string]string{
 		"X-Content-Type-Options":  "nosniff",
 		"X-Frame-Options":         "DENY",
-		"Content-Security-Policy": "default-src 'self'",
+		"Content-Security-Policy": "default-src 'self'; script-src 'self'",
 	} {
 		if got := rec.Header().Get(header); !strings.HasPrefix(got, want) {
 			t.Fatalf("%s = %q", header, got)
 		}
+	}
+	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' data:") {
+		t.Fatalf("CSP must allow data: images, got %q", csp)
 	}
 	if allow := rec.Header().Get("Access-Control-Allow-Origin"); allow != "" {
 		t.Fatalf("CORS must be disabled by default, got %q", allow)

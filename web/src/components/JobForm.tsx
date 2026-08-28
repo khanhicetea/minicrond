@@ -1,16 +1,7 @@
-import type { FormEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Icon } from './Icon';
 import type { Definition } from '../types';
-
-interface JobFormProps {
-  creating: boolean;
-  initial: Definition;
-  revision?: number;
-  readOnly: boolean;
-  submitting: boolean;
-  error?: string | null;
-  onSubmit: (definition: Definition, revision?: number) => void;
-  onCancel?: () => void;
-}
+import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
 
 export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
   const base: Definition = {
@@ -21,7 +12,7 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
     env_base: 'clean',
   };
   if (kind === 'job') {
-    base.schedule = '';
+    base.schedule = '0 0 * * *';
     base.catch_up = 'none';
     base.on_overlap = 'skip';
     base.run_on_start = false;
@@ -34,7 +25,520 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
   return base;
 }
 
-function parseKeyValue(text: string): Record<string, string> {
+const FALLBACK_TIMEZONES = ['UTC', 'UTC', 'Europe/London', 'Europe/Berlin', 'Europe/Istanbul', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Ho_Chi_Minh', 'Australia/Sydney'];
+
+function timezoneOptions(): string[] {
+  try {
+    const supported = Intl.supportedValuesOf?.('timeZone') ?? [];
+    if (supported.length > 0) {
+      const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      return local && !supported.includes(local) ? [local, ...supported] : [...supported];
+    }
+  } catch {
+    // older engines
+  }
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return [...new Set([local ?? 'UTC', ...FALLBACK_TIMEZONES])];
+}
+
+const MINUTE_OPTIONS = ['*', '*/5', '*/10', '*/15', '*/30', ...Array.from({ length: 60 }, (_, i) => String(i))];
+const HOUR_OPTIONS = ['*', '*/2', '*/4', '*/6', '*/12', ...Array.from({ length: 24 }, (_, i) => String(i))];
+const DOM_OPTIONS = ['*', ...Array.from({ length: 31 }, (_, i) => String(i + 1))];
+const MONTH_OPTIONS = ['*', ...Array.from({ length: 12 }, (_, i) => String(i + 1))];
+const DOW_OPTIONS = ['*', '0', '1', '2', '3', '4', '5', '6'];
+const DOW_LABEL: Record<string, string> = { '*': 'any', '0': '0 (Sun)', '1': '1 (Mon)', '2': '2 (Tue)', '3': '3 (Wed)', '4': '4 (Thu)', '5': '5 (Fri)', '6': '6 (Sat)' };
+
+interface JobFormProps {
+  /** Show the Job/Worker switcher (blank "new definition" only). */
+  showKindTabs: boolean;
+  /** Lock the name field (editing an existing definition). */
+  nameLocked: boolean;
+  draft: Definition;
+  readOnly: boolean;
+  onChange: (patch: Partial<Definition>) => void;
+  formId: string;
+}
+
+/**
+ * Definition editor form (left column of the editor page). Controlled: the
+ * page owns the draft so the TOML panel can mirror it live.
+ */
+export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onChange, formId }: JobFormProps) {
+  const isJob = draft.kind !== 'worker';
+  const disabled = readOnly;
+  const scheduleType = (draft.schedule ?? '').trim().toLowerCase().startsWith('@every') ? 'every' : 'cron';
+  const tzOptions = useMemo(timezoneOptions, []);
+
+  const setKind = (kind: 'job' | 'worker') => {
+    onChange({ ...emptyDefinition(kind), name: draft.name });
+  };
+
+  const cronParts = cronSelectValues(draft.schedule ?? '');
+  const setCronPart = (index: number, value: string) => {
+    const parts = [...cronParts];
+    parts[index] = value;
+    onChange({ schedule: buildCron(parts[0], parts[1], parts[2], parts[3], parts[4]) });
+  };
+
+  // Ticking clock for the "next firings" helper.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const tz = draft.timezone || 'UTC';
+  const nextFireList = useMemo(() => {
+    if (isJob && parseSchedule(draft.schedule ?? '')) {
+      return nextFires(draft.schedule!, 5, now, tz);
+    }
+    return [];
+  }, [draft.schedule, tz, now, isJob]);
+
+  const field = 'mc-input';
+  const label = 'field-label';
+
+  return (
+    <form id={formId} onSubmit={event => event.preventDefault()} className="space-y-4" aria-label="Definition editor">
+      {/* Identity & execution */}
+      <section className="panel p-4 sm:p-5">
+        {showKindTabs && (
+          <div className="tab-seg mb-4">
+            <button type="button" className={isJob ? 'active' : ''} onClick={() => setKind('job')} disabled={disabled}>
+              Job
+            </button>
+            <button type="button" className={!isJob ? 'active' : ''} onClick={() => setKind('worker')} disabled={disabled}>
+              Worker
+            </button>
+          </div>
+        )}
+
+        <div className="grid gap-4">
+          <div>
+            <label htmlFor={`${formId}-name`} className={label}>Name</label>
+            <input
+              id={`${formId}-name`}
+              className={`${field} mono`}
+              value={draft.name}
+              readOnly={nameLocked || disabled}
+              disabled={disabled}
+              onChange={event => onChange({ name: event.target.value })}
+              placeholder="database-backup"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="field-help">Unique name for this definition.</p>
+          </div>
+
+          <div>
+            <label htmlFor={`${formId}-command`} className={label}>Command</label>
+            <input
+              id={`${formId}-command`}
+              className={`${field} mono`}
+              value={draft.command ?? ''}
+              disabled={disabled}
+              onChange={event => onChange({ command: event.target.value, argv: undefined })}
+              placeholder="pg_dump --format=custom appdb"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="field-help">Command to execute (run with shell -c). argv can be set under Advanced.</p>
+          </div>
+
+          {isJob ? (
+            <>
+              <div className="grid gap-4 lg:grid-cols-[0.55fr_1.45fr]">
+                <div>
+                  <label htmlFor={`${formId}-schtype`} className={label}>Schedule type</label>
+                  <select
+                    id={`${formId}-schtype`}
+                    className="mc-select"
+                    value={scheduleType}
+                    disabled={disabled}
+                    onChange={event => {
+                      if (event.target.value === 'every') onChange({ schedule: '@every 15m' });
+                      else onChange({ schedule: '0 0 * * *' });
+                    }}
+                  >
+                    <option value="cron">Cron expression</option>
+                    <option value="every">Interval (@every)</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor={`${formId}-sched`} className={label}>
+                    {scheduleType === 'every' ? 'Interval' : 'Cron expression'}
+                  </label>
+                  <input
+                    id={`${formId}-sched`}
+                    className={`${field} mono`}
+                    value={draft.schedule ?? ''}
+                    disabled={disabled}
+                    onChange={event => onChange({ schedule: event.target.value })}
+                    placeholder={scheduleType === 'every' ? '@every 15m' : '0 2 * * *'}
+                    spellCheck={false}
+                  />
+                  <p className="field-help">{humanizeSchedule(draft.schedule ?? '')}</p>
+                  {scheduleType === 'cron' && (
+                    <div className="mt-3 rounded-xl border border-base-300 bg-base-200/35 p-3">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide muted">Cron helper</span>
+                        <Icon name="info" size={13} className="faint" />
+                      </div>
+                      <div className="grid gap-3">
+                        <div className="grid grid-cols-5 gap-2 overflow-x-auto">
+                          {(
+                            [
+                              ['Minute', MINUTE_OPTIONS, 0],
+                              ['Hour', HOUR_OPTIONS, 1],
+                              ['Day', DOM_OPTIONS, 2],
+                              ['Month', MONTH_OPTIONS, 3],
+                              ['Weekday', DOW_OPTIONS, 4],
+                            ] as [string, string[], number][]
+                          ).map(([name, options, index]) => (
+                            <div key={name}>
+                              <label htmlFor={`${formId}-cron-${index}`} className="mb-1 block text-[0.65rem] font-semibold uppercase tracking-wide muted">{name}</label>
+                              <select
+                                id={`${formId}-cron-${index}`}
+                                className="mc-select mono !min-h-9 !text-xs"
+                                value={cronParts[index] ?? '*'}
+                                disabled={disabled}
+                                onChange={event => setCronPart(index, event.target.value)}
+                              >
+                                {options.map(option => (
+                                  <option key={option} value={option}>
+                                    {index === 4 ? (DOW_LABEL[option] ?? option) : option}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="rounded-lg bg-base-100/45 p-2.5">
+                          <h4 className="mb-1.5 text-[0.65rem] font-semibold uppercase tracking-wide muted">Next 5 fires · {tz}</h4>
+                          {nextFireList.length > 0 ? (
+                            <ul className="grid gap-1 sm:grid-cols-2 xl:grid-cols-5">
+                              {nextFireList.map((fire, index) => (
+                                <li key={fire} className="flex items-center gap-1.5 text-xs">
+                                  <Icon name="calendar" size={12} className="faint shrink-0" />
+                                  <span className="num">
+                                    {new Date(fire).toLocaleString(undefined, {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                  {index === 0 && <span className="chip chip-info !px-1.5 !py-0 !text-[0.6rem]">next</span>}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="text-xs faint">Enter a valid cron expression to preview firings.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor={`${formId}-tz`} className={label}>Timezone</label>
+                  <select
+                    id={`${formId}-tz`}
+                    className="mc-select mono"
+                    value={draft.timezone ?? 'UTC'}
+                    disabled={disabled}
+                    onChange={event => onChange({ timezone: event.target.value })}
+                  >
+                    {tzOptions.map(zone => (
+                      <option key={zone} value={zone}>
+                        {zone}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor={`${formId}-runas`} className={label}>Run as</label>
+                  <input
+                    id={`${formId}-runas`}
+                    className={field}
+                    value={draft.run_as ?? ''}
+                    disabled={disabled}
+                    onChange={event => onChange({ run_as: event.target.value || undefined })}
+                    placeholder="backup"
+                  />
+                  <p className="field-help">System user to run the command as.</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label htmlFor={`${formId}-timeout`} className={label}>Timeout</label>
+                  <input
+                    id={`${formId}-timeout`}
+                    className={`${field} mono`}
+                    value={draft.timeout ?? ''}
+                    disabled={disabled}
+                    onChange={event => onChange({ timeout: event.target.value || undefined })}
+                    placeholder="20m"
+                  />
+                  <p className="field-help">Max runtime per run</p>
+                </div>
+                <div>
+                  <label htmlFor={`${formId}-grace`} className={label}>Grace</label>
+                  <input
+                    id={`${formId}-grace`}
+                    className={`${field} mono`}
+                    value={draft.grace ?? ''}
+                    disabled={disabled}
+                    onChange={event => onChange({ grace: event.target.value || undefined })}
+                    placeholder="5s"
+                  />
+                  <p className="field-help">Before SIGKILL</p>
+                </div>
+                <div>
+                  <label htmlFor={`${formId}-overlap`} className={label}>Overlap policy</label>
+                  <select
+                    id={`${formId}-overlap`}
+                    className="mc-select"
+                    value={draft.on_overlap ?? 'skip'}
+                    disabled={disabled}
+                    onChange={event => onChange({ on_overlap: event.target.value })}
+                  >
+                    <option value="skip">Skip</option>
+                    <option value="parallel">Parallel</option>
+                  </select>
+                  <p className="field-help">If a run is already active</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label htmlFor={`${formId}-restart`} className={label}>Restart policy</label>
+                <select
+                  id={`${formId}-restart`}
+                  className="mc-select"
+                  value={draft.restart ?? 'always'}
+                  disabled={disabled}
+                  onChange={event => onChange({ restart: event.target.value })}
+                >
+                  <option value="always">Always</option>
+                  <option value="on-failure">On failure</option>
+                  <option value="never">Never</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`${formId}-rdelay`} className={label}>Restart delay</label>
+                <input
+                  id={`${formId}-rdelay`}
+                  className={`${field} mono`}
+                  value={draft.restart_delay ?? '5s'}
+                  disabled={disabled}
+                  onChange={event => onChange({ restart_delay: event.target.value || undefined })}
+                  placeholder="5s"
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-rmax`} className={label}>Max restart attempts</label>
+                <input
+                  id={`${formId}-rmax`}
+                  type="number"
+                  min={0}
+                  className={field}
+                  value={draft.max_restart_attempts ?? 0}
+                  disabled={disabled}
+                  onChange={event => onChange({ max_restart_attempts: Number(event.target.value) || 0 })}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-healthy`} className={label}>Healthy after</label>
+                <input
+                  id={`${formId}-healthy`}
+                  className={`${field} mono`}
+                  value={draft.healthy_after ?? ''}
+                  disabled={disabled}
+                  onChange={event => onChange({ healthy_after: event.target.value || undefined })}
+                  placeholder="10s"
+                />
+              </div>
+              <label className="flex items-center gap-2.5 text-sm">
+                <span className="switch">
+                  <input
+                    type="checkbox"
+                    checked={draft.autostart !== false}
+                    disabled={disabled}
+                    onChange={event => onChange({ autostart: event.target.checked })}
+                  />
+                  <span className="track" />
+                </span>
+                Autostart with daemon
+              </label>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* Advanced */}
+      <details className="panel group px-4 py-3 sm:px-5">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold">
+          <span className="flex items-center gap-2">
+            <Icon name="chevron-right" size={14} className="transition-transform group-open:rotate-90 muted" />
+            Advanced settings
+          </span>
+          <span className="text-xs font-normal muted">argv, env, retention, logs</span>
+        </summary>
+        <div className="mt-4 space-y-4 border-t border-base-300 pt-4">
+          <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Execution</h3>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label htmlFor={`${formId}-argv`} className={label}>Argv (one argument per line — overrides command)</label>
+                <textarea
+                  id={`${formId}-argv`}
+                  className="mc-input"
+                  value={(draft.argv ?? []).join('\n')}
+                  disabled={disabled}
+                  onChange={event =>
+                    onChange({
+                      argv: event.target.value
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(Boolean),
+                      command: event.target.value.trim() ? undefined : draft.command,
+                    })
+                  }
+                  placeholder={'/usr/bin/curl\n-fsS\nhttps://example.com'}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-workdir`} className={label}>Working directory</label>
+                <input id={`${formId}-workdir`} className={`${field} mono`} value={draft.working_dir ?? ''} disabled={disabled} onChange={event => onChange({ working_dir: event.target.value || undefined })} />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-shell`} className={label}>Shell</label>
+                <input id={`${formId}-shell`} className={`${field} mono`} value={draft.shell ?? ''} disabled={disabled} onChange={event => onChange({ shell: event.target.value || undefined })} placeholder="sh" />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-signal`} className={label}>Stop signal</label>
+                <input id={`${formId}-signal`} className={`${field} mono`} value={draft.stop_signal ?? ''} disabled={disabled} onChange={event => onChange({ stop_signal: event.target.value || undefined })} placeholder="TERM" />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-codes`} className={label}>Success codes</label>
+                <input
+                  id={`${formId}-codes`}
+                  className={`${field} mono`}
+                  value={(draft.success_codes ?? []).join(',')}
+                  disabled={disabled}
+                  onChange={event =>
+                    onChange({
+                      success_codes: event.target.value
+                        .split(',')
+                        .map(part => Number(part.trim()))
+                        .filter(code => Number.isInteger(code)),
+                    })
+                  }
+                  placeholder="0"
+                />
+              </div>
+              {isJob && (
+                <>
+                  <div>
+                    <label htmlFor={`${formId}-catchup`} className={label}>Catch up</label>
+                    <select id={`${formId}-catchup`} className="mc-select" value={draft.catch_up ?? 'none'} disabled={disabled} onChange={event => onChange({ catch_up: event.target.value })}>
+                      <option value="none">none</option>
+                      <option value="latest">latest</option>
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2.5 self-end pb-2 text-sm">
+                    <span className="switch">
+                      <input type="checkbox" checked={draft.run_on_start === true} disabled={disabled} onChange={event => onChange({ run_on_start: event.target.checked })} />
+                      <span className="track" />
+                    </span>
+                    Run on daemon start
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Environment</h3>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label htmlFor={`${formId}-envbase`} className={label}>Environment base</label>
+                <select id={`${formId}-envbase`} className="mc-select" value={draft.env_base ?? 'clean'} disabled={disabled} onChange={event => onChange({ env_base: event.target.value })}>
+                  <option value="clean">clean</option>
+                  <option value="minimal">minimal</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`${formId}-envfile`} className={label}>Environment file</label>
+                <input id={`${formId}-envfile`} className={`${field} mono`} value={draft.env_file ?? ''} disabled={disabled} onChange={event => onChange({ env_file: event.target.value || undefined })} placeholder="env.local" />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-env`} className={label}>Environment variables (KEY=VALUE per line)</label>
+                <textarea
+                  id={`${formId}-env`}
+                  className="mc-input"
+                  value={Object.entries(draft.env ?? {})
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join('\n')}
+                  disabled={disabled}
+                  onChange={event => onChange({ env: parseKeyValue(event.target.value) })}
+                  placeholder={'FOO=bar\nBAZ=qux'}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-secenv`} className={label}>Secret environment (KEY=VALUE per line)</label>
+                <textarea
+                  id={`${formId}-secenv`}
+                  className="mc-input"
+                  value={Object.entries(draft.secret_env ?? {})
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join('\n')}
+                  disabled={disabled}
+                  onChange={event => onChange({ secret_env: parseKeyValue(event.target.value) })}
+                />
+                <p className="field-help">Write-only values; the API never returns them.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Retention & logs</h3>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label htmlFor={`${formId}-keepruns`} className={label}>Keep runs</label>
+                <input id={`${formId}-keepruns`} type="number" min={0} className={field} value={draft.keep_runs ?? 0} disabled={disabled} onChange={event => onChange({ keep_runs: Number(event.target.value) || 0 })} />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-keepfor`} className={label}>Keep for</label>
+                <input id={`${formId}-keepfor`} className={`${field} mono`} value={draft.keep_for ?? ''} disabled={disabled} onChange={event => onChange({ keep_for: event.target.value || undefined })} placeholder="720h" />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-logmax`} className={label}>Log max size</label>
+                <input id={`${formId}-logmax`} className={`${field} mono`} value={draft.log_max ?? ''} disabled={disabled} onChange={event => onChange({ log_max: event.target.value || undefined })} placeholder="10MiB" />
+              </div>
+              <div>
+                <label htmlFor={`${formId}-logfull`} className={label}>When log is full</label>
+                <select id={`${formId}-logfull`} className="mc-select" value={draft.log_on_full ?? 'drop_old'} disabled={disabled} onChange={event => onChange({ log_on_full: event.target.value })}>
+                  <option value="drop_old">drop_old</option>
+                  <option value="drop_new">drop_new</option>
+                  <option value="kill">kill</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </form>
+  );
+}
+
+function parseKeyValue(text: string): Record<string, string> | undefined {
   const result: Record<string, string> = {};
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -43,315 +547,5 @@ function parseKeyValue(text: string): Record<string, string> {
     if (eq <= 0) continue;
     result[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
   }
-  return result;
-}
-
-function textOrUndefined(value: FormDataEntryValue | null): string | undefined {
-  const text = String(value ?? '').trim();
-  return text || undefined;
-}
-
-/** Structured editor for a job or worker definition. */
-export default function JobForm({ creating, initial, revision, readOnly, submitting, error, onSubmit, onCancel }: JobFormProps) {
-  const isJob = (initial.kind ?? 'job') !== 'worker';
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (readOnly || submitting) return;
-    const form = new FormData(event.currentTarget);
-    const kind = String(form.get('kind') ?? 'job') === 'worker' ? 'worker' : 'job';
-    const command = textOrUndefined(form.get('command'));
-    const argv = String(form.get('argv') ?? '')
-      .split('\n')
-      .map(line => line.trim())
-      .filter(Boolean);
-
-    const definition: Definition = {
-      name: String(form.get('name') ?? '').trim(),
-      kind,
-      enabled: form.get('enabled') === 'on',
-      schedule: kind === 'job' ? textOrUndefined(form.get('schedule')) : undefined,
-      timezone: textOrUndefined(form.get('timezone')) ?? 'UTC',
-      catch_up: kind === 'job' ? String(form.get('catch_up') ?? 'none') : undefined,
-      on_overlap: kind === 'job' ? String(form.get('on_overlap') ?? 'skip') : undefined,
-      run_on_start: kind === 'job' ? form.get('run_on_start') === 'on' : undefined,
-      timeout: textOrUndefined(form.get('timeout')),
-      grace: textOrUndefined(form.get('grace')),
-      stop_signal: textOrUndefined(form.get('stop_signal')),
-      run_as: textOrUndefined(form.get('run_as')),
-      working_dir: textOrUndefined(form.get('working_dir')),
-      env_base: textOrUndefined(form.get('env_base')) ?? 'clean',
-      env_file: textOrUndefined(form.get('env_file')),
-      keep_runs: Number(form.get('keep_runs') ?? 0) || 0,
-      keep_for: textOrUndefined(form.get('keep_for')),
-      log_max: textOrUndefined(form.get('log_max')),
-    };
-    // Exactly one of command/argv must be set.
-    if (command) definition.command = command;
-    else definition.argv = argv;
-
-    const env = parseKeyValue(String(form.get('env') ?? ''));
-    if (Object.keys(env).length > 0) definition.env = env;
-    const secretEnv = parseKeyValue(String(form.get('secret_env') ?? ''));
-    if (Object.keys(secretEnv).length > 0) definition.secret_env = secretEnv;
-
-    const successCodes = String(form.get('success_codes') ?? '')
-      .split(',')
-      .map(part => Number(part.trim()))
-      .filter(code => Number.isInteger(code));
-    if (successCodes.length > 0) definition.success_codes = successCodes;
-
-    if (kind === 'worker') {
-      definition.autostart = form.get('autostart') === 'on';
-      definition.restart = textOrUndefined(form.get('restart'));
-      definition.restart_delay = textOrUndefined(form.get('restart_delay'));
-      definition.max_restart_attempts = Number(form.get('max_restart_attempts') ?? 0) || 0;
-      definition.healthy_after = textOrUndefined(form.get('healthy_after'));
-      definition.priority = Number(form.get('priority') ?? 0) || 0;
-    }
-
-    onSubmit(definition, revision);
-  }
-
-  const field = 'input input-sm input-bordered w-full';
-  const label = 'label label-text text-xs font-semibold';
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="card border border-base-300 bg-base-100">
-        <div className="card-body gap-4">
-          <h3 className="card-title text-sm uppercase tracking-wide text-base-content/70">Identity</h3>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="form-control">
-              <span className={label}>Name</span>
-              <input
-                name="name"
-                required
-                pattern="[a-z0-9][a-z0-9_.\-]{0,99}"
-                defaultValue={initial.name}
-                readOnly={!creating}
-                disabled={readOnly}
-                className={field}
-                placeholder="nightly-backup"
-              />
-            </label>
-            <label className="form-control">
-              <span className={label}>Kind</span>
-              <select name="kind" defaultValue={initial.kind} disabled={!creating || readOnly} className="select select-sm select-bordered w-full">
-                <option value="job">job</option>
-                <option value="worker">worker</option>
-              </select>
-            </label>
-            <label className="label cursor-pointer justify-start gap-3 pt-6">
-              <input name="enabled" type="checkbox" defaultChecked={initial.enabled !== false} disabled={readOnly} className="toggle toggle-sm toggle-primary" />
-              <span className="label-text">Enabled</span>
-            </label>
-          </div>
-
-          {isJob ? (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <label className="form-control sm:col-span-2">
-                <span className={label}>Schedule (cron, or `@every 1h`)</span>
-                <input name="schedule" defaultValue={initial.schedule ?? ''} disabled={readOnly} className={field} placeholder="*/15 * * * *" />
-              </label>
-              <label className="form-control">
-                <span className={label}>Timezone</span>
-                <input name="timezone" defaultValue={initial.timezone ?? 'UTC'} disabled={readOnly} className={field} />
-              </label>
-              <label className="form-control">
-                <span className={label}>Catch up</span>
-                <select name="catch_up" defaultValue={initial.catch_up ?? 'none'} disabled={readOnly} className="select select-sm select-bordered w-full">
-                  <option value="none">none</option>
-                  <option value="latest">latest</option>
-                </select>
-              </label>
-              <label className="form-control">
-                <span className={label}>On overlap</span>
-                <select name="on_overlap" defaultValue={initial.on_overlap ?? 'skip'} disabled={readOnly} className="select select-sm select-bordered w-full">
-                  <option value="skip">skip</option>
-                  <option value="parallel">parallel</option>
-                </select>
-              </label>
-              <label className="label cursor-pointer justify-start gap-3 self-end pb-2">
-                <input name="run_on_start" type="checkbox" defaultChecked={initial.run_on_start === true} disabled={readOnly} className="toggle toggle-sm toggle-primary" />
-                <span className="label-text">Run on daemon start</span>
-              </label>
-            </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <label className="form-control">
-                <span className={label}>Restart policy</span>
-                <select name="restart" defaultValue={initial.restart ?? 'always'} disabled={readOnly} className="select select-sm select-bordered w-full">
-                  <option value="always">always</option>
-                  <option value="on-failure">on-failure</option>
-                  <option value="never">never</option>
-                </select>
-              </label>
-              <label className="form-control">
-                <span className={label}>Restart delay</span>
-                <input name="restart_delay" defaultValue={initial.restart_delay ?? '5s'} disabled={readOnly} className={field} placeholder="5s" />
-              </label>
-              <label className="form-control">
-                <span className={label}>Max restart attempts</span>
-                <input name="max_restart_attempts" type="number" min={0} defaultValue={initial.max_restart_attempts ?? 0} disabled={readOnly} className={field} />
-              </label>
-              <label className="form-control">
-                <span className={label}>Healthy after</span>
-                <input name="healthy_after" defaultValue={initial.healthy_after ?? ''} disabled={readOnly} className={field} placeholder="10s" />
-              </label>
-              <label className="label cursor-pointer justify-start gap-3 self-end pb-2">
-                <input name="autostart" type="checkbox" defaultChecked={initial.autostart !== false} disabled={readOnly} className="toggle toggle-sm toggle-primary" />
-                <span className="label-text">Autostart with daemon</span>
-              </label>
-              <label className="form-control">
-                <span className={label}>Priority</span>
-                <input name="priority" type="number" defaultValue={initial.priority ?? 0} disabled={readOnly} className={field} />
-              </label>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="card border border-base-300 bg-base-100">
-        <div className="card-body gap-4">
-          <h3 className="card-title text-sm uppercase tracking-wide text-base-content/70">Command</h3>
-          <p className="text-xs text-base-content/60">
-            Exactly one of <strong>shell command</strong> or <strong>argv</strong> must be filled.
-          </p>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <label className="form-control">
-              <span className={label}>Command (run with `shell -c`)</span>
-              <textarea
-                name="command"
-                defaultValue={initial.command ?? ''}
-                disabled={readOnly}
-                className="textarea textarea-bordered min-h-24 font-mono text-sm"
-                placeholder="echo hello"
-              />
-            </label>
-            <label className="form-control">
-              <span className={label}>Argv (one argument per line)</span>
-              <textarea
-                name="argv"
-                defaultValue={(initial.argv ?? []).join('\n')}
-                disabled={readOnly}
-                className="textarea textarea-bordered min-h-24 font-mono text-sm"
-                placeholder={'/usr/bin/curl\n-fsS\nhttps://example.com'}
-              />
-            </label>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <label className="form-control">
-              <span className={label}>Timeout</span>
-              <input name="timeout" defaultValue={initial.timeout ?? ''} disabled={readOnly} className={field} placeholder="30s" />
-            </label>
-            <label className="form-control">
-              <span className={label}>Grace before SIGKILL</span>
-              <input name="grace" defaultValue={initial.grace ?? ''} disabled={readOnly} className={field} placeholder="5s" />
-            </label>
-            <label className="form-control">
-              <span className={label}>Stop signal</span>
-              <input name="stop_signal" defaultValue={initial.stop_signal ?? ''} disabled={readOnly} className={field} placeholder="TERM" />
-            </label>
-          </div>
-        </div>
-      </div>
-
-      <details className="collapse collapse-arrow border border-base-300 bg-base-100">
-        <summary className="collapse-title text-sm uppercase tracking-wide text-base-content/70">Environment &amp; retention</summary>
-        <div className="collapse-content space-y-4">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="form-control">
-              <span className={label}>Run as (user or UID)</span>
-              <input name="run_as" defaultValue={initial.run_as ?? ''} disabled={readOnly} className={field} placeholder="alice / 1000" />
-            </label>
-            <label className="form-control">
-              <span className={label}>Working directory</span>
-              <input name="working_dir" defaultValue={initial.working_dir ?? ''} disabled={readOnly} className={field} />
-            </label>
-            <label className="form-control">
-              <span className={label}>Environment base</span>
-              <select name="env_base" defaultValue={initial.env_base ?? 'clean'} disabled={readOnly} className="select select-sm select-bordered w-full">
-                <option value="clean">clean</option>
-                <option value="minimal">minimal</option>
-              </select>
-            </label>
-            <label className="form-control">
-              <span className={label}>Env file</span>
-              <input name="env_file" defaultValue={initial.env_file ?? ''} disabled={readOnly} className={field} />
-            </label>
-          </div>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <label className="form-control">
-              <span className={label}>Environment (KEY=VALUE per line)</span>
-              <textarea
-                name="env"
-                defaultValue={Object.entries(initial.env ?? {})
-                  .map(([key, value]) => `${key}=${value}`)
-                  .join('\n')}
-                disabled={readOnly}
-                className="textarea textarea-bordered min-h-20 font-mono text-sm"
-                placeholder={'FOO=bar\nBAZ=qux'}
-              />
-            </label>
-            <label className="form-control">
-              <span className={label}>Secret environment (KEY=VALUE per line)</span>
-              <textarea
-                name="secret_env"
-                defaultValue={Object.entries(initial.secret_env ?? {})
-                  .map(([key, value]) => `${key}=${value}`)
-                  .join('\n')}
-                disabled={readOnly}
-                className="textarea textarea-bordered min-h-20 font-mono text-sm"
-              />
-            </label>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <label className="form-control">
-              <span className={label}>Keep runs</span>
-              <input name="keep_runs" type="number" min={0} defaultValue={initial.keep_runs ?? 0} disabled={readOnly} className={field} />
-            </label>
-            <label className="form-control">
-              <span className={label}>Keep for</span>
-              <input name="keep_for" defaultValue={initial.keep_for ?? ''} disabled={readOnly} className={field} placeholder="720h" />
-            </label>
-            <label className="form-control">
-              <span className={label}>Log max size</span>
-              <input name="log_max" defaultValue={initial.log_max ?? ''} disabled={readOnly} className={field} placeholder="10MiB" />
-            </label>
-            <label className="form-control">
-              <span className={label}>Success codes</span>
-              <input
-                name="success_codes"
-                defaultValue={(initial.success_codes ?? []).join(',')}
-                disabled={readOnly}
-                className={field}
-                placeholder="0"
-              />
-            </label>
-          </div>
-        </div>
-      </details>
-
-      {error && (
-        <div role="alert" className="alert alert-error text-sm">
-          <span>{error}</span>
-        </div>
-      )}
-
-      {!readOnly && (
-        <div className="flex items-center gap-2">
-          <button type="submit" disabled={submitting} className="btn btn-primary btn-sm">
-            {submitting && <span className="loading loading-spinner loading-xs" />}
-            {creating ? 'Create definition' : 'Save changes'}
-          </button>
-          {onCancel && (
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
-              Cancel
-            </button>
-          )}
-        </div>
-      )}
-    </form>
-  );
+  return Object.keys(result).length > 0 ? result : undefined;
 }

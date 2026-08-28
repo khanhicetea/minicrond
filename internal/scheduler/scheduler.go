@@ -94,9 +94,15 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 				return
 			case <-timer.C:
 			}
-			// Recompute from wall time after each bounded monotonic wait. This
-			// prevents forward/backward clock steps from using a stale deadline.
-			recomputed, err := nextFire(d, maxTime(last, time.Now().UTC()), anchor)
+			// Recompute from wall time after each bounded monotonic wait only
+			// while the pending slot is still ahead; nextFire is strictly after
+			// its input, so recomputing once now has reached `next` would defer
+			// that occurrence by another interval — forever.
+			now := time.Now().UTC()
+			if !now.Before(next) {
+				break
+			}
+			recomputed, err := nextFire(d, maxTime(last, now), anchor)
 			if err != nil {
 				return
 			}

@@ -10,7 +10,8 @@ export default defineConfig({
     react({ compiler: true }),
   ],
   // The Go server serves UI assets under /assets/ and exempts only that
-  // prefix from bearer-token auth; index.html must reference them there.
+  // prefix (plus the SPA shell) from bearer-token auth; index.html must
+  // reference them there.
   base: '/assets/',
   server: {
     // Dev convenience: forward API calls to a locally running daemon.

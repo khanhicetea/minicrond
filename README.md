@@ -24,7 +24,7 @@ Configuration is strict TOML. `[[job]]` supports exactly one of `command` (alway
 
 - Data defaults to `~/.local/share/minicron`; permissions are forced to 0700.
 - SQLite uses WAL and forward-only migrations. Never directly write the DB.
-- `/healthz` and `/readyz` are public and disclose no details. Other TCP endpoints require a bearer token.
+- `/healthz` and `/readyz` are public and disclose no details. The SPA shell and bundled assets are public; every `/api/` endpoint requires a bearer token.
 - Rotate a lost token locally with `minicron token --rotate`; the existing token cannot be recovered.
 - Stop the daemon before copying its database for rollback. A binary that encounters a newer schema refuses to start. Restore by replacing `minicron.db` and restarting.
 - The daemon signals process groups. Deliberately daemonized descendants can escape; v0.1 is not a hostile-workload sandbox.

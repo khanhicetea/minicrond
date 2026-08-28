@@ -149,7 +149,7 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
 		if len(r.URL.RequestURI()) > 2048 {
 			writeError(w, 414, "request_too_large", "URL exceeds 2 KiB")
 			return
@@ -157,7 +157,11 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		if local {
 			r = r.WithContext(context.WithValue(r.Context(), localKey{}, true))
 		}
-		if r.URL.Path != "/healthz" && r.URL.Path != "/readyz" && r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/assets/") && !local {
+		// Only API data endpoints require the bearer token. The SPA shell
+		// (any UI path), bundled assets, and health probes are public: they
+		// contain no secrets, and the SPA authenticates its own API calls.
+		isAPI := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/openapi.json"
+		if isAPI && !local {
 			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			sum := sha256.Sum256([]byte(provided))
 			expected, _ := hex.DecodeString(s.tokenHash.Load().(string))
@@ -210,7 +214,11 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/import/preview", s.importPreview)
 	m.HandleFunc("POST /api/v1/import/apply", s.importApply)
 	m.HandleFunc("GET /assets/{name}", s.asset)
-	m.HandleFunc("GET /", s.ui)
+	// SPA shell for the root and every client-side route (path-based routing:
+	// /jobs, /runs/{id}, /metrics, ... all serve index.html and let the
+	// router take over). Unknown /api paths stay JSON 404s.
+	m.HandleFunc("GET /{$}", s.ui)
+	m.HandleFunc("GET /{path...}", s.ui)
 	return m
 }
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
@@ -635,8 +643,8 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeError(w, 404, "not_found", "unknown API endpoint")
 		return
 	}
 	body, err := webAssets.ReadFile("assets/index.html")

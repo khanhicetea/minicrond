@@ -72,6 +72,40 @@ func TestEveryIntervalAnchorsToPersistedAnchor(t *testing.T) {
 	}
 }
 
+// Steady state: a freshly reloaded @every job must actually fire on its
+// interval. Guards against a recompute-after-wait livelock where reaching the
+// pending slot recomputed `next` strictly-after `now`, deferring every
+// occurrence by one interval forever.
+func TestReloadFiresEveryInterval(t *testing.T) {
+	st, _, sched := setup(t)
+	def := worker("ticker-job", "none")
+	def.Schedule = "@every 2s"
+	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+		t.Fatal(err)
+	}
+	defs, err := st.Definitions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sched.Reload(t.Context(), defs); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runs, err := st.Runs(t.Context(), "ticker-job", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(runs) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("@every 2s job did not fire within 10s")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func scheduleHash(d model.Definition) string {
 	sum := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	return hex.EncodeToString(sum[:])

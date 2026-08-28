@@ -101,6 +101,27 @@ export const api = {
 
   rawLogUrl: (id: string) => `/api/v1/runs/${encodeURIComponent(id)}/log/raw`,
 
+  /** Windowed backlog read of stored log frames. */
+  logFrames: (id: string, after = 0, limit = 5000) =>
+    request<{ items: Frame[] }>(`/api/v1/runs/${encodeURIComponent(id)}/log?after=${after}&limit=${limit}`),
+
+  /** Rotation is local-only in the daemon; TCP callers get 403. */
+  rotateToken: () =>
+    request<{ token: string; fingerprint: string }>('/api/v1/token/rotate', { method: 'POST' }),
+
+  importPreview: (content: string) =>
+    request<{ content_hash: string; definitions: Definition[] }>('/api/v1/import/preview', {
+      method: 'POST',
+      body: { content },
+    }),
+
+  importApply: (content: string, hash: string) =>
+    request<{ content_hash: string; applied: number }>('/api/v1/import/apply', {
+      method: 'POST',
+      body: { content, hash },
+    }),
+
+
   /** Validate a candidate token without mutating the stored session token. */
   validateToken: (token: string) => request<DaemonInfo>('/api/v1/daemon', { token }),
 
