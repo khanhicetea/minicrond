@@ -525,12 +525,34 @@ func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, 
 	}
 	return anchor, last, hash, nil
 }
+func (s *Store) ScheduleNext(ctx context.Context, definitionID int64) (time.Time, error) {
+	var nextUS sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, "SELECT next_fire_us FROM schedule_state WHERE definition_id=?", definitionID).Scan(&nextUS); err != nil {
+		return time.Time{}, err
+	}
+	if !nextUS.Valid {
+		return time.Time{}, nil
+	}
+	return time.UnixMicro(nextUS.Int64).UTC(), nil
+}
+
 func (s *Store) SetScheduleState(ctx context.Context, definitionID int64, hash string, anchor, last time.Time) error {
-	var lastUS any
+	return s.setScheduleState(ctx, definitionID, hash, anchor, last, time.Time{})
+}
+
+func (s *Store) SetScheduleStateWithNext(ctx context.Context, definitionID int64, hash string, anchor, last, next time.Time) error {
+	return s.setScheduleState(ctx, definitionID, hash, anchor, last, next)
+}
+
+func (s *Store) setScheduleState(ctx context.Context, definitionID int64, hash string, anchor, last, next time.Time) error {
+	var lastUS, nextUS any
 	if !last.IsZero() {
 		lastUS = last.UnixMicro()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO schedule_state(definition_id,schedule_hash,anchor_us,last_fire_us) VALUES(?,?,?,?) ON CONFLICT(definition_id) DO UPDATE SET schedule_hash=excluded.schedule_hash,anchor_us=excluded.anchor_us,last_fire_us=excluded.last_fire_us`, definitionID, hash, anchor.UnixMicro(), lastUS)
+	if !next.IsZero() {
+		nextUS = next.UnixMicro()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO schedule_state(definition_id,schedule_hash,anchor_us,last_fire_us,next_fire_us) VALUES(?,?,?,?,?) ON CONFLICT(definition_id) DO UPDATE SET schedule_hash=excluded.schedule_hash,anchor_us=excluded.anchor_us,last_fire_us=excluded.last_fire_us,next_fire_us=excluded.next_fire_us`, definitionID, hash, anchor.UnixMicro(), lastUS, nextUS)
 	return err
 }
 func nullString(v string) any {

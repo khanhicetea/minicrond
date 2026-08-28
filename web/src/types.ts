@@ -15,6 +15,8 @@ export interface Definition {
   shell?: string;
   schedule?: string;
   timezone?: string;
+  /** Scheduler-owned next fire time, returned by the jobs API. */
+  next_fire_at?: string;
   catch_up?: string;
   on_overlap?: string;
   run_on_start?: boolean;
@@ -86,6 +88,7 @@ export interface JobDetail {
   definition: Definition;
   hash: string;
   active_runs: number;
+  next_fire_at?: string;
   worker_state?: WorkerState;
 }
 

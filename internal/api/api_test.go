@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/minicron/minicron/internal/executor"
 	"github.com/minicron/minicron/internal/logstore"
@@ -82,6 +83,43 @@ func mustCreate(t *testing.T, s *Server, name, command string) {
 	body := fmt.Sprintf(`{"name":%q,"kind":"job","command":%q,"shell":"/bin/sh"}`, name, command)
 	if rec := call(s, true, "PUT", "/api/v1/jobs/"+name, "", body, nil); rec.Code != 200 {
 		t.Fatalf("create %s: %d %s", name, rec.Code, rec.Body.String())
+	}
+}
+
+func TestJobsExposeSchedulerNextFire(t *testing.T) {
+	s, _, st := setup(t)
+	body := `{"name":"scheduled","kind":"job","command":"true","shell":"/bin/sh","schedule":"@every 1m","timezone":"UTC"}`
+	if rec := call(s, true, "PUT", "/api/v1/jobs/scheduled", "", body, nil); rec.Code != 200 {
+		t.Fatalf("create scheduled job: %d %s", rec.Code, rec.Body.String())
+	}
+	def, _, err := st.Definition(t.Context(), "scheduled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.Now().UTC()
+	next := anchor.Add(time.Minute).Truncate(time.Microsecond)
+	if err := st.SetScheduleStateWithNext(t.Context(), def.ID, "hash", anchor, anchor, next); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := call(s, true, "GET", "/api/v1/jobs", "", "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("list jobs: %d %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			Name       string     `json:"name"`
+			NextFireAt *time.Time `json:"next_fire_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items[0].Name != "scheduled" {
+		t.Fatalf("unexpected jobs response: %+v", response.Items)
+	}
+	if response.Items[0].NextFireAt == nil || !response.Items[0].NextFireAt.Equal(next) {
+		t.Fatalf("next fire = %v, want %s", response.Items[0].NextFireAt, next)
 	}
 }
 

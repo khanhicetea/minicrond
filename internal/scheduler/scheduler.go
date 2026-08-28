@@ -85,6 +85,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		if err != nil {
 			return
 		}
+		// Keep the pending fire in durable state so API clients can display
+		// the same instant the scheduler is waiting for.
+		_ = s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next)
 		for time.Now().Before(next) {
 			wait := min(time.Until(next), 30*time.Second)
 			timer := time.NewTimer(max(wait, 0))
@@ -107,11 +110,21 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 				return
 			}
 			next = recomputed
+			_ = s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next)
 		}
 		scheduled := next
 		_, _ = s.exec.Trigger(context.Background(), d, mustHash(d), "schedule", &scheduled)
 		last = next
-		_ = s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last)
+
+		// Publish the following fire immediately after triggering this one.
+		// This prevents the API from reporting the just-fired instant while
+		// the next scheduler iteration is being prepared.
+		following, err := nextFire(d, maxTime(last, time.Now().UTC()), anchor)
+		if err != nil {
+			_ = s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last)
+			return
+		}
+		_ = s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, following)
 	}
 }
 func nextFire(d model.Definition, after, anchor time.Time) (time.Time, error) {

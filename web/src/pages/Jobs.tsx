@@ -5,7 +5,7 @@ import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { errorText } from '../api';
 import { jobsQuery, runsQuery, useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerStates } from '../queries';
-import { humanizeSchedule, nextFire } from '../lib/cron';
+import { humanizeSchedule } from '../lib/cron';
 import { definitionToToml } from '../lib/toml';
 import { formatCountdown, formatDayTime, formatSpan } from '../lib/format';
 import { jobPath } from '../lib/routes';
@@ -29,12 +29,14 @@ export default function Jobs() {
 
   useEffect(() => setFilter(initialFilter), [initialFilter]);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const jobs = useQuery(jobsQuery());
-  const runs = useQuery(runsQuery('', 200));
+  // Refresh the server-owned schedule/run state so the countdown never
+  // drifts from the scheduler when a fire occurs.
+  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 1000 });
+  const runs = useQuery({ ...runsQuery('', 200), refetchInterval: 1000 });
   const trigger = useTriggerJob();
   const setEnabled = useSetJobEnabled();
   const remove = useDeleteJob();
@@ -99,7 +101,11 @@ export default function Jobs() {
       if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
       if (sortKey === 'schedule') cmp = (a.schedule ?? '').localeCompare(b.schedule ?? '');
       if (sortKey === 'next') {
-        const nextOf = (d: Definition) => (d.kind === 'job' && d.enabled !== false && d.schedule ? (nextFire(d.schedule, now, d.timezone || 'UTC') ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER);
+        const nextOf = (d: Definition) => {
+          if (d.kind !== 'job' || d.enabled === false || !d.next_fire_at) return Number.MAX_SAFE_INTEGER;
+          const value = Date.parse(d.next_fire_at);
+          return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+        };
         cmp = nextOf(a) - nextOf(b);
       }
       if (sortKey === 'last') {
@@ -229,7 +235,6 @@ export default function Jobs() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Kind</th>
                 <th>Schedule / state</th>
                 <th>Next fire</th>
                 <th>Last run</th>
@@ -344,7 +349,7 @@ function Row({
           : { text: 'Stopped', dot: 'dot-gray' }
       : { text: 'On schedule', dot: 'dot-green' };
 
-  const nextFireMs = !isWorker && enabled && definition.schedule ? nextFire(definition.schedule, now, definition.timezone || 'UTC') : null;
+  const nextFireMs = !isWorker && enabled && definition.next_fire_at ? Date.parse(definition.next_fire_at) : null;
   const activeCount = lastRun && (lastRun.status === 'running' || lastRun.status === 'pending') ? 1 : 0;
 
   return (
@@ -363,9 +368,6 @@ function Row({
         </div>
       </td>
       <td>
-        <span className={`chip ${isWorker ? 'chip-outline' : 'chip-outline-job'}`}>{isWorker ? 'Worker' : 'Job'}</span>
-      </td>
-      <td>
         <div className="whitespace-nowrap">{scheduleLine}</div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs muted">
           <span className={`dot ${stateLine.dot}`} />
@@ -375,9 +377,11 @@ function Row({
         </div>
       </td>
       <td className="whitespace-nowrap">
-        {nextFireMs ? (
+        {nextFireMs !== null && Number.isFinite(nextFireMs) ? (
           <>
-            <div className="num">in {formatCountdown(nextFireMs, now)}</div>
+            <div className="num">
+              {nextFireMs > now ? `in ${formatCountdown(nextFireMs, now)}` : <span className="text-amber-400">Firing…</span>}
+            </div>
             <div className="mt-0.5 text-xs muted">{formatDayTime(new Date(nextFireMs).toISOString())}</div>
           </>
         ) : (
@@ -388,11 +392,13 @@ function Row({
         {lastRun ? (
           <>
             <div>
-              {lastRun.status === 'running' || lastRun.status === 'pending' ? (
-                <span className="text-green-400">Now</span>
-              ) : (
-                formatDayTime(lastRun.queued_at)
-              )}
+              <Link
+                href={`/runs/${lastRun.run_id}`}
+                className="text-sky-300 hover:text-sky-200 hover:underline"
+                aria-label={`Open last run ${lastRun.run_id}`}
+              >
+                {lastRun.status === 'running' || lastRun.status === 'pending' ? 'Now' : formatDayTime(lastRun.queued_at)}
+              </Link>
             </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-xs">
               {lastRun.status === 'succeeded' ? (

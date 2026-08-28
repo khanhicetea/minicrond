@@ -38,6 +38,46 @@ func TestFreshMigrationAndReopen(t *testing.T) {
 	}
 }
 
+func TestScheduleNextRoundTrip(t *testing.T) {
+	st, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	def := model.Definition{Name: "scheduled", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml", Schedule: "@every 1m", Timezone: "UTC"}
+	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := st.Definition(t.Context(), def.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.Date(2026, time.January, 1, 10, 0, 0, 0, time.UTC)
+	next := anchor.Add(time.Minute)
+	if err := st.SetScheduleStateWithNext(t.Context(), stored.ID, "hash", anchor, anchor, next); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.ScheduleNext(t.Context(), stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(next) {
+		t.Fatalf("next fire = %s, want %s", got, next)
+	}
+
+	if err := st.SetScheduleState(t.Context(), stored.ID, "new-hash", anchor, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.ScheduleNext(t.Context(), stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsZero() {
+		t.Fatalf("next fire after reset = %s, want zero", got)
+	}
+}
+
 func TestAuthorityConflictRollsBackWholeReload(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {

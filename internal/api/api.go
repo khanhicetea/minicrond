@@ -52,6 +52,12 @@ type Server struct {
 var webAssets embed.FS
 
 type localKey struct{}
+
+type jobListItem struct {
+	model.Definition
+	NextFireAt *time.Time `json:"next_fire_at,omitzero"`
+}
+
 type peerListener struct {
 	net.Listener
 	uid uint32
@@ -237,7 +243,17 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": defs})
+	items := make([]jobListItem, 0, len(defs))
+	for _, d := range defs {
+		item := jobListItem{Definition: d}
+		if d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
+			if next, err := s.store.ScheduleNext(r.Context(), d.ID); err == nil && !next.IsZero() {
+				item.NextFireAt = &next
+			}
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
 }
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	d, hash, err := s.store.Definition(r.Context(), r.PathValue("name"))
@@ -251,6 +267,11 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", strconv.FormatInt(d.Revision, 10))
 	response := map[string]any{"definition": d, "hash": hash, "active_runs": s.exec.Active(d.Name)}
+	if d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
+		if next, err := s.store.ScheduleNext(r.Context(), d.ID); err == nil && !next.IsZero() {
+			response["next_fire_at"] = next
+		}
+	}
 	if d.Kind == model.KindWorker {
 		response["worker_state"] = s.super.State(d.Name)
 	}
