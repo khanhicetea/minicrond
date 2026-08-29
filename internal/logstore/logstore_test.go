@@ -19,7 +19,7 @@ func TestFramesSurviveChunkStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := s.Open("run", "test", "job", 1<<20, 4)
+	w, err := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1 << 20, MaxLine: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestFramesSurviveChunkStorage(t *testing.T) {
 
 func TestBacklogToLiveSubscriptionHasStableSequence(t *testing.T) {
 	s, _ := New(t.TempDir())
-	w, _ := s.Open("run", "test", "job", 1<<20, 1024)
+	w, _ := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1 << 20, MaxLine: 1024})
 	if err := w.Write(Stdout, []byte("backlog"), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestBacklogToLiveSubscriptionHasStableSequence(t *testing.T) {
 
 func TestInvalidUTF8IsFlaggedAndPreserved(t *testing.T) {
 	s, _ := New(t.TempDir())
-	w, _ := s.Open("run", "test", "job", 1024, 1024)
+	w, _ := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1024, MaxLine: 1024})
 	payload := []byte{0xff, '\n'}
 	if err := w.Pipe(Stderr, bytes.NewReader(payload)); err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func newArchiveStore(t *testing.T) (*Store, *logdb.LogDB, string) {
 // log moves into the SQLite archive and the buffer directory disappears.
 func TestJobLogArchivedIntoDatabaseOnClose(t *testing.T) {
 	s, ldb, dir := newArchiveStore(t)
-	w, err := s.Open("run1", "hello", model.KindJob, 1<<20, 1024)
+	w, err := s.Open("run1", "hello", model.KindJob, WriterOptions{MaxBytes: 1 << 20, MaxLine: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestJobLogArchivedIntoDatabaseOnClose(t *testing.T) {
 // across the archive boundary with a stable, gap-free sequence.
 func TestWorkerLogFlushRoundsKeepSequenceStable(t *testing.T) {
 	s, _, _ := newArchiveStore(t)
-	w, err := s.Open("run1", "worker", model.KindWorker, 1<<30, 1024)
+	w, err := s.Open("run1", "worker", model.KindWorker, WriterOptions{MaxBytes: 1 << 30, MaxLine: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestWorkerLogFlushRoundsKeepSequenceStable(t *testing.T) {
 // Pagination across the archive/file/memory tiers must not skip or repeat.
 func TestReadAcrossTiersPaginates(t *testing.T) {
 	s, ldb, _ := newArchiveStore(t)
-	w, _ := s.Open("run1", "job", model.KindJob, 1<<30, 1024)
+	w, _ := s.Open("run1", "job", model.KindJob, WriterOptions{MaxBytes: 1 << 30, MaxLine: 1024})
 	for i := range 10 {
 		if err := w.Write(Stdout, []byte{byte('0' + i)}, 0); err != nil {
 			t.Fatal(err)
@@ -245,7 +245,7 @@ func TestOrphanBuffersAreSalvagedIntoArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := buffer.Open("crashed", "hello", model.KindJob, 1<<30, 1<<20)
+	w, err := buffer.Open("crashed", "hello", model.KindJob, WriterOptions{MaxBytes: 1 << 30, MaxLine: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestOrphanBuffersAreSalvagedIntoArchive(t *testing.T) {
 // Per-run deletion must clear both tiers (retention path).
 func TestDeleteRemovesArchiveAndFiles(t *testing.T) {
 	s, ldb, dir := newArchiveStore(t)
-	w, _ := s.Open("run1", "job", model.KindJob, 1<<20, 1024)
+	w, _ := s.Open("run1", "job", model.KindJob, WriterOptions{MaxBytes: 1 << 20, MaxLine: 1024})
 	_ = w.Write(Stdout, []byte("x"), 0)
 	if err := s.Close("run1"); err != nil {
 		t.Fatal(err)
@@ -345,7 +345,7 @@ func TestDeleteRemovesArchiveAndFiles(t *testing.T) {
 // past log_max evicts from the accounting and stays bounded.
 func TestRingBufferStillEnforcesMaxBytesWithArchive(t *testing.T) {
 	s, _, _ := newArchiveStore(t)
-	w, err := s.Open("run1", "job", model.KindJob, 24+4, 1024) // one small frame
+	w, err := s.Open("run1", "job", model.KindJob, WriterOptions{MaxBytes: 24 + 4, MaxLine: 1024}) // one small frame
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,5 +360,86 @@ func TestRingBufferStillEnforcesMaxBytesWithArchive(t *testing.T) {
 	}
 	if err = s.Close("run1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ParseBytes must resolve suffixes deterministically: "10KiB" used to match
+// the bare "B" suffix whenever map iteration ordered it first, silently
+// discarding the intended size.
+func TestParseBytesIsDeterministic(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+	}{
+		{"10KiB", 10 << 10},
+		{"10MiB", 10 << 20},
+		{"10GiB", 10 << 30},
+		{"512B", 512},
+		{"512", 512},
+		{" 1MiB ", 1 << 20},
+	} {
+		got, err := ParseBytes(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("ParseBytes(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
+		}
+	}
+	for _, invalid := range []string{"10Ki", "xB", ""} {
+		if got, err := ParseBytes(invalid); err == nil || got != 0 {
+			t.Errorf("ParseBytes(%q) = %d, %v; want 0, error", invalid, got, err)
+		}
+	}
+}
+
+// log_on_full = drop_new keeps the retained history and refuses new frames
+// once log_max is reached, instead of evicting old chunks.
+func TestDropNewKeepsHistoryWhenFull(t *testing.T) {
+	s, _ := New(t.TempDir())
+	w, err := s.Open("run", "test", model.KindJob, WriterOptions{MaxBytes: 24 + 4, MaxLine: 1024, DropNew: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if err := w.Write(Stdout, []byte("abcd"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	total, truncated := w.Stats()
+	if total != 28 || !truncated {
+		t.Fatalf("total = %d truncated = %v; want 28, true", total, truncated)
+	}
+	frames, err := s.Read("run", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 || string(frames[0].Payload) != "abcd" {
+		t.Fatalf("drop_new must keep the first frame, got %#v", frames)
+	}
+}
+
+// The in-memory tail is bounded: writing far past historyLimit must not grow
+// the snapshot window (and must not renumber sequences).
+func TestHistoryTailStaysBounded(t *testing.T) {
+	s, _ := New(t.TempDir())
+	w, err := s.Open("run", "test", model.KindJob, WriterOptions{MaxBytes: 1 << 40, MaxLine: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range historyLimit*3 + 100 {
+		if err := w.Write(Stdout, []byte("x"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if i%997 == 0 { // spot-check the bound while writing
+			if got := len(w.Snapshot(0, 1<<30)); got > historyLimit+historyLimit/4 {
+				t.Fatalf("history grew to %d during writes", got)
+			}
+		}
+	}
+	frames := w.Snapshot(0, 1<<30)
+	if len(frames) > historyLimit+historyLimit/4 {
+		t.Fatalf("history tail = %d, want <= %d", len(frames), historyLimit+historyLimit/4)
+	}
+	last := frames[len(frames)-1]
+	if last.Sequence != uint64(historyLimit*3+100) {
+		t.Fatalf("last sequence = %d", last.Sequence)
 	}
 }

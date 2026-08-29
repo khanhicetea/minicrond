@@ -25,7 +25,6 @@ import (
 
 type Daemon struct {
 	ConfigPath, DataDir, Version string
-	Schema                       []byte
 	mu                           sync.Mutex
 	cfg                          *config.Config
 	lock                         *os.File
@@ -72,7 +71,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.ldb = ldb
 	logs.AttachDB(ldb)
 	d.logs = logs
-	d.exec = executor.New(st, logs, cfg.Scheduler.MaxConcurrentRuns)
+	maxLine, err := logstore.ParseBytes(cfg.Logs.MaxLine)
+	if err != nil || maxLine <= 0 {
+		// Validated at config load; keep a safe fallback for direct callers.
+		maxLine = 256 << 10
+	}
+	d.exec = executor.New(st, logs, executor.Options{MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns, MaxLineBytes: maxLine})
 	recoverable, err := st.Recoverable(ctx)
 	if err != nil {
 		return err
@@ -88,7 +92,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	d.sched = scheduler.New(st, d.exec)
 	d.super = supervisor.New(st, d.exec)
-	d.api = api.New(st, logs, d.exec, d.super, d.Reload, d.Version, d.Schema)
+	d.api = api.New(st, logs, d.exec, d.super, d.Reload, d.Version)
 	token, err := d.api.InitializeToken(ctx)
 	if err != nil {
 		return err

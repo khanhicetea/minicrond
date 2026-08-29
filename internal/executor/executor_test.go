@@ -21,7 +21,7 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, logs, 2)
+	service := New(st, logs, Options{MaxConcurrentRuns: 2})
 	for _, tc := range []struct{ name, command, timeout, want string }{{"ok", "exit 0", "0", "succeeded"}, {"slow", "sleep 5", "100ms", "timeout"}} {
 		d := model.Definition{Name: tc.name, Kind: model.KindJob, Authority: "file", SourceFile: "test", Command: tc.command, Shell: "/bin/sh", Timeout: tc.timeout, Grace: "0", Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
 		if err := st.SyncFiles(t.Context(), []model.Definition{d}, false); err != nil {
@@ -70,7 +70,7 @@ func TestDescendantHoldingPipeIsBoundedAndClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, logs, 2)
+	service := New(st, logs, Options{MaxConcurrentRuns: 2})
 	d := model.Definition{Name: "spawner", Kind: model.KindJob, Authority: "file", SourceFile: "test",
 		Command: "echo parent; sleep 10 & echo done", Shell: "/bin/sh", Timeout: "0", Grace: "0",
 		Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
@@ -141,7 +141,7 @@ func TestOverlapSkipDeclinesWhileActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, logs, 4)
+	service := New(st, logs, Options{MaxConcurrentRuns: 4})
 	d := model.Definition{Name: "solo", Kind: model.KindJob, Authority: "file", SourceFile: "test",
 		Command: "sleep 2", Shell: "/bin/sh", Timeout: "0", Grace: "0", OnOverlap: "skip",
 		Timezone: "UTC", EnvBase: "clean", SuccessCodes: []int{0}}

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -28,9 +29,6 @@ import (
 
 var version = "0.1.0-dev"
 var commit = "unknown"
-
-//go:embed openapi.json
-var openapi []byte
 
 //go:embed minicron.schema.json
 var configSchema []byte
@@ -70,8 +68,7 @@ func run() error {
 	case "token":
 		return token(args[1:])
 	case "schema":
-		os.Stdout.Write(configSchema)
-		fmt.Println()
+		_, _ = os.Stdout.Write(append(configSchema, '\n'))
 		return nil
 	case "version":
 		fmt.Printf("minicron %s (%s) %s/%s\n", version, commit, runtime.GOOS, runtime.GOARCH)
@@ -95,7 +92,7 @@ func runDaemon(args []string) error {
 	defer stop()
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
-	d := &daemon.Daemon{ConfigPath: *configPath, DataDir: *dataDir, Version: version, Schema: openapi}
+	d := &daemon.Daemon{ConfigPath: *configPath, DataDir: *dataDir, Version: version}
 	go func() {
 		for range hup {
 			if err := d.Reload(context.Background()); err != nil {
@@ -267,7 +264,7 @@ func importConfig(args []string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 	bootstrap := filepath.Join(tmpDir, "minicron.toml")
-	if err = os.WriteFile(bootstrap, []byte("[include]\npaths = ["+strconvQuote(path)+"]\n"), 0o600); err != nil {
+	if err = os.WriteFile(bootstrap, []byte("[include]\npaths = ["+strconv.Quote(path)+"]\n"), 0o600); err != nil {
 		return err
 	}
 	cfg, err := config.Load(bootstrap)
@@ -376,7 +373,6 @@ func defaultDataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "minicron")
 }
-func strconvQuote(v string) string { b, _ := json.Marshal(v); return string(b) }
 func usage() {
 	fmt.Println("minicron: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import export status token version")
 }

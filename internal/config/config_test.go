@@ -137,3 +137,84 @@ func TestLogArchiveValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The [defaults] table must reach every field the executor actually consumes;
+// restart/health/log-policy values used to be silently hardcoded.
+func TestDefaultsCoverRestartHealthAndLogPolicy(t *testing.T) {
+	dir := t.TempDir()
+	bootstrap := filepath.Join(dir, "minicron.toml")
+	mustWrite(t, bootstrap, `[defaults]
+restart = "on-failure"
+restart_delay = "77ms"
+max_restart_attempts = 9
+healthy_after = "88ms"
+log_on_full = "drop_new"
+stop_signal = "SIGINT"
+
+[[job]]
+name = "j"
+command = "true"
+schedule = "@every 1h"
+`)
+	cfg, err := Load(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Definitions[0]
+	if d.Restart != "on-failure" || d.RestartDelay != "77ms" || d.MaxRestartAttempts != 9 ||
+		d.HealthyAfter != "88ms" || d.LogOnFull != "drop_new" || d.StopSignal != "SIGINT" {
+		t.Fatalf("defaults not applied: %#v", d)
+	}
+}
+
+// Include-file defaults overlay the bootstrap defaults; fields set in neither
+// place keep their built-in fallbacks.
+func TestIncludeDefaultsOverlayBootstrapDefaults(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "minicron.toml"), `[defaults]
+grace = "30s"
+healthy_after = "1h"
+
+[include]
+paths = ["inc.toml"]
+`)
+	mustWrite(t, filepath.Join(dir, "inc.toml"), `[defaults]
+healthy_after = "2h"
+
+[[job]]
+name = "j"
+command = "true"
+schedule = "@every 1h"
+`)
+	cfg, err := Load(filepath.Join(dir, "minicron.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Definitions[0]
+	if d.Grace != "30s" {
+		t.Fatalf("bootstrap default lost: grace = %q", d.Grace)
+	}
+	if d.HealthyAfter != "2h" {
+		t.Fatalf("include default must win: healthy_after = %q", d.HealthyAfter)
+	}
+	if d.RestartDelay != "5s" {
+		t.Fatalf("builtin fallback lost: restart_delay = %q", d.RestartDelay)
+	}
+}
+
+func TestDefinitionFieldValidation(t *testing.T) {
+	for _, invalid := range []string{
+		"log_on_full = 'recycle'",
+		"stop_signal = 'SIGWAT'",
+		"keep_for = 'soon'",
+		"keep_for = '0h'",
+		"log_max = '10Ki'",
+	} {
+		dir := t.TempDir()
+		bootstrap := filepath.Join(dir, "minicron.toml")
+		mustWrite(t, bootstrap, "[[job]]\nname='j'\ncommand='true'\nschedule='@every 1h'\n"+invalid+"\n")
+		if _, err := Load(bootstrap); err == nil {
+			t.Errorf("accepted %s", invalid)
+		}
+	}
+}

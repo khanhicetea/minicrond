@@ -76,16 +76,9 @@ type Run struct {
 	LogTruncated   bool       `json:"log_truncated"`
 }
 
-func CanTransition(from, to string) bool {
-	switch from {
-	case "pending":
-		return to == "running" || to == "failed" || to == "stopped" || to == "interrupted" || to == "skipped" || to == "missed"
-	case "running":
-		return to == "succeeded" || to == "failed" || to == "timeout" || to == "stopped" || to == "interrupted"
-	default:
-		return false
-	}
-}
+// TerminalStatuses reports whether a run status is final. Run transitions
+// themselves are enforced by the store's guarded UPDATE statements.
+func Terminal(status string) bool { return TerminalStatuses[status] }
 
 var TerminalStatuses = map[string]bool{
 	"succeeded": true, "failed": true, "timeout": true, "stopped": true,

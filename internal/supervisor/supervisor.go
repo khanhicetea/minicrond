@@ -49,11 +49,15 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 
 func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 	healthyAfter, _ := time.ParseDuration(d.HealthyAfter)
+	_, hash, err := config.Canonical(d)
+	if err != nil {
+		slog.Error("supervisor: canonicalizing definition failed", "worker", d.Name, "error", err)
+		return
+	}
 	for {
 		if ctx.Err() != nil || s.held(d.Name) {
 			return
 		}
-		_, hash, _ := config.Canonical(d)
 		r, err := s.exec.Trigger(ctx, d, hash, "startup", nil)
 		if err != nil {
 			return
@@ -61,23 +65,28 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		s.mu.Lock()
 		s.active[d.Name] = r.ID
 		s.mu.Unlock()
-		var current model.Run
-		terminal := false
-		for !terminal {
+		// Wait on the executor's done channel instead of polling the store:
+		// the channel closes only after the terminal state is persisted, so a
+		// single read is current. nil means the run already finished.
+		if done := s.exec.Wait(r.ID); done != nil {
 			select {
 			case <-ctx.Done():
 				_ = s.exec.Stop(r.ID)
 				return
-			case <-time.After(200 * time.Millisecond):
-				current, err = s.store.Run(context.Background(), r.ID)
-				if err == nil && model.TerminalStatuses[current.Status] {
-					terminal = true
-				}
+			case <-done:
 			}
 		}
 		s.mu.Lock()
 		delete(s.active, d.Name)
 		s.mu.Unlock()
+		current, err := s.store.Run(context.Background(), r.ID)
+		if err != nil {
+			slog.Error("supervisor: reading worker run failed", "worker", d.Name, "run", r.ID, "error", err)
+			return
+		}
+		if !model.TerminalStatuses[current.Status] {
+			return // defensive: never restart a run that is not terminal
+		}
 		if s.held(d.Name) {
 			return
 		}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/robfig/cron/v3"
 
+	"github.com/minicron/minicron/internal/logstore"
 	"github.com/minicron/minicron/internal/model"
 )
 
@@ -207,69 +209,49 @@ func applyConfigDefaults(c *Config) {
 	}
 }
 func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
-	if d.Shell == "" {
-		d.Shell = first(defaults.Shell, "/bin/sh")
-	}
-	if d.Timezone == "" {
-		d.Timezone = defaults.Timezone
-	}
-	if d.CatchUp == "" {
-		d.CatchUp = first(defaults.CatchUp, "none")
-	}
-	if d.OnOverlap == "" {
-		d.OnOverlap = first(defaults.OnOverlap, "skip")
-	}
-	if d.EnvBase == "" {
-		d.EnvBase = first(defaults.EnvBase, "clean")
-	}
-	if d.Grace == "" {
-		d.Grace = first(defaults.Grace, "10s")
-	}
-	if d.Timeout == "" {
-		d.Timeout = first(defaults.Timeout, "0")
-	}
-	if d.StopSignal == "" {
-		d.StopSignal = first(defaults.StopSignal, "SIGTERM")
+	// Every field consumed here must also be merged by mergeDefaults, or
+	// include-file defaults silently lose it.
+	d.Shell = cmp.Or(d.Shell, defaults.Shell, "/bin/sh")
+	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
+	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp, "none")
+	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap, "skip")
+	d.EnvBase = cmp.Or(d.EnvBase, defaults.EnvBase, "clean")
+	d.Grace = cmp.Or(d.Grace, defaults.Grace, "10s")
+	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout, "0")
+	d.StopSignal = cmp.Or(d.StopSignal, defaults.StopSignal, "SIGTERM")
+	d.Restart = cmp.Or(d.Restart, defaults.Restart, "always")
+	d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay, "5s")
+	d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter, "30s")
+	d.LogOnFull = cmp.Or(d.LogOnFull, defaults.LogOnFull, "drop_old")
+	if len(d.SuccessCodes) == 0 {
+		d.SuccessCodes = defaults.SuccessCodes
 	}
 	if len(d.SuccessCodes) == 0 {
 		d.SuccessCodes = []int{0}
 	}
-	if d.Restart == "" {
-		d.Restart = "always"
-	}
-	if d.RestartDelay == "" {
-		d.RestartDelay = "5s"
-	}
-	if d.MaxRestartAttempts == 0 {
-		d.MaxRestartAttempts = 5
-	}
-	if d.HealthyAfter == "" {
-		d.HealthyAfter = "30s"
-	}
-	if d.LogOnFull == "" {
-		d.LogOnFull = "drop_old"
-	}
+	d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, defaults.MaxRestartAttempts, 5)
 }
+
+// mergeDefaults overlays include-file defaults (b) on top of bootstrap
+// defaults (a): explicit values in b win, empty fields fall back to a.
 func mergeDefaults(a, b model.Definition) model.Definition {
-	if b.Shell == "" {
-		b.Shell = a.Shell
-	}
-	if b.Grace == "" {
-		b.Grace = a.Grace
-	}
-	if b.Timeout == "" {
-		b.Timeout = a.Timeout
-	}
+	b.Shell = cmp.Or(b.Shell, a.Shell)
+	b.Timezone = cmp.Or(b.Timezone, a.Timezone)
+	b.CatchUp = cmp.Or(b.CatchUp, a.CatchUp)
+	b.OnOverlap = cmp.Or(b.OnOverlap, a.OnOverlap)
+	b.EnvBase = cmp.Or(b.EnvBase, a.EnvBase)
+	b.Grace = cmp.Or(b.Grace, a.Grace)
+	b.Timeout = cmp.Or(b.Timeout, a.Timeout)
+	b.StopSignal = cmp.Or(b.StopSignal, a.StopSignal)
+	b.Restart = cmp.Or(b.Restart, a.Restart)
+	b.RestartDelay = cmp.Or(b.RestartDelay, a.RestartDelay)
+	b.HealthyAfter = cmp.Or(b.HealthyAfter, a.HealthyAfter)
+	b.LogOnFull = cmp.Or(b.LogOnFull, a.LogOnFull)
 	if len(b.SuccessCodes) == 0 {
 		b.SuccessCodes = a.SuccessCodes
 	}
+	b.MaxRestartAttempts = cmp.Or(b.MaxRestartAttempts, a.MaxRestartAttempts)
 	return b
-}
-func first(v, fallback string) string {
-	if v != "" {
-		return v
-	}
-	return fallback
 }
 
 func validate(c *Config) error {
@@ -323,6 +305,22 @@ func validate(c *Config) error {
 		if d.OnOverlap != "skip" && d.OnOverlap != "parallel" {
 			return fmt.Errorf("%s: %s.on_overlap must be skip or parallel", d.SourceFile, d.Name)
 		}
+		if d.LogOnFull != "drop_old" && d.LogOnFull != "drop_new" {
+			return fmt.Errorf("%s: %s.log_on_full must be drop_old or drop_new", d.SourceFile, d.Name)
+		}
+		if !validSignal(d.StopSignal) {
+			return fmt.Errorf("%s: %s.stop_signal must be one of INT, HUP, QUIT, USR1, USR2, TERM, KILL", d.SourceFile, d.Name)
+		}
+		if d.KeepFor != "" {
+			if keep, err := time.ParseDuration(d.KeepFor); err != nil || keep <= 0 {
+				return fmt.Errorf("%s: %s.keep_for must be a positive duration", d.SourceFile, d.Name)
+			}
+		}
+		if d.LogMax != "" {
+			if _, err := logstore.ParseBytes(d.LogMax); err != nil {
+				return fmt.Errorf("%s: %s.log_max must be a byte size like 64MiB", d.SourceFile, d.Name)
+			}
+		}
 		if d.Kind == model.KindWorker && d.Schedule != "" {
 			return fmt.Errorf("%s: worker %s cannot have schedule", d.SourceFile, d.Name)
 		}
@@ -350,6 +348,16 @@ func ValidateDefinition(d *model.Definition) error {
 }
 
 var clockPattern = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
+
+// validSignal reports whether stop_signal names a signal the executor can
+// send. Values may omit the SIG prefix.
+func validSignal(v string) bool {
+	switch strings.TrimPrefix(v, "SIG") {
+	case "INT", "HUP", "QUIT", "USR1", "USR2", "TERM", "KILL":
+		return true
+	}
+	return false
+}
 
 // ValidateClock accepts a daily local time of the form "HH:MM" (24h).
 func ValidateClock(value string) error {

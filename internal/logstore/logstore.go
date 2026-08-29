@@ -29,6 +29,11 @@ import (
 const Version byte = 1
 const chunkLimit = 1 << 20
 
+// historyLimit bounds the in-memory tail served to live readers. Trimming
+// uses hysteresis (see Write) so the shift is amortized instead of running
+// on every frame once the tail is full.
+const historyLimit = 5000
+
 type Stream byte
 
 const (
@@ -91,12 +96,24 @@ func New(root string) (*Store, error) {
 // AttachDB enables SQLite archival into the given log database.
 func (s *Store) AttachDB(db *logdb.LogDB) { s.db = db }
 
-func (s *Store) Open(runID, job, kind string, maxBytes int64, maxLine int) (*Writer, error) {
+// WriterOptions configures one run's log buffer.
+type WriterOptions struct {
+	// MaxBytes caps the retained log (raw frame bytes). 0 means unbounded.
+	MaxBytes int64
+	// MaxLine truncates single lines longer than this many bytes. 0 disables.
+	MaxLine int
+	// DropNew selects the log_on_full policy: true refuses new frames once
+	// MaxBytes is reached; false (drop_old) evicts the oldest sealed chunks
+	// instead.
+	DropNew bool
+}
+
+func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error) {
 	dir := filepath.Join(s.root, runID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	w := &Writer{runID: runID, job: job, kind: kind, dir: dir, maxBytes: maxBytes, maxLine: maxLine, subs: make(map[chan Frame]chan struct{})}
+	w := &Writer{runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, subs: make(map[chan Frame]chan struct{})}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -297,6 +314,7 @@ type Writer struct {
 	total      int64
 	maxBytes   int64
 	maxLine    int
+	dropNew    bool
 	truncated  bool
 	idx        index
 	subs       map[chan Frame]chan struct{}
@@ -386,6 +404,12 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	}
 	frameSize := 24 + len(payload)
 	if w.maxBytes > 0 && w.total+int64(frameSize) > w.maxBytes {
+		if w.dropNew {
+			// log_on_full = drop_new: keep the retained history and refuse
+			// the incoming frame instead of evicting old chunks.
+			w.truncated = true
+			return nil
+		}
 		w.truncated = true
 		for len(w.idx.Chunks) > 0 && w.total+int64(frameSize) > w.maxBytes {
 			oldest := w.idx.Chunks[0]
@@ -410,8 +434,11 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
 	w.history = append(w.history, f)
-	if len(w.history) > 5000 {
-		w.history = slices.Clone(w.history[len(w.history)-5000:])
+	// Trim with hysteresis: shifting the tail on every write would cost an
+	// O(historyLimit) move per frame, so allow 25% overshoot before cutting
+	// back down to the limit.
+	if len(w.history) > historyLimit+historyLimit/4 {
+		w.history = slices.Delete(w.history, 0, len(w.history)-historyLimit)
 	}
 	for ch, dropped := range w.subs {
 		select {
@@ -436,7 +463,7 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			} else {
 				flags |= FlagPartial
 			}
-			if !utf8Valid(line) {
+			if !utf8.Valid(line) {
 				flags |= FlagInvalidUTF8
 			}
 			if writeErr := w.Write(stream, line, flags); writeErr != nil {
@@ -672,15 +699,30 @@ func (s *Store) Delete(runID string) error {
 	}
 	return os.RemoveAll(filepath.Join(s.root, runID))
 }
+
+// byteUnits lists byte-size suffixes longest-first. Order matters: a map
+// would make "10KiB" randomly match the bare "B" suffix, silently changing
+// the parsed size from run to run.
+var byteUnits = []struct {
+	suffix string
+	mul    int64
+}{
+	{"GiB", 1 << 30},
+	{"MiB", 1 << 20},
+	{"KiB", 1 << 10},
+	{"B", 1},
+}
+
 func ParseBytes(value string) (int64, error) {
 	value = strings.TrimSpace(value)
-	units := map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "B": 1}
-	for suffix, mul := range units {
-		if n, ok := strings.CutSuffix(value, suffix); ok {
+	for _, u := range byteUnits {
+		if n, ok := strings.CutSuffix(value, u.suffix); ok {
 			v, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
-			return v * mul, err
+			if err != nil {
+				return 0, err
+			}
+			return v * u.mul, nil
 		}
 	}
 	return strconv.ParseInt(value, 10, 64)
 }
-func utf8Valid(p []byte) bool { return utf8.Valid(p) }

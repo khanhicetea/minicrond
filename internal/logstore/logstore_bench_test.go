@@ -13,7 +13,7 @@ func BenchmarkFrameEncoding(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	writer, err := store.Open("run", "bench", model.KindJob, 1<<40, 256<<10)
+	writer, err := store.Open("run", "bench", model.KindJob, WriterOptions{MaxBytes: 1 << 40, MaxLine: 256 << 10})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -123,7 +123,7 @@ func setup(t *testing.T) (*store.Store, *executor.Service, *Scheduler) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := executor.New(st, logs, 4)
+	ex := executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4})
 	s := New(st, ex)
 	t.Cleanup(s.Stop)
 	return st, ex, s

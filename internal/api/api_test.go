@@ -31,9 +31,9 @@ func setup(t *testing.T) (*Server, string, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := executor.New(st, logs, 4)
+	ex := executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4})
 	sup := supervisor.New(st, ex)
-	srv := New(st, logs, ex, sup, func(context.Context) error { return nil }, "test", []byte(`{"openapi":"3.1.0"}`))
+	srv := New(st, logs, ex, sup, func(context.Context) error { return nil }, "test")
 	token, err := srv.InitializeToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -318,5 +318,24 @@ func TestMissingRunReturnsEnvelope(t *testing.T) {
 	}
 	if decode(t, rec)["error"] == nil {
 		t.Fatal("errors must use the stable envelope")
+	}
+}
+
+// A wait=true trigger polls for up to `timeout` seconds; it must not hold the
+// idempotency mutex while waiting, or every other keyed trigger would queue
+// behind it.
+func TestWaitTriggerDoesNotHoldIdempotencyLock(t *testing.T) {
+	s, _, _ := setup(t)
+	mustCreate(t, s, "slow", "sleep 2")
+	mustCreate(t, s, "quick", "true")
+	go call(s, true, "POST", "/api/v1/jobs/slow/trigger?wait=true&timeout=3", "", "", map[string]string{"Idempotency-Key": "waiter"})
+	time.Sleep(200 * time.Millisecond) // let the waiter settle into its poll loop
+	start := time.Now()
+	rec := call(s, true, "POST", "/api/v1/jobs/quick/trigger", "", "", map[string]string{"Idempotency-Key": "other"})
+	if rec.Code != 202 {
+		t.Fatalf("concurrent keyed trigger: %d %s", rec.Code, rec.Body.String())
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("keyed trigger blocked %s behind a waiting trigger", elapsed)
 	}
 }

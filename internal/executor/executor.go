@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/user"
@@ -26,11 +26,22 @@ import (
 	"github.com/minicron/minicron/internal/store"
 )
 
+// Options configures the execution service.
+type Options struct {
+	// MaxConcurrentRuns bounds simultaneously running jobs. Workers are not
+	// counted against this limit (they have their own capacity story).
+	MaxConcurrentRuns int
+	// MaxLineBytes is the global logs.max_line cap applied to every run's
+	// single-line truncation. Defaults to 256 KiB when zero.
+	MaxLineBytes int64
+}
+
 type Service struct {
 	store    *store.Store
 	logs     *logstore.Store
 	bootID   string
 	capacity chan struct{}
+	maxLine  int
 	mu       sync.Mutex
 	active   map[string]*activeRun
 	byJob    map[string]int
@@ -44,12 +55,30 @@ type activeRun struct {
 var ErrStopped = errors.New("operator stop")
 var ErrShutdown = errors.New("daemon shutdown")
 
-func New(st *store.Store, logs *logstore.Store, maxJobs int) *Service {
+func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
+	if opt.MaxConcurrentRuns <= 0 {
+		opt.MaxConcurrentRuns = 32
+	}
+	if opt.MaxLineBytes <= 0 {
+		opt.MaxLineBytes = 256 << 10
+	}
 	var b [16]byte
-	rand.Read(b[:])
-	return &Service{store: st, logs: logs, bootID: hex.EncodeToString(b[:]), capacity: make(chan struct{}, maxJobs), active: make(map[string]*activeRun), byJob: make(map[string]int)}
+	_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
+	return &Service{store: st, logs: logs, bootID: hex.EncodeToString(b[:]), capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), active: make(map[string]*activeRun), byJob: make(map[string]int)}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
+
+// Wait returns a channel that closes once the run reaches its terminal
+// state and its log sink is finalized. It returns nil when the run is
+// unknown or already finished; callers should then read the store directly.
+func (s *Service) Wait(id string) <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.active[id]; a != nil {
+		return a.done
+	}
+	return nil
+}
 func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
 	if !d.IsEnabled() {
 		return model.Run{}, fmt.Errorf("definition %s is disabled", d.Name)
@@ -78,11 +107,15 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 		return r, err
 	}
-	maxBytes, _ := logstore.ParseBytes(d.LogMax)
-	if maxBytes == 0 {
+	maxBytes, err := logstore.ParseBytes(d.LogMax)
+	if err != nil {
+		// Unreachable through validated config; keep the run honest anyway.
+		slog.Error("invalid log_max, falling back to default", "job", d.Name, "log_max", d.LogMax, "error", err)
+		maxBytes = 100 << 20
+	} else if maxBytes == 0 {
 		maxBytes = 100 << 20
 	}
-	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, maxBytes, 256<<10)
+	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
 		s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", time.Now(), 0, false)
 		if d.Kind == model.KindJob {
@@ -227,13 +260,17 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
 	_ = w.Close()
-	s.store.FinishRun(context.Background(), r.ID, status, reason, code, signal, time.Now().UTC(), bytes, truncated)
+	if err := s.store.FinishRun(context.Background(), r.ID, status, reason, code, signal, time.Now().UTC(), bytes, truncated); err != nil {
+		slog.Error("persisting terminal run state failed", "run", r.ID, "status", status, "error", err)
+	}
 }
 func (s *Service) finishStartError(r model.Run, w *logstore.Writer, err error) {
 	w.Write(logstore.System, []byte("start error: "+err.Error()), 0)
 	bytes, truncated := w.Stats()
 	_ = w.Close()
-	s.store.FinishRun(context.Background(), r.ID, "failed", "start_error", nil, "", time.Now().UTC(), bytes, truncated)
+	if ferr := s.store.FinishRun(context.Background(), r.ID, "failed", "start_error", nil, "", time.Now().UTC(), bytes, truncated); ferr != nil {
+		slog.Error("persisting failed run state failed", "run", r.ID, "error", ferr)
+	}
 }
 func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	var cmd *exec.Cmd
@@ -242,7 +279,7 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	} else {
 		cmd = exec.Command(d.Shell, "-c", d.Command)
 	}
-	u, cred, home, label, err := identity(d.RunAs)
+	cred, home, label, err := identity(d.RunAs)
 	if err != nil {
 		return nil, "", err
 	}
@@ -256,48 +293,41 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	}
 	cmd.Dir = dir
 	cmd.Env = environment(d, home, r)
-	_ = u
 	return cmd, label, nil
 }
-func identity(runAs string) (*user.User, *syscall.Credential, string, string, error) {
+func identity(runAs string) (cred *syscall.Credential, home, label string, err error) {
 	current, err := user.Current()
 	if err != nil {
-		return nil, nil, "", "", err
+		return nil, "", "", err
 	}
 	u := current
 	groupName := ""
 	if runAs != "" {
 		name, g, _ := strings.Cut(runAs, ":")
 		groupName = g
-		if n, err := strconv.Atoi(name); err == nil {
-			u, err = user.LookupId(strconv.Itoa(n))
-			if err != nil {
-				return nil, nil, "", "", err
+		if _, cerr := strconv.Atoi(name); cerr == nil {
+			if u, err = user.LookupId(name); err != nil {
+				return nil, "", "", err
 			}
-		} else {
-			u, err = user.Lookup(name)
-			if err != nil {
-				return nil, nil, "", "", err
-			}
+		} else if u, err = user.Lookup(name); err != nil {
+			return nil, "", "", err
 		}
 	}
 	uid, _ := strconv.ParseUint(u.Uid, 10, 32)
 	gid, _ := strconv.ParseUint(u.Gid, 10, 32)
 	if groupName != "" {
-		g, err := user.LookupGroup(groupName)
-		if err != nil {
-			g, err = user.LookupGroupId(groupName)
-			if err != nil {
-				return nil, nil, "", "", err
+		g, gerr := user.LookupGroup(groupName)
+		if gerr != nil {
+			if g, gerr = user.LookupGroupId(groupName); gerr != nil {
+				return nil, "", "", gerr
 			}
 		}
 		gid, _ = strconv.ParseUint(g.Gid, 10, 32)
 	}
-	var cred *syscall.Credential
 	if os.Geteuid() == 0 || uint32(uid) != uint32(os.Geteuid()) {
 		cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 	}
-	return u, cred, u.HomeDir, u.Username, nil
+	return cred, u.HomeDir, u.Username, nil
 }
 func environment(d model.Definition, home string, r model.Run) []string {
 	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TZ=" + d.Timezone}
@@ -375,6 +405,10 @@ func parseSignal(v string) syscall.Signal {
 		return syscall.SIGHUP
 	case "QUIT":
 		return syscall.SIGQUIT
+	case "USR1":
+		return syscall.SIGUSR1
+	case "USR2":
+		return syscall.SIGUSR2
 	case "KILL":
 		return syscall.SIGKILL
 	default:
@@ -470,5 +504,3 @@ func (s *Service) Shutdown(ctx context.Context) {
 		}
 	}
 }
-
-var _ io.Reader

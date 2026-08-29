@@ -33,20 +33,29 @@ import (
 )
 
 type Server struct {
-	store     *store.Store
-	logs      *logstore.Store
-	exec      *executor.Service
-	super     *supervisor.Supervisor
-	reload    func(context.Context) error
-	started   time.Time
-	version   string
-	schema    []byte
-	ready     atomic.Bool
-	tokenHash atomic.Value
+	store   *store.Store
+	logs    *logstore.Store
+	exec    *executor.Service
+	super   *supervisor.Supervisor
+	reload  func(context.Context) error
+	started time.Time
+	version string
+	ready   atomic.Bool
+	// tokenHash holds the hex SHA-256 of the active bearer token; the raw
+	// token exists only at rotation time.
+	tokenHash atomic.Pointer[string]
 	tcp       *http.Server
 	unix      *http.Server
 	idemMu    sync.Mutex
 }
+
+func (s *Server) currentTokenHash() string {
+	if p := s.tokenHash.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+func (s *Server) setTokenHash(hash string) { s.tokenHash.Store(&hash) }
 
 //go:embed assets/*
 var webAssets embed.FS
@@ -86,15 +95,13 @@ type apiError struct {
 	Details any    `json:"details,omitempty"`
 }
 
-func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload func(context.Context) error, version string, _ []byte) *Server {
-	s := &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, started: time.Now(), version: version, schema: OpenAPIContract(version)}
-	s.tokenHash.Store("")
-	return s
+func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload func(context.Context) error, version string) *Server {
+	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, started: time.Now(), version: version}
 }
 func (s *Server) InitializeToken(ctx context.Context) (string, error) {
 	hash, err := s.store.Meta(ctx, "token_hash")
 	if err == nil {
-		s.tokenHash.Store(hash)
+		s.setTokenHash(hash)
 		return "", nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -113,7 +120,7 @@ func (s *Server) RotateToken(ctx context.Context) (string, error) {
 	if err := s.store.SetMeta(ctx, "token_hash", hash); err != nil {
 		return "", err
 	}
-	s.tokenHash.Store(hash)
+	s.setTokenHash(hash)
 	return token, nil
 }
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
@@ -170,7 +177,7 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		if isAPI && !local {
 			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			sum := sha256.Sum256([]byte(provided))
-			expected, _ := hex.DecodeString(s.tokenHash.Load().(string))
+			expected, _ := hex.DecodeString(s.currentTokenHash())
 			if len(expected) != len(sum) || subtle.ConstantTimeCompare(sum[:], expected) != 1 {
 				writeError(w, 401, "unauthorized", "valid bearer token required")
 				return
@@ -192,9 +199,10 @@ func (s *Server) routes() *http.ServeMux {
 		}
 		w.Write([]byte("ready\n"))
 	})
+	openAPI := sync.OnceValue(func() []byte { return OpenAPIContract(s.version) })
 	m.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(s.schema)
+		w.Write(openAPI())
 	})
 	m.HandleFunc("GET /api/v1/daemon", s.daemon)
 	m.HandleFunc("POST /api/v1/daemon/reload", s.reloadHandler)
@@ -228,7 +236,7 @@ func (s *Server) routes() *http.ServeMux {
 	return m
 }
 func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": []string{"local", "file-logs", "sqlite-log-archive"}, "token_fingerprint": fingerprint(s.tokenHash.Load().(string))})
+	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": []string{"local", "file-logs", "sqlite-log-archive"}, "token_fingerprint": fingerprint(s.currentTokenHash())})
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.reload(r.Context()); err != nil {
@@ -296,17 +304,14 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 	expected, _ := strconv.ParseInt(strings.Trim(r.Header.Get("If-Match"), `"`), 10, 64)
 	saved, err := s.store.PutDefinition(r.Context(), d, expected, "api")
 	if err != nil {
-		code := "validation_failed"
-		status := 422
-		if strings.Contains(err.Error(), "authority conflict") {
-			code = "authority_conflict"
-			status = 409
+		switch {
+		case errors.Is(err, store.ErrAuthorityConflict):
+			writeError(w, 409, "authority_conflict", err.Error())
+		case errors.Is(err, store.ErrRevisionConflict):
+			writeError(w, 412, "revision_conflict", err.Error())
+		default:
+			writeError(w, 422, "validation_failed", err.Error())
 		}
-		if strings.Contains(err.Error(), "revision conflict") {
-			code = "revision_conflict"
-			status = 412
-		}
-		writeError(w, status, code, err.Error())
 		return
 	}
 	if err := s.reload(r.Context()); err != nil {
@@ -317,11 +322,9 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteDefinition(r.Context(), r.PathValue("name"), "api"); err != nil {
-		status := 404
-		code := "not_found"
-		if strings.Contains(err.Error(), "authority conflict") {
-			status = 409
-			code = "authority_conflict"
+		status, code := 404, "not_found"
+		if errors.Is(err, store.ErrAuthorityConflict) {
+			status, code = 409, "authority_conflict"
 		}
 		writeError(w, status, code, err.Error())
 		return
@@ -346,50 +349,77 @@ func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"enabled": enabled})
 }
 
+// httpError pairs the stable error envelope with its HTTP status so
+// helpers can return typed failures.
+type httpError struct {
+	status int
+	code   string
+	msg    string
+}
+
+func (e *httpError) Error() string { return e.msg }
+
+// beginTrigger runs the idempotency check, the trigger itself, and the key
+// save while holding idemMu, so concurrent requests sharing a key cannot
+// double-fire. It never waits for the run: the mutex is released long before
+// any wait=true polling starts.
+func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string) (run model.Run, replayed bool, herr *httpError) {
+	s.idemMu.Lock()
+	defer s.idemMu.Unlock()
+	if key != "" {
+		if id, err := s.store.IdempotentRun(ctx, "admin", "trigger", key, requestHash); err == nil {
+			existing, getErr := s.store.Run(ctx, id)
+			if getErr != nil {
+				return model.Run{}, false, &httpError{500, "internal_error", getErr.Error()}
+			}
+			return existing, true, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return model.Run{}, false, &httpError{409, "idempotency_conflict", err.Error()}
+		}
+	}
+	d, hash, err := s.store.Definition(ctx, name)
+	if err != nil {
+		return model.Run{}, false, &httpError{404, "not_found", "definition not found"}
+	}
+	run, err = s.exec.Trigger(ctx, d, hash, "manual", nil)
+	if err != nil {
+		return model.Run{}, false, &httpError{409, "trigger_rejected", err.Error()}
+	}
+	if key != "" {
+		if err := s.store.SaveIdempotency(ctx, "admin", "trigger", key, requestHash, run.ID); err != nil {
+			return model.Run{}, false, &httpError{500, "internal_error", err.Error()}
+		}
+	}
+	return run, false, nil
+}
+
 func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 	key := r.Header.Get("Idempotency-Key")
 	requestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(r.PathValue("name"))))
-	if key != "" {
-		s.idemMu.Lock()
-		defer s.idemMu.Unlock()
-		if id, err := s.store.IdempotentRun(r.Context(), "admin", "trigger", key, requestHash); err == nil {
-			existing, getErr := s.store.Run(r.Context(), id)
-			if getErr != nil {
-				internal(w, getErr)
-				return
-			}
-			writeJSON(w, 200, existing)
-			return
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			writeError(w, 409, "idempotency_conflict", err.Error())
-			return
-		}
-	}
-	d, hash, err := s.store.Definition(r.Context(), r.PathValue("name"))
-	if err != nil {
-		writeError(w, 404, "not_found", "definition not found")
+	run, replayed, herr := s.beginTrigger(r.Context(), r.PathValue("name"), key, requestHash)
+	if herr != nil {
+		writeError(w, herr.status, herr.code, herr.msg)
 		return
 	}
-	run, err := s.exec.Trigger(r.Context(), d, hash, "manual", nil)
-	if err != nil {
-		writeError(w, 409, "trigger_rejected", err.Error())
+	if replayed {
+		writeJSON(w, 200, run)
 		return
-	}
-	if key != "" {
-		if err := s.store.SaveIdempotency(r.Context(), "admin", "trigger", key, requestHash, run.ID); err != nil {
-			internal(w, err)
-			return
-		}
 	}
 	if r.URL.Query().Get("wait") == "true" {
-		deadline := time.Now().Add(min(parseSeconds(r.URL.Query().Get("timeout")), 240) * time.Second)
+		seconds := timeoutSeconds(r.URL.Query().Get("timeout"))
+		deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 		for time.Now().Before(deadline) {
-			current, e := s.store.Run(r.Context(), run.ID)
-			if e == nil && model.TerminalStatuses[current.Status] {
+			current, err := s.store.Run(r.Context(), run.ID)
+			if err == nil && model.TerminalStatuses[current.Status] {
 				writeJSON(w, 200, current)
 				return
 			}
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-r.Context().Done(): // client went away; stop burning a slot
+				writeJSON(w, 202, run)
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
 		}
 		writeJSON(w, 202, run)
 		return
@@ -551,7 +581,7 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]string{"token": token, "fingerprint": fingerprint(s.tokenHash.Load().(string))})
+	writeJSON(w, 200, map[string]string{"token": token, "fingerprint": fingerprint(s.currentTokenHash())})
 }
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	defs, err := s.store.Definitions(r.Context())
@@ -689,12 +719,15 @@ func writeSSE(w io.Writer, event string, id uint64, value any) {
 	b, _ := json.Marshal(value)
 	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, b)
 }
-func parseSeconds(v string) time.Duration {
+
+// timeoutSeconds parses the ?timeout= query parameter of a waited trigger,
+// bounded to 240s and defaulting to 120s.
+func timeoutSeconds(v string) int {
 	n, _ := strconv.Atoi(v)
 	if n <= 0 {
 		n = 120
 	}
-	return time.Duration(n)
+	return min(n, 240)
 }
 func fingerprint(hash string) string {
 	if len(hash) < 12 {

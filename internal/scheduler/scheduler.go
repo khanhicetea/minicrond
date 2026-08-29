@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +48,14 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	return nil
 }
 func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
+	// A panic here would take the whole daemon down; definitions are
+	// validated before they reach the scheduler, so a canonicalization
+	// failure logs and drops the loop instead.
+	_, defHash, err := config.Canonical(d)
+	if err != nil {
+		slog.Error("scheduler: canonicalizing definition failed", "job", d.Name, "error", err)
+		return
+	}
 	hashBytes := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	hash := hex.EncodeToString(hashBytes[:])
 	anchor, last, storedHash, err := s.store.ScheduleState(ctx, d.ID)
@@ -71,9 +79,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			if count > 0 {
 				if d.CatchUp == "latest" {
 					scheduled := latest
-					s.exec.Trigger(context.Background(), d, mustHash(d), "schedule", &scheduled)
+					s.exec.Trigger(context.Background(), d, defHash, "schedule", &scheduled)
 				} else {
-					s.exec.RecordMissed(context.Background(), d, mustHash(d), count, latest)
+					s.exec.RecordMissed(context.Background(), d, defHash, count, latest)
 				}
 				last = latest
 				s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last)
@@ -113,7 +121,7 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			_ = s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next)
 		}
 		scheduled := next
-		_, _ = s.exec.Trigger(context.Background(), d, mustHash(d), "schedule", &scheduled)
+		_, _ = s.exec.Trigger(context.Background(), d, defHash, "schedule", &scheduled)
 		last = next
 
 		// Publish the following fire immediately after triggering this one.
@@ -216,13 +224,6 @@ func maxTime(a, b time.Time) time.Time {
 		return a
 	}
 	return b
-}
-func mustHash(d model.Definition) string {
-	_, h, err := config.Canonical(d)
-	if err != nil {
-		panic(fmt.Sprintf("canonical definition: %v", err))
-	}
-	return h
 }
 func (s *Scheduler) Stop() {
 	s.mu.Lock()

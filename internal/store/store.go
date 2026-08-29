@@ -18,6 +18,12 @@ import (
 
 const SchemaVersion = 1
 
+// Sentinel errors used by callers to map storage failures onto API statuses.
+var (
+	ErrAuthorityConflict = errors.New("authority conflict")
+	ErrRevisionConflict  = errors.New("revision conflict")
+)
+
 type Store struct{ db *sql.DB }
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
@@ -150,7 +156,7 @@ func (s *Store) SyncFiles(ctx context.Context, defs []model.Definition, prune bo
 		case err != nil:
 			return err
 		case authority == "db":
-			return fmt.Errorf("authority conflict: %s is managed by the database", d.Name)
+			return fmt.Errorf("%w: %s is managed by the database", ErrAuthorityConflict, d.Name)
 		case oldHash == hash:
 			_, err = tx.ExecContext(ctx, "UPDATE definitions SET source_file=?,enabled=?,updated_us=? WHERE definition_id=?", d.SourceFile, enabled, now, id)
 			if err != nil {
@@ -188,6 +194,10 @@ func (s *Store) SyncFiles(ctx context.Context, defs []model.Definition, prune bo
 		if !seen[x.name] {
 			absent = append(absent, x)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
 	}
 	rows.Close()
 	for _, x := range absent {
@@ -268,7 +278,7 @@ func (s *Store) CopyDefinitions(ctx context.Context, defs []model.Definition, ac
 			return err
 		} else {
 			if authority == "file" {
-				return fmt.Errorf("authority conflict: %s is managed by a file", d.Name)
+				return fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, d.Name)
 			}
 			rev++
 			if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
@@ -296,7 +306,7 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 		return err
 	}
 	if authority == "file" {
-		return fmt.Errorf("authority conflict: %s is managed by a file", name)
+		return fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, name)
 	}
 	now := time.Now().UnixMicro()
 	if _, err = tx.ExecContext(ctx, "UPDATE definitions SET deleted_us=?,enabled=0,updated_us=? WHERE name=?", now, now, name); err != nil {
@@ -315,7 +325,7 @@ func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errors.New("authority conflict or definition not found")
+		return fmt.Errorf("%w or definition not found", ErrAuthorityConflict)
 	}
 	return nil
 }
@@ -348,10 +358,10 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 		return d, err
 	} else {
 		if authority == "file" {
-			return d, fmt.Errorf("authority conflict: %s is managed by a file", d.Name)
+			return d, fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, d.Name)
 		}
 		if expected != 0 && expected != rev {
-			return d, fmt.Errorf("revision conflict: expected %d, current %d", expected, rev)
+			return d, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, rev)
 		}
 		rev++
 		if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
@@ -424,7 +434,7 @@ func (s *Store) Recover(ctx context.Context) error {
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {
 	limit = min(max(limit, 1), 500)
 	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs`
-	args := []any{}
+	var args []any
 	if job != "" {
 		q += " WHERE job=?"
 		args = append(args, job)
