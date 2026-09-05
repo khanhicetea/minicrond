@@ -1,15 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearch } from 'wouter';
-import { Icon } from '../components/Icon';
+import { Icon, type IconName } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { api, errorText } from '../api';
 import { auth } from '../auth';
-import { daemonQuery, jobsQuery, runsQuery, useReloadDaemon } from '../queries';
+import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useReloadDaemon } from '../queries';
 import { downloadFile } from '../lib/download';
-import { formatDayTime, formatSpan, shortId } from '../lib/format';
+import { formatDayTime, formatSpan, formatUptime, shortId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import type { Definition } from '../types';
+
+/** Tight badge sizing shared across settings panels (overview style). */
+const BADGE = '!gap-1 !px-1.5 !py-0 !text-[0.68rem] font-medium';
+
+interface Check {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** Shared daemon/jobs/runs state + diagnostics checks, used by header and panels. */
+function useDiagnostics() {
+  const daemon = useQuery(daemonQuery());
+  const jobs = useQuery(jobsQuery());
+  const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
+  const definitions = jobs.data ?? [];
+  const checks = useMemo<Check[]>(
+    () => [
+      { name: 'Daemon API', ok: !daemon.isError && daemon.data !== undefined, detail: daemon.isError ? errorText(daemon.error) : `v${daemon.data?.version ?? ''}` },
+      { name: 'Definitions readable', ok: !jobs.isError && jobs.data !== undefined, detail: jobs.isError ? errorText(jobs.error) : `${definitions.length} loaded` },
+      { name: 'Run history readable', ok: !runs.isError && runs.data !== undefined, detail: runs.isError ? errorText(runs.error) : `${runs.data?.length ?? 0} recent runs` },
+      { name: 'Log streaming', ok: !runs.isError, detail: runs.isError ? 'unavailable' : 'SSE ready' },
+    ],
+    [daemon, jobs, runs, definitions.length],
+  );
+  return { daemon, jobs, runs, definitions, checks };
+}
 
 /** Settings & diagnostics + Export / Import tabs. */
 export default function Settings() {
@@ -17,11 +44,69 @@ export default function Settings() {
   const [tab, setTab] = useState<'main' | 'import'>(initialTab);
   useEffect(() => setTab(initialTab), [initialTab]);
 
+  const { daemon, definitions, checks } = useDiagnostics();
+  const failedChecks = checks.filter(check => !check.ok).length;
+
+  const healthState = daemon.isError ? 'error' : daemon.data ? 'ok' : 'connecting';
+  const healthTitle =
+    healthState === 'ok'
+      ? `Daemon healthy · v${daemon.data!.version} · schema v${daemon.data!.schema_version} · up ${formatUptime(daemon.data!.uptime_s)}`
+      : healthState === 'error'
+        ? 'Daemon unreachable — data may be stale'
+        : 'Connecting to daemon…';
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
         title="Settings & diagnostics"
-        badge={<HealthBadge />}
+        subtitle="Security, storage, import sources, and daemon diagnostics."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Icon-only daemon health check; hover for details. */}
+            <span className={`health-check ${healthState}`} title={healthTitle}>
+              <Icon
+                name={healthState === 'ok' ? 'check' : healthState === 'error' ? 'x' : 'loader'}
+                size={16}
+                strokeWidth={2.5}
+                className={healthState === 'connecting' ? 'spin' : ''}
+              />
+              {healthState === 'ok' && <span className="ping" aria-hidden />}
+            </span>
+
+            {/* Related health group. */}
+            <div className="health-stats">
+              <span className="health-stat" title="Daemon version">
+                <span className="label">ver</span>
+                <span className="val">{daemon.data ? `v${daemon.data.version}` : '—'}</span>
+              </span>
+              <span className="health-stat" title="Schema version">
+                <span className="label">schema</span>
+                <span className="val">v{daemon.data?.schema_version ?? '—'}</span>
+              </span>
+              <span className="health-stat" title="Daemon uptime">
+                <span className="label">up</span>
+                <span className="val">{daemon.data ? formatUptime(daemon.data.uptime_s) : '—'}</span>
+              </span>
+              <span className="health-stat" title={daemon.data ? `Token fingerprint ${daemon.data.token_fingerprint}` : 'Token fingerprint'}>
+                <span className="label">fp</span>
+                <span className="val">{daemon.data ? shortId(daemon.data.token_fingerprint, 10) : '—'}</span>
+              </span>
+            </div>
+
+            {/* Summary badges. */}
+            <Link href="/jobs" className="chip chip-btn chip-neutral !py-2" title="All job & worker definitions">
+              <Icon name="list" size={11} />
+              {definitions.length} defs
+            </Link>
+            <span
+              className={`chip !py-2 ${failedChecks > 0 ? 'chip-error' : 'chip-success'}`}
+              title={failedChecks > 0 ? `${failedChecks} of ${checks.length} diagnostics checks failing` : `All ${checks.length} diagnostics checks passing`}
+            >
+              <Icon name={failedChecks > 0 ? 'alert-circle' : 'circle-check'} size={11} />
+              {failedChecks > 0 ? `${failedChecks} failing` : 'all passing'}
+            </span>
+          </div>
+        }
       />
       <div className="border-b border-base-300">
         <button type="button" className={`tab-line ${tab === 'main' ? 'active' : ''}`} onClick={() => setTab('main')}>
@@ -36,33 +121,74 @@ export default function Settings() {
   );
 }
 
-function HealthBadge() {
-  const daemon = useQuery(daemonQuery());
-  if (daemon.isError) {
-    return (
-      <span className="chip chip-error">
-        <span className="dot dot-red" /> Daemon unreachable
-      </span>
-    );
-  }
-  if (!daemon.data) {
-    return (
-      <span className="chip chip-neutral">
-        <span className="dot dot-gray" /> Connecting…
-      </span>
-    );
-  }
+/** Panel with a bordered header row: icon + title + badge, optional right actions. */
+function Panel({
+  icon,
+  title,
+  badge,
+  actions,
+  className = '',
+  children,
+}: {
+  icon: IconName;
+  title: string;
+  badge?: React.ReactNode;
+  actions?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <span className="chip chip-success">
-      <span className="dot dot-green" /> Daemon healthy
+    <section className={`panel flex min-w-0 flex-col ${className}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-base-300)_60%,transparent)] px-4 py-3">
+        <h2 className="panel-title flex items-center gap-2">
+          <Icon name={icon} size={14} className="text-blue-400" />
+          {title}
+          {badge}
+        </h2>
+        {actions}
+      </div>
+      <div className="flex-1 p-4">{children}</div>
+    </section>
+  );
+}
+
+/** Compact icon-only status chip (table cells). */
+function StatusChip({ ok, detail }: { ok: boolean; detail?: string }) {
+  const label = ok ? 'Healthy' : 'Error';
+  return (
+    <span className={`chip !gap-1 !px-1.5 !py-0 ${ok ? 'chip-success' : 'chip-error'}`} title={detail ?? label} aria-label={label}>
+      <Icon name={ok ? 'circle-check' : 'alert-circle'} size={11} />
     </span>
   );
 }
 
+/** One key/value row of the storage list (fits the narrow left column). */
+function StorageRow({
+  label,
+  value,
+  ok,
+  detail,
+  title,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  ok?: boolean;
+  detail?: string;
+  title?: string;
+  mono?: boolean;
+}) {
+  return (
+    <li className="flex items-center gap-2 py-2" title={title}>
+      <span className="shrink-0 text-sm muted">{label}</span>
+      <span className={`ml-auto truncate text-[0.8rem] ${mono ? 'num' : ''}`}>{value}</span>
+      {ok !== undefined && <StatusChip ok={ok} detail={detail} />}
+    </li>
+  );
+}
+
 function MainTab() {
-  const daemon = useQuery(daemonQuery());
-  const jobs = useQuery(jobsQuery());
-  const runs = useQuery(runsQuery('', 100));
+  const { daemon, runs, definitions, checks } = useDiagnostics();
   const reload = useReloadDaemon();
   const client = useQueryClient();
   const [copied, setCopied] = useState(false);
@@ -70,7 +196,6 @@ function MainTab() {
   const [rotateError, setRotateError] = useState('');
   const [liveTail, setLiveTail] = useState(true);
 
-  const definitions = jobs.data ?? [];
   const sources = useMemo(() => {
     const byFile = new Map<string, number>();
     let dbCount = 0;
@@ -84,15 +209,7 @@ function MainTab() {
     return { files: [...byFile.entries()].sort(), dbCount };
   }, [definitions]);
 
-  const checks = useMemo(
-    () => [
-      { name: 'Daemon API', ok: !daemon.isError && daemon.data !== undefined, detail: daemon.isError ? errorText(daemon.error) : `v${daemon.data?.version ?? ''}` },
-      { name: 'Definitions readable', ok: !jobs.isError && jobs.data !== undefined, detail: jobs.isError ? errorText(jobs.error) : `${definitions.length} loaded` },
-      { name: 'Run history readable', ok: !runs.isError && runs.data !== undefined, detail: runs.isError ? errorText(runs.error) : `${runs.data?.length ?? 0} recent runs` },
-      { name: 'Log streaming', ok: !runs.isError, detail: runs.isError ? 'unavailable' : 'SSE ready' },
-    ],
-    [daemon, jobs, runs, definitions.length],
-  );
+  const failedChecks = checks.filter(check => !check.ok).length;
 
   const copyToken = async () => {
     try {
@@ -123,14 +240,22 @@ function MainTab() {
   const activity = (runs.data ?? []).slice(0, 14);
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+      {/* Left rail (4): storage, security, diagnostics. */}
+      <div className="flex min-w-0 flex-col gap-4 lg:col-span-4">
+        {/* Storage & retention */}
+        <Panel icon="hard-drive" title="Storage & retention">
+          <ul className="divide-y divide-[color-mix(in_srgb,var(--color-base-300)_55%,transparent)]">
+            <StorageRow label="Database" value="SQLite (WAL)" ok={!daemon.isError} detail={daemon.isError ? errorText(daemon.error) : 'API reachable'} />
+            <StorageRow label="Logs" value="Local filesystem" ok={!runs.isError} detail={runs.isError ? 'unavailable' : 'readable'} />
+            <StorageRow label="Schema" value={`v${daemon.data?.schema_version ?? '—'}`} mono ok={!daemon.isError} />
+            <StorageRow label="Retention" value="per definition" title="keep_runs / keep_for" />
+          </ul>
+          <p className="field-help mt-2">Health reflects API reachability from this session.</p>
+        </Panel>
+
         {/* Security */}
-        <section className="panel p-4 sm:p-5">
-          <h2 className="panel-title mb-3 flex items-center gap-2">
-            <Icon name="key" size={15} className="text-blue-400" />
-            Security
-          </h2>
+        <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>bearer</span>}>
           <label className="field-label" htmlFor="admin-token">Admin token</label>
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -157,7 +282,7 @@ function MainTab() {
           {daemon.data && (
             <p className="num mt-2 text-xs muted">fingerprint {daemon.data.token_fingerprint}</p>
           )}
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <button type="button" className="btn-sub" onClick={() => void copyToken()}>
               <Icon name={copied ? 'check' : 'copy'} size={14} />
               {copied ? 'Copied!' : 'Copy'}
@@ -170,131 +295,29 @@ function MainTab() {
           {rotateError && (
             <p role="alert" className="mt-2 text-xs text-amber-400">{rotateError}</p>
           )}
-        </section>
+        </Panel>
 
-        {/* Storage & retention */}
-        <section className="panel p-4 sm:p-5">
-          <h2 className="panel-title mb-3 flex items-center gap-2">
-            <Icon name="hard-drive" size={15} className="text-blue-400" />
-            Storage &amp; retention
-          </h2>
-          <table className="mc-table">
-            <tbody>
-              <tr>
-                <td className="muted">Database</td>
-                <td>SQLite (WAL)</td>
-                <td className="text-right"><ChipHealthy ok={!daemon.isError} /></td>
-              </tr>
-              <tr>
-                <td className="muted">Logs</td>
-                <td>Local filesystem</td>
-                <td className="text-right"><ChipHealthy ok={!runs.isError} /></td>
-              </tr>
-              <tr>
-                <td className="muted">Schema</td>
-                <td className="num">v{daemon.data?.schema_version ?? '—'}</td>
-                <td className="text-right"><ChipHealthy ok={!daemon.isError} /></td>
-              </tr>
-              <tr>
-                <td className="muted">Retention</td>
-                <td>Per definition (keep_runs / keep_for)</td>
-                <td className="text-right faint">—</td>
-              </tr>
-            </tbody>
-          </table>
-          <p className="field-help mt-2">Health reflects API reachability from this session.</p>
-        </section>
-      </div>
-
-      {/* Import sources */}
-      <section className="panel p-4 sm:p-5">
-        <h2 className="panel-title mb-3 flex items-center gap-2">
-          <Icon name="file-text" size={15} className="text-blue-400" />
-          Import sources
-        </h2>
-        <div className="overflow-x-auto">
-          <table className="mc-table">
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Definitions</th>
-                <th>Authority</th>
-                <th>Current status</th>
-                <th className="text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.files.map(([file, count]) => (
-                <tr key={file}>
-                  <td className="font-mono text-[0.8rem]">{file}</td>
-                  <td className="num">{count}</td>
-                  <td>file</td>
-                  <td>
-                    <span className="chip chip-success"><Icon name="circle-check" size={12} /> Loaded</span>
-                  </td>
-                  <td className="text-right">
-                    <button type="button" className="btn-sub !py-1 !px-2.5 !text-xs" disabled={reload.isPending} onClick={() => reload.mutate(undefined)}>
-                      <Icon name="refresh" size={12} />
-                      Reload
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              <tr>
-                <td className="font-mono text-[0.8rem]">database (uploaded / API definitions)</td>
-                <td className="num">{sources.dbCount}</td>
-                <td>db</td>
-                <td>
-                  <span className="chip chip-success"><Icon name="circle-check" size={12} /> Loaded</span>
-                </td>
-                <td className="text-right">
-                  <button type="button" className="btn-sub !py-1 !px-2.5 !text-xs" disabled={reload.isPending} onClick={() => reload.mutate(undefined)}>
-                    <Icon name="refresh" size={12} />
-                    Reload
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        {reload.error ? (
-          <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-red-400">
-            <Icon name="alert-circle" size={13} /> {errorText(reload.error)}
-          </p>
-        ) : (
-          <p className="mt-2 flex items-center gap-1.5 text-xs text-green-400">
-            <Icon name="circle-check" size={13} /> All sources are up to date.
-            {reload.isSuccess && <span className="muted">Reloaded just now.</span>}
-          </p>
-        )}
-      </section>
-
-      <div className="grid gap-4 lg:grid-cols-2">
         {/* Diagnostics */}
-        <section className="panel p-4 sm:p-5">
-          <h2 className="panel-title mb-3 flex items-center gap-2">
-            <Icon name="wrench" size={15} className="text-blue-400" />
-            Diagnostics
-          </h2>
+        <Panel
+          icon="wrench"
+          title="Diagnostics"
+          badge={
+            <span className={`chip ${BADGE} ${failedChecks > 0 ? 'chip-error' : 'chip-success'}`}>
+              {checks.length - failedChecks}/{checks.length}
+            </span>
+          }
+        >
           <table className="mc-table">
-            <thead>
-              <tr>
-                <th>Check</th>
-                <th className="text-right">Status</th>
-              </tr>
-            </thead>
             <tbody>
               {checks.map(check => (
                 <tr key={check.name}>
                   <td>{check.name}</td>
-                  <td className="text-right">
-                    <ChipHealthy ok={check.ok} detail={check.detail} />
-                  </td>
+                  <td className="text-right"><StatusChip ok={check.ok} detail={check.detail} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
               className="btn-sub"
@@ -314,28 +337,36 @@ function MainTab() {
               Copy as curl
             </button>
           </div>
-        </section>
+        </Panel>
+      </div>
 
+      {/* Right (8): recent activity, import sources. */}
+      <div className="flex min-w-0 flex-col gap-4 lg:col-span-8">
         {/* Activity tail (in place of a daemon log tail, which the API does not expose) */}
-        <section className="panel p-4 sm:p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="panel-title flex items-center gap-2">
-              <Icon name="terminal" size={15} className="text-blue-400" />
-              Recent activity
-            </h2>
-            <label className="flex items-center gap-2 text-xs muted">
-              Live
-              <span className="switch green">
-                <input type="checkbox" checked={liveTail} onChange={event => setLiveTail(event.target.checked)} />
-                <span className="track" />
-              </span>
-            </label>
-          </div>
-          <div className="log-view max-h-64 overflow-auto rounded-lg border border-base-300 p-3">
+        <Panel
+          icon="terminal"
+          title="Recent activity"
+          badge={<span className={`chip chip-neutral ${BADGE}`}>{activity.length}</span>}
+          actions={
+            <div className="flex items-center gap-3">
+              <Link href="/runs" className="text-xs font-medium text-sky-300 hover:text-sky-200">
+                View all runs
+              </Link>
+              <label className="flex items-center gap-2 text-xs muted">
+                Live
+                <span className="switch green">
+                  <input type="checkbox" checked={liveTail} onChange={event => setLiveTail(event.target.checked)} />
+                  <span className="track" />
+                </span>
+              </label>
+            </div>
+          }
+        >
+          <div className="log-view max-h-72 overflow-auto rounded-lg border border-base-300 p-3">
             {activity.length === 0 && <div className="faint">no recent runs</div>}
             {activity.map(run => {
               const failed = ['failed', 'timeout', 'interrupted'].includes(run.status);
-              const level = failed ? 'WARN' : run.status === 'succeeded' ? 'INFO' : 'INFO';
+              const level = failed ? 'WARN' : 'INFO';
               return (
                 <div key={run.run_id} className="log-row !px-0">
                   <span className="log-ts">{formatDayTime(run.queued_at)}</span>
@@ -354,14 +385,95 @@ function MainTab() {
               );
             })}
           </div>
-          <div className="mt-2 text-right">
-            <Link href="/runs" className="text-xs text-sky-300 hover:text-sky-200">
-              View all runs
-            </Link>
-          </div>
           {/* Poll faster while live tail is on. */}
           {liveTail && <LiveRefresher />}
-        </section>
+        </Panel>
+
+        {/* Import sources */}
+        <Panel
+          icon="file-text"
+          title="Import sources"
+          badge={<span className={`chip chip-neutral ${BADGE}`}>{sources.files.length + 1} sources</span>}
+          actions={
+            <button
+              type="button"
+              className="btn-sub !py-1.5 !px-2.5 !text-xs"
+              disabled={reload.isPending}
+              onClick={() => reload.mutate(undefined)}
+            >
+              <Icon name="refresh" size={12} className={reload.isPending ? 'spin' : ''} />
+              Reload all
+            </button>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="mc-table">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Definitions</th>
+                  <th>Authority</th>
+                  <th>Current status</th>
+                  <th className="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sources.files.map(([file, count]) => (
+                  <tr key={file}>
+                    <td className="font-mono text-[0.8rem]">{file}</td>
+                    <td className="num">{count}</td>
+                    <td><span className={`chip chip-outline ${BADGE}`}>file</span></td>
+                    <td>
+                      <span className={`chip chip-success ${BADGE}`}><Icon name="circle-check" size={11} /> Loaded</span>
+                    </td>
+                    <td className="text-right">
+                      <button
+                        type="button"
+                        className="btn-sub !px-2 !py-1.5"
+                        disabled={reload.isPending}
+                        onClick={() => reload.mutate(undefined)}
+                        title="Reload source"
+                        aria-label={`Reload ${file}`}
+                      >
+                        <Icon name="refresh" size={13} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                <tr>
+                  <td className="font-mono text-[0.8rem]">database (uploaded / API definitions)</td>
+                  <td className="num">{sources.dbCount}</td>
+                  <td><span className={`chip chip-outline-job ${BADGE}`}>db</span></td>
+                  <td>
+                    <span className={`chip chip-success ${BADGE}`}><Icon name="circle-check" size={11} /> Loaded</span>
+                  </td>
+                  <td className="text-right">
+                    <button
+                      type="button"
+                      className="btn-sub !px-2 !py-1.5"
+                      disabled={reload.isPending}
+                      onClick={() => reload.mutate(undefined)}
+                      title="Reload source"
+                      aria-label="Reload database definitions"
+                    >
+                      <Icon name="refresh" size={13} />
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {reload.error ? (
+            <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-red-400">
+              <Icon name="alert-circle" size={13} /> {errorText(reload.error)}
+            </p>
+          ) : (
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-green-400">
+              <Icon name="circle-check" size={13} /> All sources are up to date.
+              {reload.isSuccess && <span className="muted">Reloaded just now.</span>}
+            </p>
+          )}
+        </Panel>
       </div>
     </div>
   );
@@ -369,17 +481,8 @@ function MainTab() {
 
 /** Invisible component that keeps run data fresh while "Live" is enabled. */
 function LiveRefresher() {
-  useQuery({ ...runsQuery('', 100), refetchInterval: 4000 });
+  useQuery({ ...runsQuery('', RECENT_RUNS_LIMIT), refetchInterval: 4000 });
   return null;
-}
-
-function ChipHealthy({ ok, detail }: { ok: boolean; detail?: string }) {
-  return (
-    <span className={`chip ${ok ? 'chip-success' : 'chip-error'}`} title={detail}>
-      <Icon name={ok ? 'circle-check' : 'alert-circle'} size={12} />
-      {ok ? 'Healthy' : 'Error'}
-    </span>
-  );
 }
 
 function ImportTab() {
@@ -423,16 +526,12 @@ function ImportTab() {
   };
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <section className="panel p-4 sm:p-5">
-        <h2 className="panel-title mb-2 flex items-center gap-2">
-          <Icon name="download" size={15} className="text-blue-400" />
-          Export
-        </h2>
+    <div className="grid gap-4 lg:grid-cols-12">
+      <Panel icon="download" title="Export" badge={<span className={`chip chip-neutral ${BADGE}`}>toml · json</span>} className="lg:col-span-5">
         <p className="mb-3 text-sm muted">
           Download every definition as a TOML bundle or JSON document. Secrets are not included.
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             className="btn-sub"
@@ -448,13 +547,14 @@ function ImportTab() {
             <Icon name="file-text" size={14} /> JSON
           </button>
         </div>
-      </section>
+      </Panel>
 
-      <section className="panel p-4 sm:p-5">
-        <h2 className="panel-title mb-2 flex items-center gap-2">
-          <Icon name="upload" size={15} className="text-blue-400" />
-          Import
-        </h2>
+      <Panel
+        icon="upload"
+        title="Import"
+        badge={preview ? <span className={`chip chip-info ${BADGE}`}>{preview.definitions.length} staged</span> : undefined}
+        className="lg:col-span-7"
+      >
         <p className="mb-3 text-sm muted">
           Paste a minicron TOML bundle, preview it, then apply. Imported definitions become DB-authority copies.
         </p>
@@ -522,7 +622,7 @@ function ImportTab() {
             </div>
           </div>
         )}
-      </section>
+      </Panel>
     </div>
   );
 }

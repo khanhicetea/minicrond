@@ -187,6 +187,38 @@ func TestNewerSchemaRefused(t *testing.T) {
 	}
 }
 
+func TestRunMetricsCountsBeyondRunsLimit(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	def := model.Definition{Name: "metric", Kind: model.KindJob, Authority: "file", SourceFile: "t",
+		Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	if err := s.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := s.Definition(t.Context(), "metric")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for i := range 501 {
+		at := now.Add(-time.Duration(i) * time.Second)
+		run := model.Run{ID: fmt.Sprintf("metric-%d", i), DefinitionID: stored.ID, Job: "metric", Kind: model.KindJob, Revision: 1, Status: "succeeded", Trigger: "schedule", QueuedAt: at, EndedAt: &at}
+		if err := s.CreateRun(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	metrics, err := s.RunMetrics(t.Context(), now.Add(-time.Hour), now, 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Total != 501 || metrics.Succeeded != 501 {
+		t.Fatalf("metrics counted %d/%d runs, want 501/501", metrics.Total, metrics.Succeeded)
+	}
+}
+
 func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {

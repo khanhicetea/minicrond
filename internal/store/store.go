@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,6 +27,37 @@ var (
 )
 
 type Store struct{ db *sql.DB }
+
+type RunMetrics struct {
+	Total         int               `json:"total"`
+	Succeeded     int               `json:"succeeded"`
+	Failed        int               `json:"failed"`
+	Active        int               `json:"active"`
+	Queued        int               `json:"queued"`
+	DurationP50MS *int64            `json:"duration_p50_ms,omitempty"`
+	DurationP95MS *int64            `json:"duration_p95_ms,omitempty"`
+	Jobs          []RunJobMetrics   `json:"jobs"`
+	Buckets       []RunMetricBucket `json:"buckets"`
+}
+
+type RunJobMetrics struct {
+	Name          string `json:"name"`
+	Total         int    `json:"total"`
+	Succeeded     int    `json:"succeeded"`
+	Failed        int    `json:"failed"`
+	Active        int    `json:"active"`
+	DurationP50MS *int64 `json:"duration_p50_ms,omitempty"`
+	DurationP95MS *int64 `json:"duration_p95_ms,omitempty"`
+}
+
+type RunMetricBucket struct {
+	Success       int    `json:"success"`
+	Failure       int    `json:"failure"`
+	Active        int    `json:"active"`
+	Queued        int    `json:"queued"`
+	DurationP50MS *int64 `json:"duration_p50_ms,omitempty"`
+	DurationP95MS *int64 `json:"duration_p95_ms,omitempty"`
+}
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
@@ -456,6 +489,124 @@ func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, e
 	}
 	return out, rows.Err()
 }
+func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets int) (RunMetrics, error) {
+	buckets = min(max(buckets, 1), 288)
+	out := RunMetrics{Buckets: make([]RunMetricBucket, buckets)}
+	jobDurations := make(map[string][]int64)
+	bucketDurations := make([][]int64, buckets)
+	jobStats := make(map[string]*RunJobMetrics)
+	var durations []int64
+	startUS, endUS := since.UnixMicro(), now.UnixMicro()
+	windowUS := max(endUS-startUS, 1)
+	bucketIndex := func(us int64) int {
+		return min(buckets-1, max(0, int((us-startUS)*int64(buckets)/windowUS)))
+	}
+	isFailed := func(status string) bool {
+		return status == "failed" || status == "timeout" || status == "interrupted"
+	}
+	isActive := func(status string) bool { return status == "pending" || status == "running" }
+	jobEntry := func(name string) *RunJobMetrics {
+		entry := jobStats[name]
+		if entry == nil {
+			entry = &RunJobMetrics{Name: name}
+			jobStats[name] = entry
+		}
+		return entry
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('pending','running')`, startUS, startUS)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var job, status string
+		var queuedUS int64
+		var started, ended sql.NullInt64
+		if err := rows.Scan(&job, &status, &queuedUS, &started, &ended); err != nil {
+			return out, err
+		}
+		queuedInWindow := queuedUS >= startUS && queuedUS <= endUS
+		if queuedInWindow {
+			out.Total++
+			entry := jobEntry(job)
+			entry.Total++
+			if status == "succeeded" {
+				out.Succeeded++
+				entry.Succeeded++
+			} else if isFailed(status) {
+				out.Failed++
+				entry.Failed++
+			}
+			if started.Valid && ended.Valid && ended.Int64 >= started.Int64 {
+				duration := (ended.Int64 - started.Int64) / 1000
+				durations = append(durations, duration)
+				jobDurations[job] = append(jobDurations[job], duration)
+			}
+		}
+		if isActive(status) {
+			entry := jobEntry(job)
+			entry.Active++
+			if status == "pending" {
+				out.Queued++
+			} else {
+				out.Active++
+			}
+		}
+		if ended.Valid && ended.Int64 >= startUS && ended.Int64 <= endUS {
+			index := bucketIndex(ended.Int64)
+			if status == "succeeded" {
+				out.Buckets[index].Success++
+			} else if isFailed(status) {
+				out.Buckets[index].Failure++
+			}
+			if started.Valid && ended.Int64 >= started.Int64 {
+				bucketDurations[index] = append(bucketDurations[index], (ended.Int64-started.Int64)/1000)
+			}
+		}
+		for i := range buckets {
+			t := startUS + (int64(i)*windowUS)/int64(buckets) + windowUS/int64(buckets)/2
+			endedUS := int64(1 << 62)
+			if ended.Valid {
+				endedUS = ended.Int64
+			}
+			if queuedUS <= t && (!started.Valid || t < started.Int64) && t < endedUS {
+				out.Buckets[i].Queued++
+			}
+			if started.Valid && started.Int64 <= t && t < endedUS {
+				out.Buckets[i].Active++
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	out.DurationP50MS = percentileMS(durations, 0.5)
+	out.DurationP95MS = percentileMS(durations, 0.95)
+	for i := range buckets {
+		out.Buckets[i].DurationP50MS = percentileMS(bucketDurations[i], 0.5)
+		out.Buckets[i].DurationP95MS = percentileMS(bucketDurations[i], 0.95)
+	}
+	for name, entry := range jobStats {
+		entry.DurationP50MS = percentileMS(jobDurations[name], 0.5)
+		entry.DurationP95MS = percentileMS(jobDurations[name], 0.95)
+		out.Jobs = append(out.Jobs, *entry)
+	}
+	slices.SortFunc(out.Jobs, func(a, b RunJobMetrics) int {
+		return cmp.Or(cmp.Compare(b.Total, a.Total), cmp.Compare(a.Name, b.Name))
+	})
+	return out, nil
+}
+
+func percentileMS(values []int64, p float64) *int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	slices.Sort(values)
+	v := values[min(len(values)-1, int(float64(len(values))*p))]
+	return &v
+}
+
 func (s *Store) Run(ctx context.Context, id string) (model.Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
 	return scanRun(row)

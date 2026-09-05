@@ -178,14 +178,19 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onC
                     spellCheck={false}
                   />
                   <p className="field-help">{humanizeSchedule(draft.schedule ?? '')}</p>
-                  {scheduleType === 'cron' && (
-                    <div className="mt-3 rounded-xl border border-base-300 bg-base-200/35 p-3">
-                      <div className="mb-2 flex items-center gap-2">
-                        <span className="text-xs font-semibold uppercase tracking-wide muted">Cron helper</span>
-                        <Icon name="info" size={13} className="faint" />
-                      </div>
-                      <div className="grid gap-3">
-                        <div className="grid grid-cols-5 gap-2 overflow-x-auto">
+                </div>
+              </div>
+
+              {/* Cron helper: full width under the schedule row, fields 9/12 + preview 3/12. */}
+              {scheduleType === 'cron' && (
+                <div className="rounded-xl border border-base-300 bg-base-200/35 p-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide muted">Cron helper</span>
+                    <Icon name="info" size={13} className="faint" />
+                  </div>
+                  <div className="grid gap-3 lg:grid-cols-12">
+                    <div className="lg:col-span-9">
+                      <div className="grid grid-cols-5 gap-2 overflow-x-auto">
                           {(
                             [
                               ['Minute', MINUTE_OPTIONS, 0],
@@ -212,11 +217,13 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onC
                               </select>
                             </div>
                           ))}
-                        </div>
-                        <div className="rounded-lg bg-base-100/45 p-2.5">
-                          <h4 className="mb-1.5 text-[0.65rem] font-semibold uppercase tracking-wide muted">Next 5 fires · {tz}</h4>
+                      </div>
+                    </div>
+                    <div className="lg:col-span-3">
+                      <div className="h-full rounded-lg bg-base-100/45 p-2.5">
+                        <h4 className="mb-1.5 text-[0.65rem] font-semibold uppercase tracking-wide muted">Next 5 fires · {tz}</h4>
                           {nextFireList.length > 0 ? (
-                            <ul className="grid gap-1 sm:grid-cols-2 xl:grid-cols-5">
+                            <ul className="grid gap-1">
                               {nextFireList.map((fire, index) => (
                                 <li key={fire} className="flex items-center gap-1.5 text-xs">
                                   <Icon name="calendar" size={12} className="faint shrink-0" />
@@ -235,12 +242,11 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onC
                           ) : (
                             <p className="text-xs faint">Enter a valid cron expression to preview firings.</p>
                           )}
-                        </div>
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>

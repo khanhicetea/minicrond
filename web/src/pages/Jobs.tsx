@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { errorText } from '../api';
-import { jobsQuery, runsQuery, useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerStates } from '../queries';
+import { jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerStates } from '../queries';
 import { humanizeSchedule } from '../lib/cron';
 import { definitionToToml } from '../lib/toml';
 import { formatCountdown, formatDayTime, formatSpan } from '../lib/format';
@@ -36,7 +36,7 @@ export default function Jobs() {
   // Refresh the server-owned schedule/run state so the countdown never
   // drifts from the scheduler when a fire occurs.
   const jobs = useQuery({ ...jobsQuery(), refetchInterval: 1000 });
-  const runs = useQuery({ ...runsQuery('', 200), refetchInterval: 1000 });
+  const runs = useQuery({ ...runsQuery('', RECENT_RUNS_LIMIT), refetchInterval: 1000 });
   const trigger = useTriggerJob();
   const setEnabled = useSetJobEnabled();
   const remove = useDeleteJob();

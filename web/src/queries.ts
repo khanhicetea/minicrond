@@ -3,11 +3,22 @@ import { api } from './api';
 import type { Definition, WorkerState } from './types';
 import { isActiveRun } from './types';
 
+/**
+ * Shared limit for the global recent-runs list.
+ *
+ * Overview, Jobs, Runs, and Settings all want the same "latest N runs" feed;
+ * fetching it through one identical query (same key, same limit) lets
+ * react-query reuse a single request/cache entry across those pages instead
+ * of pulling overlapping ?limit=… payloads per page.
+ */
+export const RECENT_RUNS_LIMIT = 200;
+
 export const keys = {
   daemon: ['daemon'] as const,
   jobs: ['jobs'] as const,
   job: (name: string) => ['job', name] as const,
   runs: (job: string, limit: number) => ['runs', job, limit] as const,
+  runMetrics: (range: string, buckets: number) => ['run-metrics', range, buckets] as const,
   run: (id: string) => ['run', id] as const,
 };
 
@@ -18,6 +29,13 @@ export const jobsQuery = () =>
   queryOptions({ queryKey: keys.jobs, queryFn: api.listJobs, select: data => data.items });
 
 export const jobQuery = (name: string) => queryOptions({ queryKey: keys.job(name), queryFn: () => api.getJob(name) });
+
+export const runMetricsQuery = (range = '1h', buckets = 48) =>
+  queryOptions({
+    queryKey: keys.runMetrics(range, buckets),
+    queryFn: () => api.runMetrics(range, buckets),
+    refetchInterval: 4_000,
+  });
 
 export const runsQuery = (job = '', limit = 50) =>
   queryOptions({

@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import RunsTable from '../components/RunsTable';
-import { runsQuery } from '../queries';
+import { runsQuery, RECENT_RUNS_LIMIT } from '../queries';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
 
@@ -22,7 +22,7 @@ export default function Runs() {
   const [query, setQuery] = useState('');
   useEffect(() => setFilter(initial), [initial]);
 
-  const runs = useQuery(runsQuery('', 200));
+  const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (runs.data ?? []).filter(run => {

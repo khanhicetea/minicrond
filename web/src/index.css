@@ -873,22 +873,89 @@ textarea.mc-input {
   color: color-mix(in srgb, var(--color-base-content) 65%, transparent);
 }
 
-/* Alert cards (overview). */
-.alert-card {
-  display: flex;
+/* Overview header: icon-only daemon health check (pulse ring while healthy). */
+.health-check {
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  gap: 0.9rem;
-  padding: 1rem 1.1rem;
-  background: var(--color-base-100);
-  border: 1px solid var(--color-base-300);
-  border-radius: var(--radius-box);
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 120ms ease;
-  width: 100%;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex-shrink: 0;
+  border-radius: 0.625rem;
+  border: 1px solid color-mix(in srgb, #22c55e 35%, transparent);
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+  color: #4ade80;
 }
-.alert-card:hover {
-  border-color: color-mix(in srgb, var(--color-base-content) 28%, transparent);
+.health-check.error {
+  border-color: color-mix(in srgb, #ef4444 40%, transparent);
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  color: #f87171;
+}
+.health-check.connecting {
+  border-color: var(--color-base-300);
+  background: color-mix(in srgb, var(--color-base-content) 6%, transparent);
+  color: color-mix(in srgb, var(--color-base-content) 55%, transparent);
+}
+.health-check .ping {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid currentColor;
+  animation: health-ping 2.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes health-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  75%,
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* Overview header: segmented stat group (ver / up / tz / cfg). */
+.health-stats {
+  display: inline-flex;
+  align-items: stretch;
+  height: 2.25rem;
+  overflow: hidden;
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.625rem;
+  background: var(--color-base-100);
+}
+.health-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0 0.65rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-base-300) 75%, transparent);
+  white-space: nowrap;
+}
+.health-stat:first-child {
+  border-left: 0;
+}
+.health-stat .label {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--color-base-content) 45%, transparent);
+}
+.health-stat .val {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Clickable chip (overview header alert badges). */
+.chip-btn {
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.chip-btn:hover {
+  filter: brightness(1.18);
 }
 
 /* Scrollbars. */

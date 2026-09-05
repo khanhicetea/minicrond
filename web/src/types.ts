@@ -78,6 +78,37 @@ export interface DaemonInfo {
   token_fingerprint: string;
 }
 
+export interface RunMetricBucket {
+  success: number;
+  failure: number;
+  active: number;
+  queued: number;
+  duration_p50_ms?: number;
+  duration_p95_ms?: number;
+}
+
+export interface RunJobMetrics {
+  name: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  active: number;
+  duration_p50_ms?: number;
+  duration_p95_ms?: number;
+}
+
+export interface RunMetrics {
+  total: number;
+  succeeded: number;
+  failed: number;
+  active: number;
+  queued: number;
+  duration_p50_ms?: number;
+  duration_p95_ms?: number;
+  jobs: RunJobMetrics[];
+  buckets: RunMetricBucket[];
+}
+
 export interface WorkerState {
   held: boolean;
   active: boolean;

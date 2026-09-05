@@ -1,5 +1,5 @@
 import { auth } from './auth';
-import type { DaemonInfo, Definition, Frame, JobDetail, Run } from './types';
+import type { DaemonInfo, Definition, Frame, JobDetail, Run, RunMetrics } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -87,6 +87,9 @@ export const api = {
 
   workerAction: (name: string, action: 'start' | 'stop' | 'restart') =>
     request<Record<string, boolean>>(`/api/v1/workers/${encodeURIComponent(name)}/${action}`, { method: 'POST' }),
+
+  runMetrics: (range = '1h', buckets = 48) =>
+    request<RunMetrics>(`/api/v1/metrics/runs?range=${encodeURIComponent(range)}&buckets=${buckets}`),
 
   listRuns: (job = '', limit = 50) => {
     const query = new URLSearchParams({ limit: String(limit) });

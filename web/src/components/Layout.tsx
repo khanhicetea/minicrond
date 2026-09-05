@@ -3,7 +3,7 @@ import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from './Icon';
 import { auth } from '../auth';
-import { daemonQuery, jobsQuery, runsQuery } from '../queries';
+import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT } from '../queries';
 import { RANGE_LABEL, useRange, type RangeKey } from '../lib/range';
 import { shortId } from '../lib/format';
 import { jobPath } from '../lib/routes';
@@ -60,7 +60,7 @@ function GlobalSearch() {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const jobs = useQuery(jobsQuery());
-  const runs = useQuery(runsQuery('', 100));
+  const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

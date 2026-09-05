@@ -1,12 +1,12 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Link, useParams } from 'wouter';
+import { Link, useLocation, useParams } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from '../components/Icon';
 import LogViewer from '../components/LogViewer';
 import StatusBadge from '../components/StatusBadge';
 import { RunsList } from '../components/RunsTable';
 import { api, errorText } from '../api';
-import { jobQuery, runQuery, runsQuery, useStopRun } from '../queries';
+import { jobQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
 import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
 import { formatSpan, formatTimestamp, shortId } from '../lib/format';
@@ -22,14 +22,27 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'manual', label: 'Manual' },
 ];
 
-/** Run detail: summary header, recent-runs sidebar, and the live output panel. */
+/**
+ * Run detail: every fact appears exactly once.
+ * - Header: identity (job, status, run ID, trigger) + actions
+ * - Essentials row: duration, exit code, started, ended
+ * - Collapsible "Run details": attempt, queue/schedule times, process,
+ *   definition revision/hash, run-as — hidden until asked for
+ * - Output panel: log size in its header; a failed run adds a single-line
+ *   hint with "copy last errors" (no repeated status/exit code)
+ */
 export default function RunDetail() {
   const params = useParams();
   const id = params.id ?? '';
+  const [, navigate] = useLocation();
   const run = useQuery(runQuery(id));
   const stop = useStopRun();
+  const trigger = useTriggerJob();
   const [downloadError, setDownloadError] = useState('');
+  const [actionError, setActionError] = useState('');
   const [copiedError, setCopiedError] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [filter, setFilter] = useState<FilterKey>('all');
 
   const jobId = run.data?.job ?? '';
@@ -63,10 +76,20 @@ export default function RunDetail() {
   const data = run.data;
   const running = isActiveRun(data);
   const failed = ['failed', 'timeout', 'interrupted'].includes(data.status);
-  const succeeded = data.status === 'succeeded';
   const exitCode = data.exit_code;
   const runAs = jobDetail.data?.definition.run_as;
   const hero = heroIcon(data.status);
+  const triggerLabel = data.trigger === 'manual' ? 'Manual run' : data.trigger === 'schedule' ? 'Scheduled run' : `${data.trigger} run`;
+
+  const copyId = async () => {
+    try {
+      await navigator.clipboard.writeText(data.run_id);
+      setCopiedId(true);
+      setTimeout(() => setCopiedId(false), 2000);
+    } catch {
+      setCopiedId(false);
+    }
+  };
 
   const copyError = async () => {
     try {
@@ -81,6 +104,14 @@ export default function RunDetail() {
     }
   };
 
+  const rerun = () => {
+    setActionError('');
+    trigger.mutate(data.job, {
+      onSuccess: next => navigate(`/runs/${next.run_id}`),
+      onError: err => setActionError(errorText(err)),
+    });
+  };
+
   return (
     <div className="space-y-4">
       <nav className="crumbs" aria-label="Breadcrumb">
@@ -88,10 +119,10 @@ export default function RunDetail() {
         <Icon name="chevron-right" size={12} className="faint" />
         <Link href={jobPath(data.job)}>{data.job}</Link>
         <Icon name="chevron-right" size={12} className="faint" />
-        <span>Run #{shortId(data.run_id, 8)}</span>
+        <span>Run</span>
       </nav>
 
-      {/* Hero header: identity + actions, key facts, technical metadata. */}
+      {/* Header: identity + actions. Status, run ID, and trigger appear only here. */}
       <section className="panel overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-5 pb-4 pt-4">
           <div className="flex min-w-0 items-center gap-3.5">
@@ -100,20 +131,22 @@ export default function RunDetail() {
             </span>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <h1 className="truncate text-lg font-bold tracking-tight">
-                  <Link href={jobPath(data.job)} className="font-mono hover:text-sky-200">
-                    {data.job}
-                  </Link>
-                </h1>
+                <h1 className="truncate font-mono text-lg font-bold tracking-tight">{data.job}</h1>
                 <StatusBadge status={data.status} size="md" />
               </div>
-              <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs muted">
-                <span className="font-mono">#{shortId(data.run_id, 8)}</span>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs muted">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 font-mono transition-colors hover:text-base-content"
+                  title="Copy full run ID"
+                  onClick={() => void copyId()}
+                >
+                  #{shortId(data.run_id, 8)}
+                  <Icon name={copiedId ? 'check' : 'copy'} size={11} />
+                </button>
                 <span aria-hidden>·</span>
-                <span>{data.trigger === 'manual' ? 'Manual run' : 'Scheduled run'}</span>
-                <span aria-hidden>·</span>
-                <span className="num">attempt {data.attempt}</span>
-              </p>
+                <span>{triggerLabel}</span>
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -121,6 +154,12 @@ export default function RunDetail() {
               <button type="button" className="btn-danger-x" disabled={stop.isPending} onClick={() => stop.mutate(id)}>
                 <Icon name="square" size={13} />
                 {stop.isPending ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
+            {!running && (
+              <button type="button" className="btn-sub" disabled={trigger.isPending} onClick={rerun}>
+                <Icon name="play" size={13} />
+                {trigger.isPending ? 'Starting…' : 'Run again'}
               </button>
             )}
             <button
@@ -145,8 +184,8 @@ export default function RunDetail() {
           </div>
         </div>
 
-        {/* Key facts */}
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-base-300 px-5 py-4 sm:grid-cols-3 xl:grid-cols-7">
+        {/* Essentials: the four facts that answer "how did this run go?" */}
+        <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-base-300 px-5 py-4 sm:grid-cols-4">
           <Fact label="Duration" emphasize>
             <span className="num">
               {running ? formatSpan(data.started_at ?? data.queued_at) : formatSpan(data.started_at, data.ended_at)}
@@ -169,43 +208,48 @@ export default function RunDetail() {
           </Fact>
           <Fact label="Started">{formatTimestamp(data.started_at)}</Fact>
           <Fact label="Ended">{formatTimestamp(data.ended_at)}</Fact>
-          <Fact label="Trigger">
-            <span className={`chip ${data.trigger === 'manual' ? 'chip-info' : 'chip-neutral'}`}>
-              <Icon name={data.trigger === 'manual' ? 'user' : 'calendar'} size={12} />
-              {data.trigger === 'schedule' ? 'Scheduled' : data.trigger === 'manual' ? 'Manual' : data.trigger}
-            </span>
-          </Fact>
-          <Fact label="Attempt">
-            <span className="num">{data.attempt}</span>
-          </Fact>
-          <Fact label="Run as">
-            {runAs ? <span className="chip chip-info font-mono">{runAs}</span> : <span className="faint">—</span>}
-          </Fact>
         </div>
 
-        {/* Technical metadata */}
-        <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-base-300 bg-base-200/50 px-5 py-3.5 sm:grid-cols-3 xl:grid-cols-6">
-          <Meta label="Revision">
-            <span className="num">r{data.revision}</span>
-          </Meta>
-          <Meta label="Definition hash" mono>
-            {shortId(data.definition_hash, 16)}
-          </Meta>
-          <Meta label="Process" mono>
-            {data.pid || data.pgid ? `${data.pid || '—'} / ${data.pgid || '—'}` : '—'}
-          </Meta>
-          <Meta label="Log output" mono>
-            {formatLogSize(data.log_bytes)}
-            {data.log_truncated ? ' (truncated)' : ''}
-          </Meta>
-          <Meta label="Scheduled for">{data.scheduled_for ? formatTimestamp(data.scheduled_for) : '—'}</Meta>
-          <Meta label="End reason">{data.end_reason || '—'}</Meta>
+        {/* Everything else, collapsed by default. */}
+        <div className="border-t border-base-300 bg-base-200/50">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider faint transition-colors hover:text-base-content"
+            aria-expanded={detailsOpen}
+            onClick={() => setDetailsOpen(open => !open)}
+          >
+            <Icon name="chevron-down" size={13} className={`transition-transform ${detailsOpen ? '' : '-rotate-90'}`} />
+            Run details
+            <span className="font-normal normal-case tracking-normal">(attempt, scheduling, process, definition)</span>
+          </button>
+          {detailsOpen && (
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 pb-4 sm:grid-cols-3 xl:grid-cols-4">
+              <Meta label="Attempt">
+                <span className="num">{data.attempt}</span>
+              </Meta>
+              <Meta label="Queued">{formatTimestamp(data.queued_at)}</Meta>
+              <Meta label="Scheduled for">{data.scheduled_for ? formatTimestamp(data.scheduled_for) : '—'}</Meta>
+              <Meta label="End reason">{data.end_reason || '—'}</Meta>
+              <Meta label="Revision">
+                <span className="num">r{data.revision}</span>
+              </Meta>
+              <Meta label="Definition hash" mono>
+                {shortId(data.definition_hash, 16)}
+              </Meta>
+              <Meta label="Process" mono>
+                {data.pid || data.pgid ? `${data.pid || '—'} / ${data.pgid || '—'}` : '—'}
+              </Meta>
+              <Meta label="Run as">
+                {runAs ? <span className="font-mono">{runAs}</span> : <span className="faint">—</span>}
+              </Meta>
+            </div>
+          )}
         </div>
       </section>
 
-      {(downloadError || stop.error) && (
+      {(downloadError || actionError || stop.error) && (
         <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-2.5 text-sm text-red-300">
-          {downloadError || errorText(stop.error)}
+          {downloadError || actionError || errorText(stop.error)}
         </div>
       )}
       {data.log_truncated && (
@@ -247,40 +291,24 @@ export default function RunDetail() {
         <section className="panel flex min-h-[32rem] flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-base-300 px-4 py-2.5">
             <h2 className="panel-title">Run output</h2>
-            <span className="num faint">{data.run_id}</span>
+            <span className="num faint">
+              {formatLogSize(data.log_bytes)}
+              {data.log_truncated ? ' · truncated' : ''}
+            </span>
           </div>
           <LogViewer
             runId={id}
             footer={
-              failed || succeeded ? (
-                <div
-                  className={`flex flex-wrap items-center gap-3 border-t px-4 py-3 ${
-                    failed ? 'border-red-500/30 bg-red-500/5' : 'border-green-500/30 bg-green-500/5'
-                  }`}
-                >
-                  <span
-                    className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
-                      failed ? 'bg-red-500/15 text-red-400' : 'bg-green-500/15 text-green-400'
-                    }`}
-                  >
-                    <Icon name={failed ? 'alert-circle' : 'circle-check'} size={18} />
+              failed ? (
+                <div className="flex flex-wrap items-center gap-3 border-t border-red-500/30 bg-red-500/5 px-4 py-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-400">
+                    <Icon name="alert-circle" size={15} />
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className={`text-sm font-semibold ${failed ? 'text-red-400' : 'text-green-400'}`}>
-                      {failed ? 'Run failed' : 'Run succeeded'}
-                    </p>
-                    <p className="num truncate text-xs muted">
-                      {failed
-                        ? `Exit code ${exitCode ?? '—'} · ${data.end_reason || 'ended'} · last error near the end of output`
-                        : `Exit code ${exitCode ?? 0} · ${formatSpan(data.started_at, data.ended_at)}`}
-                    </p>
-                  </div>
-                  {failed && (
-                    <button type="button" className="btn-sub !border-red-500/40 !text-red-300" onClick={() => void copyError()}>
-                      <Icon name={copiedError ? 'check' : 'copy'} size={13} />
-                      {copiedError ? 'Copied!' : 'Copy error'}
-                    </button>
-                  )}
+                  <p className="min-w-0 flex-1 text-xs muted">The last errors are near the end of the output above.</p>
+                  <button type="button" className="btn-sub !border-red-500/40 !text-red-300" onClick={() => void copyError()}>
+                    <Icon name={copiedError ? 'check' : 'copy'} size={13} />
+                    {copiedError ? 'Copied!' : 'Copy last errors'}
+                  </button>
                 </div>
               ) : undefined
             }
@@ -291,7 +319,7 @@ export default function RunDetail() {
   );
 }
 
-/** Label-over-value cell in the key-facts grid. */
+/** Label-over-value cell in the essentials grid. */
 function Fact({ label, emphasize = false, children }: { label: string; emphasize?: boolean; children: ReactNode }) {
   return (
     <div className="min-w-0">
@@ -301,7 +329,7 @@ function Fact({ label, emphasize = false, children }: { label: string; emphasize
   );
 }
 
-/** Smaller label-over-value cell for technical metadata. */
+/** Smaller label-over-value cell inside the collapsed details section. */
 function Meta({ label, mono = false, children }: { label: string; mono?: boolean; children: ReactNode }) {
   return (
     <div className="min-w-0">

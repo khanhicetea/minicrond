@@ -217,6 +217,7 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/workers/{name}/start", s.workerStart)
 	m.HandleFunc("POST /api/v1/workers/{name}/stop", s.workerStop)
 	m.HandleFunc("POST /api/v1/workers/{name}/restart", s.workerRestart)
+	m.HandleFunc("GET /api/v1/metrics/runs", s.runMetrics)
 	m.HandleFunc("GET /api/v1/runs", s.runs)
 	m.HandleFunc("GET /api/v1/runs/{id}", s.run)
 	m.HandleFunc("POST /api/v1/runs/{id}/stop", s.stop)
@@ -451,6 +452,31 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 	_ = s.super.Stop(d.Name)
 	time.AfterFunc(200*time.Millisecond, func() { s.super.StartDefinition(d) })
 	writeJSON(w, 202, map[string]bool{"restarting": true})
+}
+
+func (s *Server) runMetrics(w http.ResponseWriter, r *http.Request) {
+	rangeKey := r.URL.Query().Get("range")
+	window := map[string]time.Duration{
+		"15m": 15 * time.Minute,
+		"1h":  time.Hour,
+		"24h": 24 * time.Hour,
+		"7d":  7 * 24 * time.Hour,
+		"30d": 30 * 24 * time.Hour,
+	}[rangeKey]
+	if window == 0 {
+		window = time.Hour
+	}
+	buckets, _ := strconv.Atoi(r.URL.Query().Get("buckets"))
+	if buckets == 0 {
+		buckets = 48
+	}
+	now := time.Now()
+	stats, err := s.store.RunMetrics(r.Context(), now.Add(-window), now, buckets)
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	writeJSON(w, 200, stats)
 }
 
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
@@ -690,9 +716,25 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	}
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	// Assets ship under fixed filenames, so freshness must be revalidated on
+	// every load: max-age would let the browser keep serving a stale bundle
+	// for up to an hour after the daemon is rebuilt. no-cache + content-hash
+	// ETag gives cheap 304 revalidation and instant pickup of new builds.
+	etag := `"` + hex.EncodeToString(sha256Sum(body))[:16] + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	_, _ = w.Write(body)
 }
+
+func sha256Sum(body []byte) []byte {
+	sum := sha256.Sum256(body)
+	return sum[:]
+}
+
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		writeError(w, 404, "not_found", "unknown API endpoint")
@@ -704,6 +746,8 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Always revalidate the SPA shell so it picks up new asset bundles.
+	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(body)
 }
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -1,8 +1,8 @@
-/**
- * Dependency-free SVG charts for the metrics page, styled after the
- * reference design: flat panel charts with subtle grid, direct legend chips
- * in the panel header, and time labels on the x axis.
- */
+import { useMemo } from 'react';
+import { barY, defineChart, lineY } from '@tanstack/charts';
+import { scaleLinear } from '@tanstack/charts/scales/linear';
+import { tooltip } from '@tanstack/charts/tooltip';
+import { Chart } from '@tanstack/charts/react';
 
 export interface Series {
   name: string;
@@ -10,8 +10,9 @@ export interface Series {
   points: (number | null)[];
 }
 
-const GRID = 'var(--color-base-300)';
-const TEXT = 'color-mix(in srgb, var(--color-base-content) 45%, transparent)';
+const GRID = 'color-mix(in srgb, var(--color-base-content) 13%, transparent)';
+const TEXT = 'color-mix(in srgb, var(--color-base-content) 55%, transparent)';
+const BG = 'transparent';
 
 function niceScale(max: number): { ticks: number[]; top: number } {
   if (max <= 0) return { ticks: [0, 1], top: 1 };
@@ -23,22 +24,34 @@ function niceScale(max: number): { ticks: number[]; top: number } {
   return { ticks, top };
 }
 
-function logTicks(min: number, max: number): { ticks: number[]; lo: number; hi: number } {
-  const lo = Math.max(min, 0.01);
-  const hi = Math.max(max * 1.2, lo * 10);
-  const ticks: number[] = [];
-  for (let t = 0.01; t <= hi * 1.5; t *= 10) {
-    if (t >= lo / 3) ticks.push(t);
-    for (const m of [2, 5]) if (t * m <= hi * 1.5 && t * m >= lo / 3) ticks.push(t * m);
-  }
-  return { ticks, lo, hi };
+function labelFor(labels: string[], count: number, value: number) {
+  if (labels.length === 0 || count <= 1) return String(value);
+  const labelIndex = Math.round((value / (count - 1)) * (labels.length - 1));
+  return labels[Math.max(0, Math.min(labelIndex, labels.length - 1))] ?? String(value);
+}
+
+function theme(palette: readonly string[]) {
+  return {
+    foreground: TEXT,
+    muted: TEXT,
+    grid: GRID,
+    background: BG,
+    palette,
+  };
+}
+
+interface LineRow {
+  index: number;
+  series: string;
+  value: number | null;
+  color: string;
+  label: string;
 }
 
 export function LineChart({
   series,
   labels,
   height = 220,
-  log = false,
   formatY = v => String(v),
 }: {
   series: Series[];
@@ -47,72 +60,65 @@ export function LineChart({
   log?: boolean;
   formatY?: (value: number) => string;
 }) {
-  const W = 600;
-  const H = height;
-  const padL = 44;
-  const padR = 12;
-  const padT = 12;
-  const padB = 24;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
   const count = Math.max(...series.map(s => s.points.length), 1);
-
-  let scale: { ticks: number[]; top?: number; lo?: number; hi?: number };
-  if (log) {
-    const values = series.flatMap(s => s.points.filter((p): p is number => p !== null && p > 0));
-    scale = logTicks(Math.min(...values, 1), Math.max(...values, 1));
-  } else {
-    const max = Math.max(...series.flatMap(s => s.points.filter((p): p is number => p !== null)), 0);
-    scale = niceScale(max);
-  }
-
-  const x = (i: number) => padL + (count <= 1 ? innerW / 2 : (i / (count - 1)) * innerW);
-  const y = (v: number) => {
-    if (log) {
-      const { lo, hi } = scale as { lo: number; hi: number };
-      const clamped = Math.max(v, lo);
-      return padT + innerH - ((Math.log10(clamped) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))) * innerH;
-    }
-    const top = (scale as { top: number }).top;
-    return padT + innerH - (v / top) * innerH;
-  };
-
-  const path = (points: (number | null)[]) => {
-    let d = '';
-    let pen = false;
-    points.forEach((p, i) => {
-      if (p === null || (log && p <= 0)) {
-        pen = false;
-        return;
-      }
-      d += `${pen ? 'L' : 'M'}${x(i).toFixed(1)} ${y(p).toFixed(1)} `;
-      pen = true;
-    });
-    return d.trim();
-  };
-
-  const labelIdx = (i: number) => Math.round((i / (labels.length - 1)) * (count - 1));
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }} preserveAspectRatio="none" role="img">
-      {(log ? (scale as { ticks: number[] }).ticks : (scale as { ticks: number[] }).ticks).map(t => (
-        <g key={t}>
-          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={GRID} strokeWidth="1" opacity="0.6" />
-          <text x={padL - 6} y={y(t) + 3} textAnchor="end" fontSize="10" fill={TEXT}>
-            {formatY(t)}
-          </text>
-        </g>
-      ))}
-      {labels.map((label, i) => (
-        <text key={label + i} x={x(labelIdx(i))} y={H - 6} textAnchor={i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'} fontSize="10" fill={TEXT}>
-          {label}
-        </text>
-      ))}
-      {series.map(s => (
-        <path key={s.name} d={path(s.points)} fill="none" stroke={s.color} strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      ))}
-    </svg>
+  const rows = useMemo(
+    () =>
+      series.flatMap(item =>
+        item.points.map((value, index): LineRow => ({
+          index,
+          series: item.name,
+          value,
+          color: item.color,
+          label: labelFor(labels, count, index),
+        })),
+      ),
+    [series, labels],
   );
+
+  const definition = useMemo(() => {
+    const { top } = niceScale(Math.max(...rows.map(row => row.value ?? 0), 0));
+    return defineChart({
+      marks: [
+        lineY(rows, {
+          x: 'index',
+          y: 'value',
+          z: 'series',
+          stroke: row => row.color,
+          strokeWidth: 1.75,
+        }),
+      ],
+      scales: {
+        x: {
+          scale: scaleLinear().domain([0, Math.max(count - 1, 1)]),
+          axis: {
+            ticks: { values: [0, Math.floor(count / 3), Math.floor((2 * count) / 3), count - 1], format: value => labelFor(labels, count, value) },
+            tickLabels: { thin: false },
+          },
+        },
+        y: {
+          scale: scaleLinear().domain([0, top]),
+          grid: true,
+          axis: { ticks: { count: 5, format: formatY } },
+        },
+      },
+      clip: true,
+      margin: { top: 12, right: 12, bottom: 24, left: 44 },
+      theme: theme(series.map(item => item.color)),
+      focus: 'group-x',
+      tooltip: {
+        use: tooltip,
+        formatGroup(points) {
+          const heading = points[0]?.datum.label ?? '';
+          return [heading, ...points.map(point => `${point.datum.series}: ${formatY(point.yValue)}`)].join('\n');
+        },
+        format(point) {
+          return `${point.datum.label}\n${point.datum.series}: ${formatY(point.yValue)}`;
+        },
+      },
+    });
+  }, [rows, count, labels, formatY, series]);
+
+  return <Chart definition={definition} height={height} ariaLabel="Line chart" />;
 }
 
 export function StepChart({
@@ -126,54 +132,14 @@ export function StepChart({
   height?: number;
   formatY?: (value: number) => string;
 }) {
-  const W = 600;
-  const H = height;
-  const padL = 30;
-  const padR = 12;
-  const padT = 12;
-  const padB = 24;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-  const count = Math.max(...series.map(s => s.points.length), 1);
-  const { ticks, top } = niceScale(Math.max(...series.flatMap(s => s.points.filter((p): p is number => p !== null)), 0));
+  return <LineChart series={series} labels={labels} height={height} formatY={formatY} />;
+}
 
-  const x = (i: number) => padL + (i / count) * innerW;
-  const y = (v: number) => padT + innerH - (v / top) * innerH;
-
-  const stepPath = (points: (number | null)[]) => {
-    let d = '';
-    points.forEach((p, i) => {
-      const value = p ?? 0;
-      const px = x(i);
-      const py = y(value);
-      d += i === 0 ? `M${px.toFixed(1)} ${py.toFixed(1)}` : `L${px.toFixed(1)} ${y(points[i - 1] ?? 0).toFixed(1)} L${px.toFixed(1)} ${py.toFixed(1)}`;
-      if (i === points.length - 1) d += `L${x(i + 1).toFixed(1)} ${py.toFixed(1)}`;
-    });
-    return d;
-  };
-
-  const labelIdx = (i: number) => Math.min(Math.round((i / (labels.length - 1)) * count), count - 1);
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }} preserveAspectRatio="none" role="img">
-      {ticks.map(t => (
-        <g key={t}>
-          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={GRID} strokeWidth="1" opacity="0.6" />
-          <text x={padL - 6} y={y(t) + 3} textAnchor="end" fontSize="10" fill={TEXT}>
-            {formatY(t)}
-          </text>
-        </g>
-      ))}
-      {labels.map((label, i) => (
-        <text key={label + i} x={x(labelIdx(i))} y={H - 6} textAnchor={i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'} fontSize="10" fill={TEXT}>
-          {label}
-        </text>
-      ))}
-      {series.map(s => (
-        <path key={s.name} d={stepPath(s.points)} fill="none" stroke={s.color} strokeWidth="1.75" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      ))}
-    </svg>
-  );
+interface BarRow {
+  index: number;
+  status: 'Success' | 'Failure';
+  value: number;
+  label: string;
 }
 
 export function StackedBars({
@@ -187,50 +153,62 @@ export function StackedBars({
   height?: number;
   formatY?: (value: number) => string;
 }) {
-  const W = 600;
-  const H = height;
-  const padL = 30;
-  const padR = 12;
-  const padT = 12;
-  const padB = 24;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-  const { ticks, top } = niceScale(Math.max(...buckets.map(b => b.success + b.failure), 0));
-  const slot = innerW / Math.max(buckets.length, 1);
-  const barW = Math.max(slot * 0.62, 2);
-  const y = (v: number) => padT + innerH - (v / top) * innerH;
-  const x = (i: number) => padL + i * slot + slot / 2;
-  const labelIdx = (i: number) => Math.min(Math.round((i / (labels.length - 1)) * buckets.length), buckets.length - 1);
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }} preserveAspectRatio="none" role="img">
-      {ticks.map(t => (
-        <g key={t}>
-          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke={GRID} strokeWidth="1" opacity="0.6" />
-          <text x={padL - 6} y={y(t) + 3} textAnchor="end" fontSize="10" fill={TEXT}>
-            {formatY(t)}
-          </text>
-        </g>
-      ))}
-      {buckets.map((bucket, i) => {
-        const success = bucket.success;
-        const failure = bucket.failure;
-        return (
-          <g key={i}>
-            <rect x={x(i) - barW / 2} y={y(success)} width={barW} height={Math.max(padT + innerH - y(success), success > 0 ? 1.5 : 0)} fill="#34d399" opacity="0.85" rx="1" />
-            {failure > 0 && (
-              <rect x={x(i) - barW / 2} y={y(success + failure)} width={barW} height={Math.max(y(success) - y(success + failure), 1.5)} fill="#f87171" opacity="0.9" rx="1" />
-            )}
-          </g>
-        );
-      })}
-      {labels.map((label, i) => (
-        <text key={label + i} x={x(labelIdx(i))} y={H - 6} textAnchor={i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'} fontSize="10" fill={TEXT}>
-          {label}
-        </text>
-      ))}
-    </svg>
+  const count = Math.max(buckets.length, 1);
+  const rows = useMemo(
+    () =>
+      buckets.flatMap((bucket, index): BarRow[] => [
+        { index, status: 'Success', value: bucket.success, label: labelFor(labels, count, index) },
+        { index, status: 'Failure', value: bucket.failure, label: labelFor(labels, count, index) },
+      ]),
+    [buckets, labels, count],
   );
+
+  const definition = useMemo(() => {
+    const { top } = niceScale(Math.max(...buckets.map(bucket => bucket.success + bucket.failure), 0));
+    return defineChart({
+      marks: [
+        barY(rows, {
+          x: 'index',
+          y: 'value',
+          color: 'status',
+          fill: row => (row.status === 'Success' ? '#34d399' : '#f87171'),
+          fillOpacity: 0.9,
+          radius: 1,
+        }),
+      ],
+      scales: {
+        x: {
+          scale: scaleLinear().domain([-0.5, Math.max(count - 0.5, 0.5)]),
+          axis: {
+            ticks: { values: [0, Math.floor(count / 3), Math.floor((2 * count) / 3), count - 1], format: value => labelFor(labels, count, value) },
+            tickLabels: { thin: false },
+          },
+        },
+        y: {
+          scale: scaleLinear().domain([0, top]),
+          grid: true,
+          axis: { ticks: { count: 5, format: formatY } },
+        },
+      },
+      color: { domain: ['Success', 'Failure'], range: ['#34d399', '#f87171'] },
+      clip: true,
+      margin: { top: 12, right: 12, bottom: 24, left: 30 },
+      theme: theme(['#34d399', '#f87171']),
+      focus: 'group-x',
+      tooltip: {
+        use: tooltip,
+        formatGroup(points) {
+          const heading = points[0]?.datum.label ?? '';
+          return [heading, ...points.map(point => `${point.datum.status}: ${formatY(point.datum.value)}`)].join('\n');
+        },
+        format(point) {
+          return `${point.datum.label}\n${point.datum.status}: ${formatY(point.datum.value)}`;
+        },
+      },
+    });
+  }, [rows, buckets, count, labels, formatY]);
+
+  return <Chart definition={definition} height={height} ariaLabel="Stacked bar chart" />;
 }
 
 /** Legend chip used in panel headers. */

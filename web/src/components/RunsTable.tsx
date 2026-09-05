@@ -6,23 +6,28 @@ import type { Run } from '../types';
 import { isActiveRun } from '../types';
 import { formatDayTime, formatIsoLocal, formatSpan, shortId } from '../lib/format';
 
+/** Max rows rendered in compact mode (dashboard). */
+export const COMPACT_LIMIT = 12;
+
 /**
  * Recent-runs table from the reference design: started-at, job, status,
- * duration, trigger, and a "View log" action.
+ * duration, trigger, and a "View log" action. With `bare`, the outer panel
+ * is omitted (the host supplies its own panel + header).
  */
-export default function RunsTable({ runs, compact = false }: { runs: Run[]; compact?: boolean }) {
+export default function RunsTable({ runs, compact = false, bare = false }: { runs: Run[]; compact?: boolean; bare?: boolean }) {
   if (runs.length === 0) {
-    return (
-      <div className="panel px-6 py-10 text-center">
+    const empty = (
+      <div className="px-6 py-10 text-center">
         <Icon name="history" size={24} className="mx-auto faint" />
         <p className="mt-2 text-sm muted">No runs yet.</p>
       </div>
     );
+    return bare ? empty : <div className="panel overflow-x-auto">{empty}</div>;
   }
-  const visible = compact ? runs.slice(0, 8) : runs;
-  return (
-    <div className="panel overflow-x-auto">
-      <table className="mc-table">
+  const visible = compact ? runs.slice(0, COMPACT_LIMIT) : runs;
+  const table = (
+    <>
+      <table className="mc-table min-w-[36rem]">
         <thead>
           <tr>
             <th>
@@ -57,23 +62,32 @@ export default function RunsTable({ runs, compact = false }: { runs: Run[]; comp
               </td>
               <td className="muted">{run.trigger}</td>
               <td className="text-right">
-                <Link href={`/runs/${run.run_id}`} className="btn-sub !py-1.5 !px-2.5 !text-xs">
-                  View log
-                  <Icon name="external-link" size={12} />
+                <Link
+                  href={`/runs/${run.run_id}`}
+                  className="btn-sub !px-2 !py-1.5"
+                  title="View log"
+                  aria-label={`View log for ${run.job}`}
+                >
+                  <Icon name="external-link" size={13} />
                 </Link>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-      {compact && runs.length > visible.length && (
+      {compact && !bare && runs.length > visible.length && (
         <div className="border-t border-base-300 px-4 py-2 text-center">
           <Link href="/runs" className="text-xs text-sky-300 hover:text-sky-200">
             View all runs
           </Link>
         </div>
       )}
-    </div>
+    </>
+  );
+  return bare ? (
+    <div className="overflow-x-auto">{table}</div>
+  ) : (
+    <div className="panel overflow-x-auto">{table}</div>
   );
 }
 
