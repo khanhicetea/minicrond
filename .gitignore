@@ -1,3 +1,4 @@
 learn/
 bin/minicron
 openapi-gen
+web/node_modules
