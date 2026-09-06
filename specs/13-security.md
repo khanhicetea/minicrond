@@ -41,7 +41,7 @@ Status: Draft · Auth model decision: OQ-7
 - Daemon may run as root (typical: installed service) or unprivileged.
 - `run_as` per job/worker (spec `07`): resolved at spawn, applied
   `setgroups → setgid → setuid` **after** `chdir`, before `exec`.
-  Non-root daemon + foreign `run_as` = config validation error, upfront.
+  A non-root daemon rejects every `run_as` value during config validation, upfront.
 - Data-dir hygiene: `0700` dir, `0600` db/socket/token/logs; enforced (and
   reported) at boot even on pre-existing dirs.
 - The daemon itself never needs capabilities beyond its user (no

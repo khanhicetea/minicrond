@@ -19,8 +19,8 @@ Order of operations, precisely:
    instances `MINICRON_INSTANCE` (1-based).
 4. Resolve identity: `run_as` `user[:group]` (name or numeric; resolved via
    the system user database; `~` in `working_dir` resolves against that
-   user's home). Root daemon required for dropping — otherwise validation
-   error up front (D-5). In system mode, user-owned definitions are locked
+   user's home). `run_as` is available only to a root daemon; non-root
+   daemons reject it during validation (D-5). In system mode, user-owned definitions are locked
    to the owner's uid/gid — any other `run_as` in a user scope is a
    validation error, never a silent override (`17`).
 5. Create a **process group**. The daemon signals the group; deliberate

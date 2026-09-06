@@ -128,7 +128,7 @@ stop_signal = "SIGTERM"
 | `name` | string | required | unique across kinds; `^[a-z0-9][a-z0-9_.-]{0,99}$` |
 | `command` / `argv` | string / [string] | exactly one required | command always runs as `shell -c`; argv bypasses the shell |
 | `shell` | path | `/bin/sh` | used for `command` |
-| `run_as` | `user` or `user:group` | daemon user | name or numeric; root daemon only |
+| `run_as` | `user` or `user:group` | daemon user | name or numeric; available only to a root daemon |
 | `working_dir` | path | effective user's home | `~` = run_as home |
 | `env` | map | — | visible in UI/API |
 | `env_file` | path | — | dotenv; shown as path only |
@@ -167,7 +167,7 @@ Job-only: `schedule`, `timezone`, `jitter`, `catch_up` (`latest`\|`all`\|`none`)
 
 - strict decode (unknown key → error with suggestion),
 - schedule grammar + timezone existence,
-- `run_as` resolvability (warn if not, error at spawn time as `start_error`),
+- `run_as` availability and resolvability (a non-root daemon rejects it during validation),
 - path existence for `env_file`/`working_dir` (warning, not error),
 - cross-file duplicate `name` detection with both source paths listed,
 - output: human (file:line:col) or `--json` for editors/CI.

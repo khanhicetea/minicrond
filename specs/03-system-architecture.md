@@ -72,9 +72,9 @@ Status: Draft
 - Root daemon: jobs/workers with `run_as = "user[:group]"` are spawned via
   `setgroups`/`setgid`/`setuid` after `chdir` to the target working dir;
   `~` in paths resolves against the run-as user's home.
-- Non-root daemon: `run_as` must equal the daemon user or be absent —
-  otherwise validation fails with an explanatory error (not a runtime
-  surprise).
+- Non-root daemon: `run_as` is disabled; jobs and workers always run as the
+  daemon user. Any configured `run_as` fails validation with an explanatory
+  error (not a runtime surprise).
 - The HTTP listener may drop to an unprivileged port; the process keeps root
   only if `run_as` needs it. Documented hardening: bind `127.0.0.1` by
   default.

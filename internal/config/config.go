@@ -382,23 +382,26 @@ func ValidateSchedule(value string) error {
 	return err
 }
 func validateRunAs(value string) error {
+	if err := validateRunAsPrivilege(value, os.Geteuid()); err != nil {
+		return err
+	}
 	if value == "" {
 		return nil
 	}
 	name, _, _ := strings.Cut(value, ":")
-	current, err := user.Current()
-	if err != nil {
-		return err
-	}
-	if os.Geteuid() != 0 && name != current.Username && name != current.Uid {
-		return errors.New("foreign identity requires a root daemon")
-	}
 	if _, err := strconv.Atoi(name); err == nil {
 		_, err = user.LookupId(name)
 		return err
 	}
-	_, err = user.Lookup(name)
+	_, err := user.Lookup(name)
 	return err
+}
+
+func validateRunAsPrivilege(value string, euid int) error {
+	if value != "" && euid != 0 {
+		return errors.New("requires a root daemon")
+	}
+	return nil
 }
 
 func Canonical(d model.Definition) ([]byte, string, error) {

@@ -296,6 +296,11 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	return cmd, label, nil
 }
 func identity(runAs string) (cred *syscall.Credential, home, label string, err error) {
+	// Config validation rejects this too. Keep the spawn path guarded so a
+	// definition persisted before that validation change cannot bypass it.
+	if runAs != "" && os.Geteuid() != 0 {
+		return nil, "", "", errors.New("run_as requires a root daemon")
+	}
 	current, err := user.Current()
 	if err != nil {
 		return nil, "", "", err

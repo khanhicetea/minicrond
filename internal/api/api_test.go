@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,6 +144,25 @@ func TestTCPRequiresBearerToken(t *testing.T) {
 	}
 	if rec := call(s, true, "GET", "/api/v1/daemon", "", "", nil); rec.Code != 200 {
 		t.Fatal("unix socket must use peer auth, not a token")
+	}
+}
+
+func TestDaemonRunAsCapabilityReflectsPrivileges(t *testing.T) {
+	s, token, _ := setup(t)
+	rec := call(s, false, "GET", "/api/v1/daemon", token, "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("daemon status: %d %s", rec.Code, rec.Body.String())
+	}
+	capabilities, ok := decode(t, rec)["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("capabilities = %T, want array", decode(t, rec)["capabilities"])
+	}
+	hasRunAs := false
+	for _, capability := range capabilities {
+		hasRunAs = hasRunAs || capability == "run-as"
+	}
+	if hasRunAs != (os.Geteuid() == 0) {
+		t.Fatalf("run-as capability = %v, euid = %d", hasRunAs, os.Geteuid())
 	}
 }
 

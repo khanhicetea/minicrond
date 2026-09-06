@@ -125,7 +125,8 @@
           ]
         },
         "run_as": {
-          "type": "string"
+          "type": "string",
+          "description": "User[:group] to run as; available only when the daemon runs as root."
         },
         "working_dir": {
           "type": "string"
@@ -269,7 +270,8 @@
           "type": "boolean"
         },
         "run_as": {
-          "type": "string"
+          "type": "string",
+          "description": "User[:group] to run as; available only when the daemon runs as root."
         },
         "working_dir": {
           "type": "string"

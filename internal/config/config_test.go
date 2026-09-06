@@ -42,6 +42,18 @@ func TestLoadRejectsUnknownAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestRunAsRequiresRoot(t *testing.T) {
+	if err := validateRunAsPrivilege("", 1000); err != nil {
+		t.Fatalf("empty run_as must be allowed: %v", err)
+	}
+	if err := validateRunAsPrivilege("backup", 1000); err == nil || !strings.Contains(err.Error(), "root daemon") {
+		t.Fatalf("non-root run_as error = %v, want root-daemon error", err)
+	}
+	if err := validateRunAsPrivilege("backup", 0); err != nil {
+		t.Fatalf("root run_as must be allowed: %v", err)
+	}
+}
+
 func TestScheduleValidation(t *testing.T) {
 	for _, valid := range []string{"0 2 * * *", "@daily", "@every 1s"} {
 		if err := ValidateSchedule(valid); err != nil {

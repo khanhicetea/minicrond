@@ -5,7 +5,7 @@ import { Icon } from '../components/Icon';
 import JobForm, { emptyDefinition } from '../components/JobForm';
 import RunsTable from '../components/RunsTable';
 import { errorText } from '../api';
-import { jobQuery, runsQuery, useDeleteJob, useSaveJob } from '../queries';
+import { daemonQuery, jobQuery, runsQuery, useDeleteJob, useSaveJob } from '../queries';
 import { definitionToToml, highlightToml } from '../lib/toml';
 import { validateDefinition, type DefinitionIssue } from '../lib/validate';
 import { jobPath } from '../lib/routes';
@@ -27,6 +27,7 @@ export default function JobEditor({ params }: JobEditorProps) {
 
   const detail = useQuery({ ...jobQuery(existingName ?? ''), enabled: Boolean(existingName) });
   const source = useQuery({ ...jobQuery(copyFrom ?? ''), enabled: Boolean(copyFrom) });
+  const daemon = useQuery(daemonQuery());
 
   const save = useSaveJob();
   const remove = useDeleteJob();
@@ -100,6 +101,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   if (!loaded) return <div className="skeleton h-64 w-full" />;
 
   const isWorker = draft.kind === 'worker';
+  const runAsEnabled = daemon.data?.capabilities.includes('run-as') ?? false;
 
   return (
     <div className="space-y-4">
@@ -163,6 +165,7 @@ export default function JobEditor({ params }: JobEditorProps) {
             nameLocked={!creating || fileManaged}
             draft={draft}
             readOnly={fileManaged}
+            runAsEnabled={runAsEnabled}
             onChange={patch}
             formId={FORM_ID}
           />

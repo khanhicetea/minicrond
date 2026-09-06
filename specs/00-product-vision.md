@@ -43,8 +43,8 @@ It manages processes, and can drive Docker too.
   are editable in the web UI; everything is exportable as TOML any time.
 - Safe by default: overlap protection, validate-before-apply config changes,
   crash-recoverable state, graceful stop ladder.
-- Runs as root or unprivileged; per-job `run_as` privilege dropping. In
-  **system mode** (ADR-4), a root daemon lets registered Unix users manage
+- Runs as root or unprivileged; per-job `run_as` is available only to a root
+  daemon. In **system mode** (ADR-4), a root daemon lets registered Unix users manage
   and run their own jobs/workers as themselves, driven from the CLI.
 - Developer-experience-first UI: trigger a job and watch its log in one click;
   every UI action reproducible via `curl` (copy-as-curl everywhere).

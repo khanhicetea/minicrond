@@ -55,6 +55,7 @@ interface JobFormProps {
   nameLocked: boolean;
   draft: Definition;
   readOnly: boolean;
+  runAsEnabled: boolean;
   onChange: (patch: Partial<Definition>) => void;
   formId: string;
 }
@@ -63,7 +64,7 @@ interface JobFormProps {
  * Definition editor form (left column of the editor page). Controlled: the
  * page owns the draft so the TOML panel can mirror it live.
  */
-export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onChange, formId }: JobFormProps) {
+export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, runAsEnabled, onChange, formId }: JobFormProps) {
   const isJob = draft.kind !== 'worker';
   const disabled = readOnly;
   const scheduleType = (draft.schedule ?? '').trim().toLowerCase().startsWith('@every') ? 'every' : 'cron';
@@ -271,11 +272,13 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, onC
                     id={`${formId}-runas`}
                     className={field}
                     value={draft.run_as ?? ''}
-                    disabled={disabled}
+                    disabled={disabled || !runAsEnabled}
                     onChange={event => onChange({ run_as: event.target.value || undefined })}
                     placeholder="backup"
                   />
-                  <p className="field-help">System user to run the command as.</p>
+                  <p className="field-help">
+                    {runAsEnabled ? 'System user to run the command as.' : 'Available only when the daemon runs as root.'}
+                  </p>
                 </div>
               </div>
 
