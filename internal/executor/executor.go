@@ -42,13 +42,15 @@ type Service struct {
 	bootID   string
 	capacity chan struct{}
 	maxLine  int
-	mu       sync.Mutex
-	active   map[string]*activeRun
-	byJob    map[string]int
+	// admission serializes trigger setup with shutdown and overlap checks.
+	admission sync.Mutex
+	closing   bool
+	mu        sync.Mutex
+	active    map[string]*activeRun
+	byJob     map[string]int
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
-	pgid   int
 	done   chan struct{}
 }
 
@@ -80,6 +82,14 @@ func (s *Service) Wait(id string) <-chan struct{} {
 	return nil
 }
 func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
+	s.admission.Lock()
+	defer s.admission.Unlock()
+	if s.closing {
+		return model.Run{}, ErrShutdown
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Run{}, err
+	}
 	if !d.IsEnabled() {
 		return model.Run{}, fmt.Errorf("definition %s is disabled", d.Name)
 	}
@@ -199,7 +209,6 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	stdoutW.Close()
 	stderrW.Close()
 	pgid := cmd.Process.Pid
-	a.pgid = pgid
 	started := time.Now().UTC()
 	startID := processIdentity(cmd.Process.Pid)
 	if err = s.store.StartRun(context.Background(), r.ID, cmd.Process.Pid, pgid, startID, started); err != nil {
@@ -241,9 +250,10 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	// see a benign os.ErrClosed which we do not report).
 	drainDeadline := time.NewTimer(5 * time.Second)
 	defer drainDeadline.Stop()
-	for range 2 {
+	for remaining := 2; remaining > 0; {
 		select {
 		case pumpErr := <-pumps:
+			remaining--
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
 				w.Write(logstore.System, []byte("log pump error: "+pumpErr.Error()), 0)
 			}
@@ -465,12 +475,23 @@ func processIdentity(pid int) string {
 	if err != nil {
 		return ""
 	}
-	fields := strings.Fields(string(b))
-	if len(fields) > 21 {
-		return fields[21]
+	return processStartID(string(b))
+}
+
+// processStartID extracts field 22 of /proc/PID/stat. The command name in
+// field 2 can contain spaces and parentheses, so it cannot be split on spaces.
+func processStartID(stat string) string {
+	end := strings.LastIndexByte(stat, ')')
+	if end < 0 {
+		return ""
+	}
+	fields := strings.Fields(stat[end+1:])
+	if len(fields) > 19 {
+		return fields[19]
 	}
 	return ""
 }
+
 func (s *Service) CleanupRecovered(runs []model.Run) {
 	if runtime.GOOS != "linux" {
 		return
@@ -494,6 +515,8 @@ func (s *Service) Stop(id string) error {
 	return nil
 }
 func (s *Service) Shutdown(ctx context.Context) {
+	s.admission.Lock()
+	s.closing = true
 	s.mu.Lock()
 	runs := make([]*activeRun, 0, len(s.active))
 	for _, a := range s.active {
@@ -501,6 +524,7 @@ func (s *Service) Shutdown(ctx context.Context) {
 		a.cancel(ErrShutdown)
 	}
 	s.mu.Unlock()
+	s.admission.Unlock()
 	for _, a := range runs {
 		select {
 		case <-a.done:

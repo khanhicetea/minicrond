@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type Scheduler struct {
 	exec   *executor.Service
 	mu     sync.Mutex
 	cancel context.CancelFunc
+	loops  sync.WaitGroup
 	defs   map[string]model.Definition
 }
 
@@ -32,8 +34,13 @@ func New(st *store.Store, ex *executor.Service) *Scheduler {
 }
 func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.cancel != nil {
 		s.cancel()
+		s.loops.Wait()
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
@@ -41,10 +48,13 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	for _, d := range defs {
 		if d.Kind == model.KindJob && d.IsEnabled() && (d.Schedule != "") {
 			s.defs[d.Name] = d
-			go s.loop(runCtx, d)
+			s.loops.Add(1)
+			go func() {
+				defer s.loops.Done()
+				s.loop(runCtx, d)
+			}()
 		}
 	}
-	s.mu.Unlock()
 	return nil
 }
 func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
@@ -65,6 +75,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		last = time.Time{}
 		s.store.SetScheduleState(ctx, d.ID, hash, anchor, time.Time{})
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	if !last.IsZero() && last.Before(now) {
 		next, err := nextFire(d, last, anchor)
 		if err == nil && next.Before(now) {
@@ -79,16 +92,22 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			if count > 0 {
 				if d.CatchUp == "latest" {
 					scheduled := latest
-					s.exec.Trigger(context.Background(), d, defHash, "schedule", &scheduled)
+					_, err = s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled)
 				} else {
-					s.exec.RecordMissed(context.Background(), d, defHash, count, latest)
+					_, err = s.exec.RecordMissed(ctx, d, defHash, count, latest)
+				}
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					slog.Error("scheduler: catch-up failed", "job", d.Name, "error", err)
 				}
 				last = latest
 				s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last)
 			}
 		}
 	}
-	for {
+	for ctx.Err() == nil {
 		next, err := nextFire(d, maxTime(last, time.Now().UTC()), anchor)
 		if err != nil {
 			return
@@ -121,7 +140,13 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			_ = s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next)
 		}
 		scheduled := next
-		_, _ = s.exec.Trigger(context.Background(), d, defHash, "schedule", &scheduled)
+		if _, err := s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			// A failed occurrence must not disable all future occurrences.
+			slog.Error("scheduler: trigger failed", "job", d.Name, "error", err)
+		}
 		last = next
 
 		// Publish the following fire immediately after triggering this one.
@@ -141,6 +166,9 @@ func nextFire(d model.Definition, after, anchor time.Time) (time.Time, error) {
 		if err != nil {
 			return time.Time{}, err
 		}
+		if interval <= 0 {
+			return time.Time{}, fmt.Errorf("schedule interval must be positive: %q", raw)
+		}
 		if after.Before(anchor) {
 			return anchor.Add(interval), nil
 		}
@@ -156,6 +184,9 @@ func nextFire(d model.Definition, after, anchor time.Time) (time.Time, error) {
 		return time.Time{}, err
 	}
 	candidate := schedule.Next(after.In(loc)).UTC()
+	if candidate.IsZero() {
+		return time.Time{}, fmt.Errorf("schedule has no future occurrence: %q", d.Schedule)
+	}
 
 	// Suppress the second instance of a wall-clock minute in a DST fold.
 	if sameWallMinute(after.In(loc), candidate.In(loc)) {
@@ -225,10 +256,13 @@ func maxTime(a, b time.Time) time.Time {
 	}
 	return b
 }
+
+// Stop cancels all scheduling loops and waits until they can no longer fire.
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cancel != nil {
 		s.cancel()
+		s.loops.Wait()
 	}
 }

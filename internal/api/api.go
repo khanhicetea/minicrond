@@ -131,29 +131,40 @@ func (s *Server) Start(bind, socket string) error {
 	if err != nil {
 		return err
 	}
-	go s.tcp.Serve(ln)
+	// Acquire all listeners before serving, so a partial startup cannot leave
+	// an HTTP server running against resources the caller has already closed.
 	if socket != "" {
-		os.Remove(socket)
-		ln, err := net.Listen("unix", socket)
+		if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = ln.Close()
+			return fmt.Errorf("remove stale Unix socket: %w", err)
+		}
+		unixListener, err := net.Listen("unix", socket)
 		if err != nil {
-			s.tcp.Close()
-			return err
+			_ = ln.Close()
+			return fmt.Errorf("listen on Unix socket: %w", err)
 		}
 		if err = os.Chmod(socket, 0o600); err != nil {
-			return err
+			_ = unixListener.Close()
+			_ = ln.Close()
+			return fmt.Errorf("set Unix socket permissions: %w", err)
 		}
-		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second}
-		go s.unix.Serve(peerListener{Listener: ln, uid: uint32(os.Geteuid())})
+		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+		go s.unix.Serve(peerListener{Listener: unixListener, uid: uint32(os.Geteuid())})
 	}
+	go s.tcp.Serve(ln)
 	return nil
 }
 func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
-	if s.tcp != nil {
-		errs = append(errs, s.tcp.Shutdown(ctx))
-	}
-	if s.unix != nil {
-		errs = append(errs, s.unix.Shutdown(ctx))
+	for _, server := range []*http.Server{s.tcp, s.unix} {
+		if server == nil {
+			continue
+		}
+		if err := server.Shutdown(ctx); err != nil {
+			// Shutdown leaves active connections open when its context expires.
+			// Do not keep serving against a database the daemon is about to close.
+			errs = append(errs, err, server.Close())
+		}
 	}
 	return errors.Join(errs...)
 }

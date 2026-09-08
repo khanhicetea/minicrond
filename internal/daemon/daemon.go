@@ -27,6 +27,7 @@ type Daemon struct {
 	ConfigPath, DataDir, Version string
 	mu                           sync.Mutex
 	cfg                          *config.Config
+	stopping                     bool
 	lock                         *os.File
 	store                        *store.Store
 	ldb                          *logdb.LogDB
@@ -37,7 +38,7 @@ type Daemon struct {
 	api                          *api.Server
 }
 
-func (d *Daemon) Run(ctx context.Context) error {
+func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err := d.acquireLock(); err != nil {
 		return err
 	}
@@ -104,7 +105,26 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	d.sched.Reload(ctx, defs)
+	// Use the same shutdown path for startup failures and normal cancellation.
+	// Producers and HTTP handlers must stop before the databases close.
+	defer func() {
+		d.api.SetReady(false)
+		d.mu.Lock()
+		d.stopping = true
+		d.sched.Stop()
+		d.super.Shutdown()
+		d.mu.Unlock()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		d.exec.Shutdown(shutdownCtx)
+		// HTTP cleanup gets its own budget even when a job used the run budget.
+		apiCtx, cancelAPI := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelAPI()
+		runErr = errors.Join(runErr, d.api.Shutdown(apiCtx))
+	}()
+	if err := d.sched.Reload(ctx, defs); err != nil {
+		return err
+	}
 	d.super.Reload(defs)
 	socket := ""
 	if cfg.Server.UnixSocket == nil || *cfg.Server.UnixSocket {
@@ -114,23 +134,27 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	d.api.SetReady(true)
-	go d.retentionLoop(ctx)
-	go d.workerFlushLoop(ctx)
-	go d.logPruneLoop(ctx)
+	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
+	var maintenance sync.WaitGroup
+	for _, loop := range []func(context.Context){d.retentionLoop, d.workerFlushLoop, d.logPruneLoop} {
+		maintenance.Add(1)
+		go func() {
+			defer maintenance.Done()
+			loop(maintenanceCtx)
+		}()
+	}
+	defer func() {
+		stopMaintenance()
+		maintenance.Wait()
+	}()
 	slog.Info("minicron ready", "bind", cfg.Server.Bind, "socket", socket)
 	<-ctx.Done()
-	d.api.SetReady(false)
-	d.sched.Stop()
-	d.super.Shutdown()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	d.exec.Shutdown(shutdownCtx)
-	return d.api.Shutdown(shutdownCtx)
+	return nil
 }
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.cfg == nil || d.store == nil {
+	if d.stopping || d.cfg == nil || d.store == nil {
 		return errors.New("daemon is not ready")
 	}
 	cfg, err := config.Load(d.ConfigPath)
@@ -147,8 +171,10 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := d.sched.Reload(ctx, defs); err != nil {
+		return err
+	}
 	d.cfg = cfg
-	d.sched.Reload(ctx, defs)
 	d.super.Reload(defs)
 	return nil
 }
@@ -291,7 +317,7 @@ func nextDaily(now time.Time, clock, tzName string) time.Time {
 	local := now.In(tz)
 	candidate := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, tz)
 	if !candidate.After(local) {
-		candidate = candidate.Add(24 * time.Hour)
+		candidate = time.Date(local.Year(), local.Month(), local.Day()+1, hour, minute, 0, 0, tz)
 	}
 	return candidate
 }
