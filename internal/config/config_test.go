@@ -214,6 +214,50 @@ schedule = "@every 1h"
 	}
 }
 
+func TestTelegramAlertChannel(t *testing.T) {
+	dir := t.TempDir()
+	bootstrap := filepath.Join(dir, "minicron.toml")
+	mustWrite(t, bootstrap, `[[alert_channel]]
+name = "ops"
+type = "telegram"
+bot_token = "env:TELEGRAM_BOT_TOKEN"
+chat_id = "-100123"
+
+[defaults]
+alerts = ["ops"]
+
+[[job]]
+name = "backup"
+command = "false"
+`)
+	cfg, err := Load(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Type != "telegram" {
+		t.Fatalf("alert channels = %#v", cfg.AlertChannels)
+	}
+	if got := cfg.Definitions[0].Alerts; len(got) != 1 || got[0] != "ops" {
+		t.Fatalf("definition alerts = %#v", got)
+	}
+}
+
+func TestAlertChannelValidation(t *testing.T) {
+	for _, invalid := range []string{
+		"[[alert_channel]]\nname='ops'\ntype='slack'\nbot_token='env:TOKEN'\nchat_id='1'\n",
+		"[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='literal-secret'\nchat_id='1'\n",
+		"[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:TOKEN'\nchat_id=''\n",
+		"[[job]]\nname='j'\ncommand='true'\nalerts=['missing']\n",
+	} {
+		dir := t.TempDir()
+		bootstrap := filepath.Join(dir, "minicron.toml")
+		mustWrite(t, bootstrap, invalid)
+		if _, err := Load(bootstrap); err == nil {
+			t.Errorf("accepted %q", invalid)
+		}
+	}
+}
+
 func TestDefinitionFieldValidation(t *testing.T) {
 	for _, invalid := range []string{
 		"log_on_full = 'recycle'",

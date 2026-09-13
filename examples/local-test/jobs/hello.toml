@@ -11,3 +11,4 @@ command = 'exec "$EXAMPLE_DIR/scripts/hello.sh" "from config"'
 catch_up = "none"
 on_overlap = "skip"
 labels = { tier = "example" }
+alerts = ["ops"]

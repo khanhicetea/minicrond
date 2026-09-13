@@ -23,16 +23,17 @@ import (
 )
 
 type Config struct {
-	Path        string             `toml:"-" json:"path"`
-	Server      Server             `toml:"server" json:"server"`
-	Include     Include            `toml:"include" json:"include"`
-	Scheduler   Scheduler          `toml:"scheduler" json:"scheduler"`
-	Storage     Storage            `toml:"storage" json:"storage"`
-	Logs        Logs               `toml:"logs" json:"logs"`
-	Defaults    model.Definition   `toml:"defaults" json:"defaults"`
-	Jobs        []model.Definition `toml:"job" json:"jobs"`
-	Workers     []model.Definition `toml:"worker" json:"workers"`
-	Definitions []model.Definition `toml:"-" json:"definitions"`
+	Path          string             `toml:"-" json:"path"`
+	Server        Server             `toml:"server" json:"server"`
+	Include       Include            `toml:"include" json:"include"`
+	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
+	Storage       Storage            `toml:"storage" json:"storage"`
+	Logs          Logs               `toml:"logs" json:"logs"`
+	AlertChannels []AlertChannel     `toml:"alert_channel" json:"alert_channels,omitempty"`
+	Defaults      model.Definition   `toml:"defaults" json:"defaults"`
+	Jobs          []model.Definition `toml:"job" json:"jobs"`
+	Workers       []model.Definition `toml:"worker" json:"workers"`
+	Definitions   []model.Definition `toml:"-" json:"definitions"`
 }
 
 type Server struct {
@@ -52,6 +53,14 @@ type Storage struct {
 	KeepForDefault  string `toml:"keep_for_default" json:"keep_for_default"`
 	AuditKeep       int    `toml:"audit_keep" json:"audit_keep"`
 }
+type AlertChannel struct {
+	Name                string `toml:"name" json:"name"`
+	Type                string `toml:"type" json:"type"`
+	BotToken            string `toml:"bot_token" json:"-"`
+	ChatID              string `toml:"chat_id" json:"chat_id"`
+	DisableNotification bool   `toml:"disable_notification" json:"disable_notification"`
+}
+
 type Logs struct {
 	Backend string `toml:"backend" json:"backend"`
 	MaxLine string `toml:"max_line" json:"max_line"`
@@ -128,7 +137,7 @@ func Load(path string) (*Config, error) {
 			cfg.Definitions = append(cfg.Definitions, part.Workers...)
 		}
 	}
-	if err := validate(&cfg); err != nil {
+	if err := validate(&cfg, true); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -157,7 +166,7 @@ func ParseImport(content []byte) ([]model.Definition, error) {
 	}
 	cfg.Definitions = append(cfg.Definitions, part.Jobs...)
 	cfg.Definitions = append(cfg.Definitions, part.Workers...)
-	if err := validate(&cfg); err != nil {
+	if err := validate(&cfg, false); err != nil {
 		return nil, err
 	}
 	return cfg.Definitions, nil
@@ -223,6 +232,9 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay, "5s")
 	d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter, "30s")
 	d.LogOnFull = cmp.Or(d.LogOnFull, defaults.LogOnFull, "drop_old")
+	if len(d.Alerts) == 0 {
+		d.Alerts = defaults.Alerts
+	}
 	if len(d.SuccessCodes) == 0 {
 		d.SuccessCodes = defaults.SuccessCodes
 	}
@@ -247,6 +259,9 @@ func mergeDefaults(a, b model.Definition) model.Definition {
 	b.RestartDelay = cmp.Or(b.RestartDelay, a.RestartDelay)
 	b.HealthyAfter = cmp.Or(b.HealthyAfter, a.HealthyAfter)
 	b.LogOnFull = cmp.Or(b.LogOnFull, a.LogOnFull)
+	if len(b.Alerts) == 0 {
+		b.Alerts = a.Alerts
+	}
 	if len(b.SuccessCodes) == 0 {
 		b.SuccessCodes = a.SuccessCodes
 	}
@@ -254,7 +269,7 @@ func mergeDefaults(a, b model.Definition) model.Definition {
 	return b
 }
 
-func validate(c *Config) error {
+func validate(c *Config, validateAlertReferences bool) error {
 	if _, err := time.LoadLocation(c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("scheduler.timezone: %w", err)
 	}
@@ -269,6 +284,29 @@ func validate(c *Config) error {
 	}
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
+	}
+	channels := make(map[string]bool, len(c.AlertChannels))
+	for _, channel := range c.AlertChannels {
+		if !namePattern.MatchString(channel.Name) {
+			return fmt.Errorf("alert_channel: invalid name %q", channel.Name)
+		}
+		if channels[channel.Name] {
+			return fmt.Errorf("duplicate alert channel %q", channel.Name)
+		}
+		channels[channel.Name] = true
+		if channel.Type != "telegram" {
+			return fmt.Errorf("alert channel %q: unsupported type %q", channel.Name, channel.Type)
+		}
+		if channel.ChatID == "" {
+			return fmt.Errorf("alert channel %q: chat_id is required", channel.Name)
+		}
+		if name, ok := strings.CutPrefix(channel.BotToken, "env:"); ok {
+			if name == "" {
+				return fmt.Errorf("alert channel %q: bot_token env name is required", channel.Name)
+			}
+		} else if path, ok := strings.CutPrefix(channel.BotToken, "file:"); !ok || !filepath.IsAbs(path) {
+			return fmt.Errorf("alert channel %q: bot_token must be env:NAME or file:/absolute/path", channel.Name)
+		}
 	}
 	seen := make(map[string]string)
 	for i := range c.Definitions {
@@ -327,6 +365,13 @@ func validate(c *Config) error {
 		if err := validateRunAs(d.RunAs); err != nil {
 			return fmt.Errorf("%s: %s.run_as: %w", d.SourceFile, d.Name, err)
 		}
+		if validateAlertReferences {
+			for _, channel := range d.Alerts {
+				if !channels[channel] {
+					return fmt.Errorf("%s: %s.alerts: unknown alert channel %q", d.SourceFile, d.Name, channel)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -340,7 +385,7 @@ func ValidateDefinition(d *model.Definition) error {
 	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}, Definitions: []model.Definition{*d}}
 	applyConfigDefaults(&cfg)
 	applyDefinitionDefaults(&cfg.Definitions[0], model.Definition{})
-	if err := validate(&cfg); err != nil {
+	if err := validate(&cfg, false); err != nil {
 		return err
 	}
 	*d = cfg.Definitions[0]

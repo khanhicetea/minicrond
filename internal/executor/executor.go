@@ -34,14 +34,18 @@ type Options struct {
 	// MaxLineBytes is the global logs.max_line cap applied to every run's
 	// single-line truncation. Defaults to 256 KiB when zero.
 	MaxLineBytes int64
+	// OnFinished is called after a terminal run transition is persisted.
+	// Implementations should return quickly and do slow work asynchronously.
+	OnFinished func(model.Run, model.Definition)
 }
 
 type Service struct {
-	store    *store.Store
-	logs     *logstore.Store
-	bootID   string
-	capacity chan struct{}
-	maxLine  int
+	store      *store.Store
+	logs       *logstore.Store
+	bootID     string
+	capacity   chan struct{}
+	maxLine    int
+	onFinished func(model.Run, model.Definition)
 	// admission serializes trigger setup with shutdown and overlap checks.
 	admission sync.Mutex
 	closing   bool
@@ -66,7 +70,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	}
 	var b [16]byte
 	_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
-	return &Service{store: st, logs: logs, bootID: hex.EncodeToString(b[:]), capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), active: make(map[string]*activeRun), byJob: make(map[string]int)}
+	return &Service{store: st, logs: logs, bootID: hex.EncodeToString(b[:]), capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int)}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
 
@@ -127,7 +131,11 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 	}
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
-		s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", time.Now(), 0, false)
+		ended := time.Now().UTC()
+		if finishErr := s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", ended, 0, false); finishErr == nil {
+			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
+			s.notifyFinished(r, d)
+		}
 		if d.Kind == model.KindJob {
 			<-s.capacity
 		}
@@ -176,7 +184,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	}()
 	cmd, identity, err := buildCommand(d, r)
 	if err != nil {
-		s.finishStartError(r, w, err)
+		s.finishStartError(r, d, w, err)
 		return
 	}
 	// Caller-owned pipes: cmd.Wait would close StdoutPipe read-ends while
@@ -184,14 +192,14 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	// closed" errors). We own the lifecycle: pumps drain to EOF, then we close.
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
-		s.finishStartError(r, w, err)
+		s.finishStartError(r, d, w, err)
 		return
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
 		stdoutR.Close()
 		stdoutW.Close()
-		s.finishStartError(r, w, err)
+		s.finishStartError(r, d, w, err)
 		return
 	}
 	cmd.Stdout = stdoutW
@@ -201,7 +209,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		stdoutW.Close()
 		stderrR.Close()
 		stderrW.Close()
-		s.finishStartError(r, w, err)
+		s.finishStartError(r, d, w, err)
 		return
 	}
 	// The child owns its duplicates now; drop the parent's write ends so EOF
@@ -216,9 +224,10 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		cmd.Wait()
 		stdoutR.Close()
 		stderrR.Close()
-		s.finishStartError(r, w, fmt.Errorf("persist running state: %w", err))
+		s.finishStartError(r, d, w, fmt.Errorf("persist running state: %w", err))
 		return
 	}
+	r.PID, r.PGID, r.ProcessStartID, r.StartedAt = cmd.Process.Pid, pgid, startID, &started
 	w.Write(logstore.System, []byte("process started as "+identity), 0)
 	pumps := make(chan error, 2)
 	go func() { pumps <- w.Pipe(logstore.Stdout, stdoutR) }()
@@ -270,16 +279,31 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
 	_ = w.Close()
-	if err := s.store.FinishRun(context.Background(), r.ID, status, reason, code, signal, time.Now().UTC(), bytes, truncated); err != nil {
+	ended := time.Now().UTC()
+	if err := s.store.FinishRun(context.Background(), r.ID, status, reason, code, signal, ended, bytes, truncated); err != nil {
 		slog.Error("persisting terminal run state failed", "run", r.ID, "status", status, "error", err)
+		return
 	}
+	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = status, reason, code, signal, &ended
+	s.notifyFinished(r, d)
 }
-func (s *Service) finishStartError(r model.Run, w *logstore.Writer, err error) {
+
+func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
 	w.Write(logstore.System, []byte("start error: "+err.Error()), 0)
 	bytes, truncated := w.Stats()
 	_ = w.Close()
-	if ferr := s.store.FinishRun(context.Background(), r.ID, "failed", "start_error", nil, "", time.Now().UTC(), bytes, truncated); ferr != nil {
+	ended := time.Now().UTC()
+	if ferr := s.store.FinishRun(context.Background(), r.ID, "failed", "start_error", nil, "", ended, bytes, truncated); ferr != nil {
 		slog.Error("persisting failed run state failed", "run", r.ID, "error", ferr)
+		return
+	}
+	r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
+	s.notifyFinished(r, d)
+}
+
+func (s *Service) notifyFinished(r model.Run, d model.Definition) {
+	if s.onFinished != nil {
+		s.onFinished(r, d)
 	}
 }
 func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {

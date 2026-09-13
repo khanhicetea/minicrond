@@ -26,3 +26,10 @@ db_prune_at = "03:30"           # daily prune time
 shell = "/bin/sh"
 env_base = "clean"
 grace = "5s"
+
+[[alert_channel]]
+name = "ops"
+type = "telegram"
+bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
+chat_id = "-329047830"
+disable_notification = false

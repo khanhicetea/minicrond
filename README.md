@@ -32,6 +32,27 @@ Configuration is strict TOML. `[[job]]` supports exactly one of `command` (alway
 - Stop the daemon before copying its database for rollback. A binary that encounters a newer schema refuses to start. Restore by replacing `minicron.db` and restarting.
 - The daemon signals process groups. Deliberately daemonized descendants can escape; v0.1 is not a hostile-workload sandbox.
 
+## Telegram alerts
+
+Define named alert channels in the bootstrap config, then opt jobs or workers in with `alerts`. Failed and timed-out runs are delivered asynchronously; successful, skipped, and manually stopped runs do not alert.
+
+```toml
+[[alert_channel]]
+name = "ops"
+type = "telegram"
+bot_token = "env:MINICRON_TELEGRAM_BOT_TOKEN" # or file:/absolute/path
+chat_id = "-1001234567890"
+disable_notification = false
+
+[[job]]
+name = "backup"
+command = "./backup.sh"
+schedule = "0 2 * * *"
+alerts = ["ops"]
+```
+
+`bot_token` must be an environment-variable or absolute-file reference, so the token is not embedded directly in configuration. Additional providers can implement the alert channel interface without changing run execution.
+
 ## Development
 
 ```sh

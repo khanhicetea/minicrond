@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/khanhicetea/minicrond/internal/alerts"
 	"github.com/khanhicetea/minicrond/internal/api"
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
@@ -37,6 +38,7 @@ type Daemon struct {
 	sched                        *scheduler.Scheduler
 	super                        *supervisor.Supervisor
 	api                          *api.Server
+	alerts                       *alerts.Dispatcher
 }
 
 func (d *Daemon) Run(ctx context.Context) (runErr error) {
@@ -78,7 +80,15 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		// Validated at config load; keep a safe fallback for direct callers.
 		maxLine = 256 << 10
 	}
-	d.exec = executor.New(st, logs, executor.Options{MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns, MaxLineBytes: maxLine})
+	d.exec = executor.New(st, logs, executor.Options{
+		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
+		MaxLineBytes:      maxLine,
+		OnFinished: func(run model.Run, definition model.Definition) {
+			if d.alerts != nil {
+				d.alerts.Notify(run, definition)
+			}
+		},
+	})
 	recoverable, err := st.Recoverable(ctx)
 	if err != nil {
 		return err
@@ -106,6 +116,10 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
+	d.alerts, err = alerts.New(cfg.AlertChannels)
+	if err != nil {
+		return err
+	}
 	// Use the same shutdown path for startup failures and normal cancellation.
 	// Producers and HTTP handlers must stop before the databases close.
 	defer func() {
@@ -118,6 +132,9 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		d.exec.Shutdown(shutdownCtx)
+		alertCtx, cancelAlerts := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancelAlerts()
+		runErr = errors.Join(runErr, d.alerts.Close(alertCtx))
 		// HTTP cleanup gets its own budget even when a job used the run budget.
 		apiCtx, cancelAPI := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelAPI()
@@ -199,6 +216,9 @@ func (d *Daemon) ReloadSource(ctx context.Context, source string) error {
 		return err
 	}
 	if err := d.sched.Reload(ctx, defs); err != nil {
+		return err
+	}
+	if err := d.alerts.Reload(cfg.AlertChannels); err != nil {
 		return err
 	}
 	d.cfg = cfg

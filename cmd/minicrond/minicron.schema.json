@@ -92,6 +92,12 @@
         }
       }
     },
+    "alert_channel": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alert_channel"
+      }
+    },
     "defaults": {
       "type": "object",
       "additionalProperties": false,
@@ -191,6 +197,12 @@
             "type": "string"
           }
         },
+        "alerts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -227,6 +239,37 @@
     }
   },
   "$defs": {
+    "alert_channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_.-]{0,99}$"
+        },
+        "type": {
+          "const": "telegram"
+        },
+        "bot_token": {
+          "type": "string",
+          "pattern": "^(env:[^:]+|file:/)"
+        },
+        "chat_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disable_notification": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "bot_token",
+        "chat_id"
+      ]
+    },
     "definition": {
       "type": "object",
       "additionalProperties": false,
@@ -333,6 +376,12 @@
         "labels": {
           "type": "object",
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "alerts": {
+          "type": "array",
+          "items": {
             "type": "string"
           }
         },

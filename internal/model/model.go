@@ -42,6 +42,7 @@ type Definition struct {
 	LogMax             string            `json:"log_max,omitempty" toml:"log_max"`
 	LogOnFull          string            `json:"log_on_full,omitempty" toml:"log_on_full"`
 	Labels             map[string]string `json:"labels,omitempty" toml:"labels"`
+	Alerts             []string          `json:"alerts,omitempty" toml:"alerts"`
 	Autostart          *bool             `json:"autostart,omitempty" toml:"autostart"`
 	Restart            string            `json:"restart,omitempty" toml:"restart"`
 	RestartDelay       string            `json:"restart_delay,omitempty" toml:"restart_delay"`

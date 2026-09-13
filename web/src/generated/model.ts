@@ -37,6 +37,7 @@ export interface Definition {
   log_max?: string;
   log_on_full?: string;
   labels?: { [key: string]: string};
+  alerts?: string[];
   autostart?: boolean;
   restart?: string;
   restart_delay?: string;

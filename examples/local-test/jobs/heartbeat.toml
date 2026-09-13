@@ -7,3 +7,4 @@ env_file = "env.local"
 command = 'exec "$EXAMPLE_DIR/scripts/heartbeat.sh" 3'
 catch_up = "none"
 on_overlap = "skip"
+alerts = ["ops"]

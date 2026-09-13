@@ -21,7 +21,10 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, logs, Options{MaxConcurrentRuns: 2})
+	finished := make(chan model.Run, 2)
+	service := New(st, logs, Options{MaxConcurrentRuns: 2, OnFinished: func(run model.Run, _ model.Definition) {
+		finished <- run
+	}})
 	for _, tc := range []struct{ name, command, timeout, want string }{{"ok", "exit 0", "0", "succeeded"}, {"slow", "sleep 5", "100ms", "timeout"}} {
 		d := model.Definition{Name: tc.name, Kind: model.KindJob, Authority: "file", SourceFile: "test", Command: tc.command, Shell: "/bin/sh", Timeout: tc.timeout, Grace: "0", Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
 		if err := st.SyncFiles(t.Context(), []model.Definition{d}, false); err != nil {
@@ -47,6 +50,14 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 				}
 				if runtime.GOOS == "linux" && current.ProcessStartID == "" {
 					t.Fatalf("%s: process start identity was not persisted", tc.name)
+				}
+				select {
+				case event := <-finished:
+					if event.ID != current.ID || event.Status != tc.want || event.EndedAt == nil {
+						t.Fatalf("finished event = %#v", event)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("terminal run did not emit a finished event")
 				}
 				break
 			}
