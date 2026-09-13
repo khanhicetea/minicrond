@@ -17,18 +17,40 @@ import (
 // reach healthy_after count toward fatal. An operator hold (Stop) suppresses
 // restart, including under restart = "always", until Start or a reload lifts it.
 type Supervisor struct {
-	store    *store.Store
-	exec     *executor.Service
-	mu       sync.Mutex
-	cancel   context.CancelFunc
-	ctx      context.Context
-	holds    map[string]bool
-	failures map[string]int
-	active   map[string]string
+	store         *store.Store
+	exec          *executor.Service
+	mu            sync.Mutex
+	cancel        context.CancelFunc
+	ctx           context.Context
+	holds         map[string]bool
+	failures      map[string]int
+	active        map[string]string
+	workerCancels map[string]context.CancelFunc
+	workerSources map[string]string
+}
+
+type workerLoop struct {
+	ctx context.Context
+	def model.Definition
 }
 
 func New(st *store.Store, ex *executor.Service) *Supervisor {
-	return &Supervisor{store: st, exec: ex, holds: make(map[string]bool), failures: make(map[string]int), active: make(map[string]string)}
+	return &Supervisor{
+		store:         st,
+		exec:          ex,
+		holds:         make(map[string]bool),
+		failures:      make(map[string]int),
+		active:        make(map[string]string),
+		workerCancels: make(map[string]context.CancelFunc),
+		workerSources: make(map[string]string),
+	}
+}
+
+func (s *Supervisor) startLocked(d model.Definition) workerLoop {
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.workerCancels[d.Name] = cancel
+	s.workerSources[d.Name] = d.SourceFile
+	return workerLoop{ctx: ctx, def: d}
 }
 
 func (s *Supervisor) Reload(defs []model.Definition) {
@@ -36,14 +58,43 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	s.ctx = ctx
-	s.mu.Unlock()
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.workerCancels = make(map[string]context.CancelFunc)
+	s.workerSources = make(map[string]string)
+	workers := make([]workerLoop, 0)
 	for _, d := range defs {
 		if d.Kind == model.KindWorker && d.IsEnabled() && d.DoesAutostart() {
-			go s.loop(ctx, d)
+			workers = append(workers, s.startLocked(d))
 		}
+	}
+	s.mu.Unlock()
+	for _, worker := range workers {
+		go s.loop(worker.ctx, worker.def)
+	}
+}
+
+// ReloadSource restarts only workers managed by source. Job-only source
+// reloads therefore leave every worker running.
+func (s *Supervisor) ReloadSource(source string, defs []model.Definition) {
+	s.mu.Lock()
+	for name, workerSource := range s.workerSources {
+		if workerSource == source {
+			s.workerCancels[name]()
+			delete(s.workerCancels, name)
+			delete(s.workerSources, name)
+		}
+	}
+	workers := make([]workerLoop, 0)
+	if s.ctx != nil {
+		for _, d := range defs {
+			if d.SourceFile == source && d.Kind == model.KindWorker && d.IsEnabled() && d.DoesAutostart() {
+				workers = append(workers, s.startLocked(d))
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, worker := range workers {
+		go s.loop(worker.ctx, worker.def)
 	}
 }
 
@@ -72,12 +123,19 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			select {
 			case <-ctx.Done():
 				_ = s.exec.Stop(r.ID)
+				s.mu.Lock()
+				if s.active[d.Name] == r.ID {
+					delete(s.active, d.Name)
+				}
+				s.mu.Unlock()
 				return
 			case <-done:
 			}
 		}
 		s.mu.Lock()
-		delete(s.active, d.Name)
+		if s.active[d.Name] == r.ID {
+			delete(s.active, d.Name)
+		}
 		s.mu.Unlock()
 		current, err := s.store.Run(context.Background(), r.ID)
 		if err != nil {
@@ -137,11 +195,14 @@ func (s *Supervisor) StartDefinition(d model.Definition) {
 	s.mu.Lock()
 	delete(s.holds, d.Name)
 	s.failures[d.Name] = 0
-	ctx := s.ctx
 	_, running := s.active[d.Name]
+	var worker workerLoop
+	if s.ctx != nil && !running && d.Kind == model.KindWorker && d.IsEnabled() {
+		worker = s.startLocked(d)
+	}
 	s.mu.Unlock()
-	if ctx != nil && !running && d.Kind == model.KindWorker && d.IsEnabled() {
-		go s.loop(ctx, d)
+	if worker.ctx != nil {
+		go s.loop(worker.ctx, worker.def)
 	}
 }
 

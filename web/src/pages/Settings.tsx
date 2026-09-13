@@ -431,7 +431,7 @@ function MainTab() {
                         type="button"
                         className="btn-sub !px-2 !py-1.5"
                         disabled={reload.isPending}
-                        onClick={() => reload.mutate(undefined)}
+                        onClick={() => reload.mutate(file)}
                         title="Reload source"
                         aria-label={`Reload ${file}`}
                       >

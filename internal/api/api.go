@@ -37,7 +37,7 @@ type Server struct {
 	logs    *logstore.Store
 	exec    *executor.Service
 	super   *supervisor.Supervisor
-	reload  func(context.Context) error
+	reload  func(context.Context, string) error
 	started time.Time
 	version string
 	ready   atomic.Bool
@@ -89,13 +89,17 @@ func (l peerListener) Accept() (net.Conn, error) {
 type errorEnvelope struct {
 	Error apiError `json:"error"`
 }
+
+type reloadRequest struct {
+	Source string `json:"source"`
+}
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Details any    `json:"details,omitempty"`
 }
 
-func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload func(context.Context) error, version string) *Server {
+func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload func(context.Context, string) error, version string) *Server {
 	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, started: time.Now(), version: version}
 }
 func (s *Server) InitializeToken(ctx context.Context) (string, error) {
@@ -255,7 +259,14 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": capabilities, "token_fingerprint": fingerprint(s.currentTokenHash())})
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
-	if err := s.reload(r.Context()); err != nil {
+	var request reloadRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, 400, "invalid_request", "invalid reload request")
+			return
+		}
+	}
+	if err := s.reload(r.Context(), request.Source); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -330,7 +341,7 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.reload(r.Context()); err != nil {
+	if err := s.reload(r.Context(), ""); err != nil {
 		writeError(w, 500, "reconcile_failed", err.Error())
 		return
 	}
@@ -345,7 +356,7 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, err.Error())
 		return
 	}
-	if err := s.reload(r.Context()); err != nil {
+	if err := s.reload(r.Context(), ""); err != nil {
 		internal(w, err)
 		return
 	}
@@ -358,7 +369,7 @@ func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "authority_conflict", err.Error())
 		return
 	}
-	if err := s.reload(r.Context()); err != nil {
+	if err := s.reload(r.Context(), ""); err != nil {
 		internal(w, err)
 		return
 	}
@@ -717,7 +728,7 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
-	if err = s.reload(r.Context()); err != nil {
+	if err = s.reload(r.Context(), ""); err != nil {
 		internal(w, err)
 		return
 	}

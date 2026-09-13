@@ -104,6 +104,41 @@ func TestAuthorityConflictRollsBackWholeReload(t *testing.T) {
 	}
 }
 
+func TestSyncSourceLeavesOtherSourcesUnchanged(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	job := model.Definition{Name: "job", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml", Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	worker := job
+	worker.Name = "worker"
+	worker.Kind = model.KindWorker
+	worker.SourceFile = "workers.toml"
+	if err := s.SyncFiles(t.Context(), []model.Definition{job, worker}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	job.Command = "false"
+	if err := s.SyncSource(t.Context(), []model.Definition{job}, job.SourceFile, false); err != nil {
+		t.Fatal(err)
+	}
+	updated, _, err := s.Definition(t.Context(), job.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Command != "false" {
+		t.Fatalf("reloaded job command = %q, want false", updated.Command)
+	}
+	unchanged, _, err := s.Definition(t.Context(), worker.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Command != "true" {
+		t.Fatalf("other source changed: %#v", unchanged)
+	}
+}
+
 func TestCopyDefinitionsIsAtomicOnAuthorityConflict(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {

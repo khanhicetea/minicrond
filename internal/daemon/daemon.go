@@ -18,6 +18,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/logdb"
 	"github.com/khanhicetea/minicrond/internal/logstore"
+	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/scheduler"
 	"github.com/khanhicetea/minicrond/internal/store"
 	"github.com/khanhicetea/minicrond/internal/supervisor"
@@ -93,7 +94,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	}
 	d.sched = scheduler.New(st, d.exec)
 	d.super = supervisor.New(st, d.exec)
-	d.api = api.New(st, logs, d.exec, d.super, d.Reload, d.Version)
+	d.api = api.New(st, logs, d.exec, d.super, d.ReloadSource, d.Version)
 	token, err := d.api.InitializeToken(ctx)
 	if err != nil {
 		return err
@@ -152,6 +153,11 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	return nil
 }
 func (d *Daemon) Reload(ctx context.Context) error {
+	return d.ReloadSource(ctx, "")
+}
+
+// ReloadSource reconciles one configured source, or every source when source is empty.
+func (d *Daemon) ReloadSource(ctx context.Context, source string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.stopping || d.cfg == nil || d.store == nil {
@@ -164,8 +170,29 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if cfg.Server.Bind != d.cfg.Server.Bind {
 		return errors.New("server.bind requires daemon restart")
 	}
-	if err = d.store.SyncFiles(ctx, cfg.Definitions, cfg.Include.PruneMissing); err != nil {
-		return err
+	var sourceDefinitions []model.Definition
+	if source == "" {
+		if err = d.store.SyncFiles(ctx, cfg.Definitions, cfg.Include.PruneMissing); err != nil {
+			return err
+		}
+	} else {
+		source, err = filepath.Abs(source)
+		if err != nil {
+			return err
+		}
+		found := source == cfg.Path
+		for _, def := range cfg.Definitions {
+			if def.SourceFile == source {
+				found = true
+				sourceDefinitions = append(sourceDefinitions, def)
+			}
+		}
+		if !found {
+			return fmt.Errorf("source %q is not configured", source)
+		}
+		if err = d.store.SyncSource(ctx, sourceDefinitions, source, cfg.Include.PruneMissing); err != nil {
+			return err
+		}
 	}
 	defs, err := d.store.Definitions(ctx)
 	if err != nil {
@@ -175,7 +202,11 @@ func (d *Daemon) Reload(ctx context.Context) error {
 		return err
 	}
 	d.cfg = cfg
-	d.super.Reload(defs)
+	if source == "" {
+		d.super.Reload(defs)
+	} else {
+		d.super.ReloadSource(source, defs)
+	}
 	return nil
 }
 func (d *Daemon) retentionLoop(ctx context.Context) {

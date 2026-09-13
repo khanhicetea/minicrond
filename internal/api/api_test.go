@@ -36,7 +36,7 @@ func setup(t *testing.T) (*Server, string, *store.Store) {
 	// Cleanup runs in LIFO order, so stop all executions before closing st.
 	t.Cleanup(func() { ex.Shutdown(context.Background()) })
 	sup := supervisor.New(st, ex)
-	srv := New(st, logs, ex, sup, func(context.Context) error { return nil }, "test")
+	srv := New(st, logs, ex, sup, func(context.Context, string) error { return nil }, "test")
 	token, err := srv.InitializeToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -86,6 +86,22 @@ func mustCreate(t *testing.T, s *Server, name, command string) {
 	body := fmt.Sprintf(`{"name":%q,"kind":"job","command":%q,"shell":"/bin/sh"}`, name, command)
 	if rec := call(s, true, "PUT", "/api/v1/jobs/"+name, "", body, nil); rec.Code != 200 {
 		t.Fatalf("create %s: %d %s", name, rec.Code, rec.Body.String())
+	}
+}
+
+func TestReloadPassesRequestedSource(t *testing.T) {
+	var got string
+	s := &Server{reload: func(_ context.Context, source string) error {
+		got = source
+		return nil
+	}}
+
+	rec := call(s, true, "POST", "/api/v1/daemon/reload", "", `{"source":"workers/*.toml"}`, nil)
+	if rec.Code != 200 {
+		t.Fatalf("reload: %d %s", rec.Code, rec.Body.String())
+	}
+	if got != "workers/*.toml" {
+		t.Fatalf("reload source = %q, want workers/*.toml", got)
 	}
 }
 

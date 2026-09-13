@@ -160,7 +160,23 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 PRAGMA user_version=1;
 COMMIT;`
 
+// SyncFiles atomically reconciles all file-managed definitions.
 func (s *Store) SyncFiles(ctx context.Context, defs []model.Definition, prune bool) error {
+	return s.syncFiles(ctx, defs, prune, "")
+}
+
+// SyncSource atomically reconciles definitions from one source without changing
+// definitions from other file sources.
+func (s *Store) SyncSource(ctx context.Context, defs []model.Definition, source string, prune bool) error {
+	for _, d := range defs {
+		if d.SourceFile != source {
+			return fmt.Errorf("definition %q does not belong to source %q", d.Name, source)
+		}
+	}
+	return s.syncFiles(ctx, defs, prune, source)
+}
+
+func (s *Store) syncFiles(ctx context.Context, defs []model.Definition, prune bool, source string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -209,7 +225,13 @@ func (s *Store) SyncFiles(ctx context.Context, defs []model.Definition, prune bo
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT definition_id,name FROM definitions WHERE authority='file' AND deleted_us IS NULL")
+	query := "SELECT definition_id,name FROM definitions WHERE authority='file' AND deleted_us IS NULL"
+	var args []any
+	if source != "" {
+		query += " AND source_file=?"
+		args = append(args, source)
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
