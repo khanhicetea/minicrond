@@ -422,25 +422,34 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("wait") == "true" {
-		seconds := timeoutSeconds(r.URL.Query().Get("timeout"))
-		deadline := time.Now().Add(time.Duration(seconds) * time.Second)
-		for time.Now().Before(deadline) {
-			current, err := s.store.Run(r.Context(), run.ID)
-			if err == nil && model.TerminalStatuses[current.Status] {
-				writeJSON(w, 200, current)
-				return
-			}
-			select {
-			case <-r.Context().Done(): // client went away; stop burning a slot
-				writeJSON(w, 202, run)
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
+		run = s.waitForRun(r.Context(), run, time.Duration(timeoutSeconds(r.URL.Query().Get("timeout")))*time.Second)
+		if model.Terminal(run.Status) {
+			writeJSON(w, 200, run)
+			return
 		}
-		writeJSON(w, 202, run)
-		return
 	}
 	writeJSON(w, 202, run)
+}
+
+// waitForRun waits for an active run to finalize its logs and terminal state.
+// A completed run is no longer active, so read the persisted state directly.
+func (s *Server) waitForRun(ctx context.Context, run model.Run, timeout time.Duration) model.Run {
+	if done := s.exec.Wait(run.ID); done != nil {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return run
+		case <-timer.C:
+			return run
+		}
+	}
+	current, err := s.store.Run(ctx, run.ID)
+	if err == nil && model.Terminal(current.Status) {
+		return current
+	}
+	return run
 }
 func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))

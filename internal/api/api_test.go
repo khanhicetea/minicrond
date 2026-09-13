@@ -33,6 +33,8 @@ func setup(t *testing.T) (*Server, string, *store.Store) {
 		t.Fatal(err)
 	}
 	ex := executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4})
+	// Cleanup runs in LIFO order, so stop all executions before closing st.
+	t.Cleanup(func() { ex.Shutdown(context.Background()) })
 	sup := supervisor.New(st, ex)
 	srv := New(st, logs, ex, sup, func(context.Context) error { return nil }, "test")
 	token, err := srv.InitializeToken(t.Context())
@@ -341,9 +343,8 @@ func TestMissingRunReturnsEnvelope(t *testing.T) {
 	}
 }
 
-// A wait=true trigger polls for up to `timeout` seconds; it must not hold the
-// idempotency mutex while waiting, or every other keyed trigger would queue
-// behind it.
+// A wait=true trigger must not hold the idempotency mutex while waiting, or
+// every other keyed trigger would queue behind it.
 func TestWaitTriggerDoesNotHoldIdempotencyLock(t *testing.T) {
 	s, _, _ := setup(t)
 	mustCreate(t, s, "slow", "sleep 2")
