@@ -1,19 +1,19 @@
-# `minicron` name check (pre-release)
+# `minicrond` name check (pre-release)
 
-Date: 2026-08-28. Per OQ-11 the name was frozen subject to a package/domain/trademark check before the first public release.
+Date: 2026-08-28. The Go module and command were renamed before the first public release; the existing `minicron` configuration, environment, storage, and API identifiers remain compatibility names.
 
 ## Findings
 
 | Check | Result |
 |---|---|
-| Go module path `github.com/minicron/minicron` | unclaimed on proxy.golang.org / pkg.go.dev (404) — **but** the `github.com/minicron` organization is owned by someone else, so this path is not publishable as-is |
-| Existing Go packages | **collision**: an unrelated `minicron/client...` module exists on pkg.go.dev |
+| Go module path `github.com/khanhicetea/minicrond` | owned project namespace; this is the module path used by `go.mod` |
+| Existing Go packages | the `minicrond` module path avoids the unrelated `minicron/client...` package collision |
 | Homebrew formula | API unreachable from the build environment; unverified |
-| Domains | not verifiable from the build environment; `minicron.<tld>` availability must be checked manually |
+| Domains | not verifiable from the build environment; `minicrond.<tld>` availability must be checked manually |
 | Trademarks | USPTO/EUIPO search must be done manually; no automated verdict |
 
-## Recommendation
+## Decision
 
-- Keep the binary/product name `minicron` (decision OQ-11) — no evidence of a conflicting product in this category was found.
-- **Move the Go module to a namespace the project owns** (e.g. `github.com/<owner>/minicron`) before the first public release; the current `github.com/minicron/minicron` path in `go.mod` is a placeholder that cannot be published under the taken organization.
+- Use `github.com/khanhicetea/minicrond` as the Go module path and `minicrond` as the command name.
+- Retain `minicron`-prefixed runtime identifiers for compatibility with existing configurations and data directories.
 - Complete the domain and trademark checks manually before signing release artifacts; the v0.1.0 release notes must not ship until they are recorded here.

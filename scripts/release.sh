@@ -3,8 +3,8 @@ set -eu
 version=${1:?usage: scripts/release.sh VERSION}
 mkdir -p dist
 for target in linux/amd64 linux/arm64; do
-  os=${target%/*}; arch=${target#*/}; name="minicron-${version}-${os}-${arch}"
-  GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$version -X main.commit=$(git rev-parse --short HEAD)" -o "dist/$name/minicron" ./cmd/minicron
+  os=${target%/*}; arch=${target#*/}; name="minicrond-${version}-${os}-${arch}"
+  GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$version -X main.commit=$(git rev-parse --short HEAD)" -o "dist/$name/minicrond" ./cmd/minicrond
   cp LICENSE README.md "dist/$name/"
   tar -C dist -czf "dist/$name.tar.gz" "$name"
   rm -rf "dist/$name"

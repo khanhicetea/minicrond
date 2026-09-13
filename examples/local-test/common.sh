@@ -38,7 +38,7 @@ load_env() {
 	export MINICRON_CONFIG MINICRON_DATA
 }
 
-# Resolve the minicron binary to use and set $BIN.
+# Resolve the minicrond binary to use and set $BIN.
 # Order: $MINICRON_BIN override, then build from source, then repo bin/.
 resolve_bin() {
 	if [ -n "${MINICRON_BIN:-}" ]; then
@@ -48,14 +48,19 @@ resolve_bin() {
 	fi
 	if command -v go >/dev/null 2>&1; then
 		mkdir -p "$EXAMPLE_DIR/.bin"
-		if [ ! -x "$EXAMPLE_DIR/.bin/minicron" ]; then
-			notice "building minicron from source (override with MINICRON_BIN in .env)"
+		if [ ! -x "$EXAMPLE_DIR/.bin/minicrond" ]; then
+			notice "building minicrond from source (override with MINICRON_BIN in .env)"
 		fi
-		(cd "$REPO_ROOT" && CGO_ENABLED=0 go build -trimpath -o "$EXAMPLE_DIR/.bin/minicron" ./cmd/minicron) \
+		(cd "$REPO_ROOT" && CGO_ENABLED=0 go build -trimpath -o "$EXAMPLE_DIR/.bin/minicrond" ./cmd/minicrond) \
 			|| die "go build failed"
-		BIN=$EXAMPLE_DIR/.bin/minicron
+		BIN=$EXAMPLE_DIR/.bin/minicrond
 		return
 	fi
+	if [ -x "$REPO_ROOT/bin/minicrond" ]; then
+		BIN=$REPO_ROOT/bin/minicrond
+		return
+	fi
+	# Keep accepting the legacy artifact when Go is unavailable.
 	if [ -x "$REPO_ROOT/bin/minicron" ]; then
 		BIN=$REPO_ROOT/bin/minicron
 		return
@@ -72,7 +77,7 @@ daemon_pid() {
 	'' | *[!0-9]*) return 1 ;;
 	esac
 	[ -r "/proc/$pid/comm" ] || return 1
-	grep -qx minicron "/proc/$pid/comm" 2>/dev/null || return 1
+	grep -Eq '^(minicrond|minicron)$' "/proc/$pid/comm" 2>/dev/null || return 1
 	echo "$pid"
 }
 

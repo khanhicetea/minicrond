@@ -1,5 +1,5 @@
 #!/bin/sh
-# Convenience wrapper around the minicron CLI with the sandbox env applied.
+# Convenience wrapper around the minicrond CLI with the sandbox env applied.
 # Usage: ./mc list | ./mc status | ./mc run hello --wait | ./mc logs RUN_ID | ./mc reload
 set -eu
 

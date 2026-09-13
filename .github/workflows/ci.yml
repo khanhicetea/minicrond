@@ -11,7 +11,7 @@ jobs:
         with: {go-version: '1.24.x'}
       - run: go test ./...
       - run: go vet ./...
-      - run: go build ./cmd/minicron
+      - run: go build ./cmd/minicrond
       - run: go test -race ./...
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
   cross-build:
@@ -22,7 +22,7 @@ jobs:
         with: {go-version: '1.24.x'}
       - run: |
           for target in linux/amd64 linux/arm64; do
-            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /tmp/minicron-${target%/*}-${target#*/} ./cmd/minicron
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 go build -o /tmp/minicrond-${target%/*}-${target#*/} ./cmd/minicrond
           done
   web:
     runs-on: ubuntu-latest

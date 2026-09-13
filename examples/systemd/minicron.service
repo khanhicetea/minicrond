@@ -1,10 +1,10 @@
 [Unit]
-Description=minicron user daemon
+Description=minicrond user daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/minicron daemon --config %h/.config/minicron/minicron.toml
+ExecStart=%h/.local/bin/minicrond daemon --config %h/.config/minicron/minicron.toml
 Restart=on-failure
 NoNewPrivileges=true
 PrivateTmp=true

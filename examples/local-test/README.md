@@ -34,7 +34,7 @@ feature). No absolute paths are checked in.
 cd examples/local-test
 
 ./start.sh        # reads .env (created from .env.example on first run),
-                  # builds ../../cmd/minicron, validates, starts the daemon,
+                  # builds ../../cmd/minicrond, validates, starts the daemon,
                   # waits for readiness, and prints the one-time bearer token
 
 ./smoke.sh        # end-to-end test against the running daemon

@@ -142,7 +142,7 @@ export default function JobEditor({ params }: JobEditorProps) {
           <Icon name="alert-triangle" size={16} className="text-amber-400 shrink-0" />
           <span>
             This definition is managed by <code className="font-mono">{draft.source_file}</code>. Edit that file and run{' '}
-            <code className="font-mono">minicron reload</code>; API edits are rejected.
+            <code className="font-mono">minicrond reload</code>; API edits are rejected.
           </span>
         </div>
       )}

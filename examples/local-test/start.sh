@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build minicron, prepare the sandbox, and start the daemon in the background.
+# Build minicrond, prepare the sandbox, and start the daemon in the background.
 # Reads .env (created from .env.example on first run). Idempotent: exits 0
 # with status if the daemon is already running.
 set -eu

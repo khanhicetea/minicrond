@@ -231,7 +231,7 @@ function MainTab() {
     } catch (error) {
       setRotateError(
         error instanceof Error && error.message.includes('local')
-          ? 'Token rotation requires the local Unix socket. Run `minicron token --rotate` on the host.'
+          ? 'Token rotation requires the local Unix socket. Run `minicrond token --rotate` on the host.'
           : errorText(error),
       );
     }

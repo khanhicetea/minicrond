@@ -1,4 +1,4 @@
-/** Types mirroring the JSON wire contract of the minicron API (see internal/model). */
+/** Types mirroring the JSON wire contract of the minicron API (see model). */
 
 export type Kind = 'job' | 'worker';
 
@@ -123,7 +123,7 @@ export interface JobDetail {
   worker_state?: WorkerState;
 }
 
-/** Tagged log frame; payload is base64 (see internal/logstore). */
+/** Tagged log frame; payload is base64 (see logstore). */
 export interface Frame {
   sequence: number;
   timestamp: string;

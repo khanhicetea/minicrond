@@ -1,4 +1,4 @@
-module github.com/minicron/minicron
+module github.com/khanhicetea/minicrond
 
 go 1.24.0
 

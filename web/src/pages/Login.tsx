@@ -86,7 +86,7 @@ export default function Login() {
             </button>
           </form>
           <p className="mt-4 text-xs faint">
-            Lost the token? Rotate it locally with <code className="font-mono">minicron token --rotate</code> (requires
+            Lost the token? Rotate it locally with <code className="font-mono">minicrond token --rotate</code> (requires
             the Unix socket).
           </p>
         </div>
