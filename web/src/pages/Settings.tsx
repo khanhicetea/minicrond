@@ -7,7 +7,7 @@ import { api, errorText } from '../api';
 import { auth } from '../auth';
 import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useReloadDaemon } from '../queries';
 import { downloadFile } from '../lib/download';
-import { formatDayTime, formatSpan, formatUptime, shortId } from '../lib/format';
+import { formatDayTime, formatSpan, formatUptime, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import type { Definition } from '../types';
 
@@ -378,7 +378,7 @@ function MainTab() {
                     {run.status} ({formatSpan(run.started_at, run.ended_at)})
                     {run.exit_code !== undefined && run.exit_code !== 0 ? ` · exit ${run.exit_code}` : ''} ·{' '}
                     <Link href={`/runs/${run.run_id}`} className="text-blue-300 hover:underline">
-                      run {shortId(run.run_id, 8)}
+                      run {shortRunId(run.run_id)}
                     </Link>
                   </span>
                 </div>

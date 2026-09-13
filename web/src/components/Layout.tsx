@@ -5,7 +5,7 @@ import { Icon, type IconName } from './Icon';
 import { auth } from '../auth';
 import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT } from '../queries';
 import { RANGE_LABEL, useRange, type RangeKey } from '../lib/range';
-import { shortId } from '../lib/format';
+import { shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 
 function currentTheme(): 'light' | 'dark' {
@@ -153,7 +153,7 @@ function GlobalSearch() {
               }}
             >
               <Icon name="history" size={14} className="muted" />
-              <span className="font-mono text-[0.8rem]">#{shortId(run.run_id, 8)}</span>
+              <span className="font-mono text-[0.8rem]">#{shortRunId(run.run_id)}</span>
               <span className="muted ml-auto text-xs">{run.job}</span>
             </button>
           ))}

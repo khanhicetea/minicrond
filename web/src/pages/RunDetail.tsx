@@ -9,7 +9,7 @@ import { api, errorText } from '../api';
 import { jobQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
 import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
-import { formatSpan, formatTimestamp, shortId } from '../lib/format';
+import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { isActiveRun } from '../types';
 
@@ -141,7 +141,7 @@ export default function RunDetail() {
                   title="Copy full run ID"
                   onClick={() => void copyId()}
                 >
-                  #{shortId(data.run_id, 8)}
+                  #{shortRunId(data.run_id)}
                   <Icon name={copiedId ? 'check' : 'copy'} size={11} />
                 </button>
                 <span aria-hidden>·</span>

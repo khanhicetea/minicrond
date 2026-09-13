@@ -4,7 +4,7 @@ import { Icon } from './Icon';
 import StatusBadge from './StatusBadge';
 import type { Run } from '../types';
 import { isActiveRun } from '../types';
-import { formatDayTime, formatIsoLocal, formatSpan, shortId } from '../lib/format';
+import { formatDayTime, formatIsoLocal, formatSpan, shortRunId } from '../lib/format';
 
 /** Max rows rendered in compact mode (dashboard). */
 export const COMPACT_LIMIT = 12;
@@ -120,7 +120,7 @@ export function RunsList({ runs, currentId }: { runs: Run[]; currentId?: string 
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[0.8125rem] font-semibold">#{shortId(run.run_id, 8)}</span>
+                  <span className="font-mono text-[0.8125rem] font-semibold">#{shortRunId(run.run_id)}</span>
                   <span className="ml-auto whitespace-nowrap text-xs muted">
                     {formatDayTime(run.started_at ?? run.queued_at)}
                   </span>

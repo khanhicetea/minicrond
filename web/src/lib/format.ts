@@ -87,3 +87,8 @@ export function formatBytes(bytes: number): string {
 export function shortId(id: string, length = 12): string {
   return id.length > length ? id.slice(0, length) : id;
 }
+
+/** Last 12 UUIDv7 characters preserve the random portion of a run ID. */
+export function shortRunId(id: string): string {
+  return id.slice(-12);
+}
