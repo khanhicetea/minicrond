@@ -1,74 +1,9 @@
-/** Types mirroring the JSON wire contract of the minicron API (see model). */
+/** API response types; Definition and Run are generated from internal/model. */
 
-export type Kind = 'job' | 'worker';
+import type { Definition, Run } from './generated/model';
 
-export interface Definition {
-  definition_id?: number;
-  name: string;
-  kind: Kind;
-  authority?: string;
-  revision?: number;
-  source_file?: string;
-  enabled?: boolean;
-  command?: string;
-  argv?: string[];
-  shell?: string;
-  schedule?: string;
-  timezone?: string;
-  /** Scheduler-owned next fire time, returned by the jobs API. */
-  next_fire_at?: string;
-  catch_up?: string;
-  on_overlap?: string;
-  run_on_start?: boolean;
-  run_as?: string;
-  working_dir?: string;
-  env_base?: string;
-  env?: Record<string, string>;
-  secret_env?: Record<string, string>;
-  env_file?: string;
-  timeout?: string;
-  grace?: string;
-  stop_signal?: string;
-  success_codes?: number[];
-  keep_runs?: number;
-  keep_for?: string;
-  log_max?: string;
-  log_on_full?: string;
-  labels?: Record<string, string>;
-  autostart?: boolean;
-  restart?: string;
-  restart_delay?: string;
-  max_restart_attempts?: number;
-  healthy_after?: string;
-  priority?: number;
-}
-
-export interface Run {
-  run_id: string;
-  definition_id: number;
-  job: string;
-  kind: string;
-  revision: number;
-  definition_hash: string;
-  status: string;
-  end_reason?: string;
-  trigger: string;
-  attempt: number;
-  scheduled_for?: string;
-  missed_count?: number;
-  boot_id?: string;
-  pid?: number;
-  pgid?: number;
-  process_start_id?: string;
-  exit_code?: number;
-  signal?: string;
-  queued_at: string;
-  started_at?: string;
-  ended_at?: string;
-  log_ref?: string;
-  log_bytes: number;
-  log_truncated: boolean;
-}
+export { KindJob, KindWorker } from './generated/model';
+export type { Definition, Kind, Run } from './generated/model';
 
 export interface DaemonInfo {
   version: string;

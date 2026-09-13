@@ -1,0 +1,7 @@
+type_mappings:
+  time.Time: string
+
+packages:
+  - path: github.com/khanhicetea/minicrond/internal/model
+    output_path: web/src/generated/model.ts
+    enum_style: union

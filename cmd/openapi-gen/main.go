@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/khanhicetea/minicrond/api"
+	"github.com/khanhicetea/minicrond/internal/api"
 )
 
 func main() {

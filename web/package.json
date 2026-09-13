@@ -3,6 +3,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "generate-types": "cd .. && go tool tygo generate --config tygo.yaml",
+    "prebuild": "npm run generate-types",
     "build": "vite build",
     "check": "tsc --noEmit"
   },

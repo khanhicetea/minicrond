@@ -23,8 +23,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/khanhicetea/minicrond/config"
-	"github.com/khanhicetea/minicrond/daemon"
+	"github.com/khanhicetea/minicrond/internal/config"
+	"github.com/khanhicetea/minicrond/internal/daemon"
 )
 
 var version = "0.1.0-dev"

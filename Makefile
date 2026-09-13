@@ -4,12 +4,15 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 LOCAL_TEST_HOST ?= 100.117.173.93
 
-.PHONY: build build-web restart-example-local local-test test check contracts release-check
+.PHONY: build build-web generate-types restart-example-local local-test test check contracts release-check
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o bin/minicrond ./cmd/minicrond
 
 build-web:
 	cd web && npm run build
+
+generate-types:
+	go tool tygo generate --config tygo.yaml
 
 restart-example-local:
 	cd examples/local-test && ./stop.sh && ./start.sh
@@ -23,9 +26,9 @@ local:
 test:
 	go test ./...
 
-check: test
+check: test generate-types
 	go vet ./...
-	git diff --exit-code -- schema/minicron.schema.json cmd/minicrond/openapi.json
+	git diff --exit-code -- schema/minicron.schema.json cmd/minicrond/openapi.json web/src/generated/model.ts
 
 contracts:
 	cmp schema/minicron.schema.json cmd/minicrond/minicron.schema.json

@@ -41,7 +41,7 @@ CGO_ENABLED=1 go test -race ./...
 CGO_ENABLED=0 go build ./cmd/minicrond
 ```
 
-Generated contracts are checked in: `schema/minicron.schema.json` and `cmd/minicrond/openapi.json`.
+Generated contracts are checked in: `schema/minicron.schema.json` and `cmd/minicrond/openapi.json`. Frontend model types are generated from Go with Tygo into `web/src/generated/model.ts`; run `make generate-types` after changing `internal/model`.
 
 A self-contained sandbox with real jobs, a `start.sh`/`.env.example` flow, and an end-to-end smoke test lives in [`examples/local-test`](examples/local-test/README.md).
 

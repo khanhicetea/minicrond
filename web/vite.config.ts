@@ -18,7 +18,7 @@ export default defineConfig({
     proxy: { '/api': 'http://127.0.0.1:7423' },
   },
   build: {
-    outDir: resolve(import.meta.dirname, '../api/assets'),
+    outDir: resolve(import.meta.dirname, '../internal/api/assets'),
     emptyOutDir: true,
     rollupOptions: {
       // The Go asset handler serves exactly app.js and style.css, so ship a
