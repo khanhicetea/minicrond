@@ -317,6 +317,7 @@ function DefinitionSummary({ draft }: { draft: Definition }) {
     ['Keep runs', String(draft.keep_runs ?? 0)],
     ['Keep for', draft.keep_for ?? '—'],
     ['Labels', Object.entries(draft.labels ?? {}).map(([k, v]) => `${k}=${v}`).join(', ') || '—'],
+    ['Alerts', (draft.alerts ?? []).join(', ') || '—'],
   ];
   return (
     <dl className="grid grid-cols-[9rem_1fr] gap-y-2.5 p-4 text-sm">

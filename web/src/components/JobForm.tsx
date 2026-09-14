@@ -517,6 +517,30 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
           </div>
 
           <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
+            <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Alerts</h3>
+            <div>
+              <label htmlFor={`${formId}-alerts`} className={label}>Alert channels (one per line)</label>
+              <textarea
+                id={`${formId}-alerts`}
+                className="mc-input mono"
+                value={(draft.alerts ?? []).join('\n')}
+                disabled={disabled}
+                onChange={event =>
+                  onChange({
+                    alerts: event.target.value
+                      .split('\n')
+                      .map(channel => channel.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder={'ops\non-call'}
+                spellCheck={false}
+              />
+              <p className="field-help">Failed and timed-out runs notify these configured channels.</p>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Retention & logs</h3>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <div>

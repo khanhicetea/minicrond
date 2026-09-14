@@ -61,6 +61,10 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
   if (def.keep_for) emit('keep_for', 'keep_for', literal(def.keep_for));
   if (def.log_max) emit('log_max', 'log_max', literal(def.log_max));
   if (def.log_on_full) emit('log_on_full', 'log_on_full', literal(def.log_on_full));
+  if (def.alerts && def.alerts.length > 0) {
+    lineMap.alerts = lines.length + 1;
+    lines.push(`alerts = [${def.alerts.map(literal).join(', ')}]`);
+  }
 
   if (def.env && Object.keys(def.env).length > 0) {
     lines.push('');
