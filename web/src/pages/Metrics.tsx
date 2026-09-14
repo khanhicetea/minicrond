@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { Icon } from '../components/Icon';
@@ -37,65 +37,54 @@ export default function Metrics() {
   const jobs = useQuery(jobsQuery());
   const [jobFilter, setJobFilter] = useState('');
 
-  const jobNames = useMemo(() => (jobs.data ?? []).filter(d => d.kind === 'job').map(d => d.name).sort(), [jobs.data]);
-  const workerNames = useMemo(() => (jobs.data ?? []).filter(d => d.kind === 'worker').map(d => d.name), [jobs.data]);
+  const jobNames = (jobs.data ?? []).filter(d => d.kind === 'job').map(d => d.name).sort();
+  const workerNames = (jobs.data ?? []).filter(d => d.kind === 'worker').map(d => d.name);
   const workerStates = useWorkerStates(workerNames);
 
   const now = Date.now();
   const windowMs = RANGE_MS[range];
 
-  const stats = useMemo(() => {
-    const data = metrics.data ?? EMPTY_METRICS;
-    return {
-      ...data,
-      rate: data.total > 0 ? (data.succeeded / data.total) * 100 : null,
-      median: data.duration_p50_ms ?? null,
-      p95: data.duration_p95_ms ?? null,
-    };
-  }, [metrics.data]);
+  const data = metrics.data ?? EMPTY_METRICS;
+  const stats = {
+    ...data,
+    rate: data.total > 0 ? (data.succeeded / data.total) * 100 : null,
+    median: data.duration_p50_ms ?? null,
+    p95: data.duration_p95_ms ?? null,
+  };
 
   // Per-job aggregates for the Job stats panel.
-  const jobStats = useMemo(
-    () =>
-      stats.jobs.map(job => ({
-        ...job,
-        rate: job.total > 0 ? (job.succeeded / job.total) * 100 : null,
-        median: job.duration_p50_ms ?? null,
-        p95: job.duration_p95_ms ?? null,
-      })),
-    [stats.jobs],
-  );
+  const jobStats = stats.jobs.map(job => ({
+    ...job,
+    rate: job.total > 0 ? (job.succeeded / job.total) * 100 : null,
+    median: job.duration_p50_ms ?? null,
+    p95: job.duration_p95_ms ?? null,
+  }));
 
   const selectedJob = jobFilter === '' ? null : jobStats.find(s => s.name === jobFilter) ?? null;
 
   // Bucket the window for charts.
-  const charts = useMemo(() => {
-    const start = now - windowMs;
-    const bucketMs = windowMs / BUCKETS;
-    const buckets = stats.buckets;
-    const success = buckets.map(bucket => bucket.success);
-    const failure = buckets.map(bucket => bucket.failure);
-    const median = buckets.map(bucket => bucket.duration_p50_ms ?? null);
-    const p95 = buckets.map(bucket => bucket.duration_p95_ms ?? null);
-    const activeSeries = buckets.map(bucket => bucket.active);
-    const queueSeries = buckets.map(bucket => bucket.queued);
+  const start = now - windowMs;
+  const bucketMs = windowMs / BUCKETS;
+  const buckets = stats.buckets;
+  const success = buckets.map(bucket => bucket.success);
+  const failure = buckets.map(bucket => bucket.failure);
+  const median = buckets.map(bucket => bucket.duration_p50_ms ?? null);
+  const p95 = buckets.map(bucket => bucket.duration_p95_ms ?? null);
+  const activeSeries = buckets.map(bucket => bucket.active);
+  const queueSeries = buckets.map(bucket => bucket.queued);
+  const timeLabels = buckets.map((_, i) => formatChartTimeLabel(start + i * bucketMs, range));
+  const charts = { success, failure, median, p95, activeSeries, queueSeries, timeLabels };
 
-    const timeLabels = buckets.map((_, i) => formatChartTimeLabel(start + i * bucketMs, range));
-    return { success, failure, median, p95, activeSeries, queueSeries, timeLabels };
-  }, [stats.buckets, windowMs, now, range]);
-
-  const workerRows = useMemo(() => {
-    const rows = { healthy: 0, attention: 0, stopped: 0 };
-    for (const name of workerNames) {
-      const state = workerStates[name];
-      if (!state) continue;
-      if ((state.failures ?? 0) > 0 || state.held) rows.attention += 1;
-      else if (state.active) rows.healthy += 1;
-      else rows.stopped += 1;
-    }
-    const total = rows.healthy + rows.attention + rows.stopped;
-    return { rows, total };
-  }, [workerNames, workerStates]);
+  const rows = { healthy: 0, attention: 0, stopped: 0 };
+  for (const name of workerNames) {
+    const state = workerStates[name];
+    if (!state) continue;
+    if ((state.failures ?? 0) > 0 || state.held) rows.attention += 1;
+    else if (state.active) rows.healthy += 1;
+    else rows.stopped += 1;
+  }
+  const total = rows.healthy + rows.attention + rows.stopped;
+  const workerRows = { rows, total };
 
   const rangeKeys: RangeKey[] = ['15m', '1h', '24h', '7d', '30d'];
   const activeRange = range;

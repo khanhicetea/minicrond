@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearch } from 'wouter';
 import { Icon, type IconName } from '../components/Icon';
@@ -26,15 +26,12 @@ function useDiagnostics() {
   const jobs = useQuery(jobsQuery());
   const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
   const definitions = jobs.data ?? [];
-  const checks = useMemo<Check[]>(
-    () => [
-      { name: 'Daemon API', ok: !daemon.isError && daemon.data !== undefined, detail: daemon.isError ? errorText(daemon.error) : `v${daemon.data?.version ?? ''}` },
-      { name: 'Definitions readable', ok: !jobs.isError && jobs.data !== undefined, detail: jobs.isError ? errorText(jobs.error) : `${definitions.length} loaded` },
-      { name: 'Run history readable', ok: !runs.isError && runs.data !== undefined, detail: runs.isError ? errorText(runs.error) : `${runs.data?.length ?? 0} recent runs` },
-      { name: 'Log streaming', ok: !runs.isError, detail: runs.isError ? 'unavailable' : 'SSE ready' },
-    ],
-    [daemon, jobs, runs, definitions.length],
-  );
+  const checks: Check[] = [
+    { name: 'Daemon API', ok: !daemon.isError && daemon.data !== undefined, detail: daemon.isError ? errorText(daemon.error) : `v${daemon.data?.version ?? ''}` },
+    { name: 'Definitions readable', ok: !jobs.isError && jobs.data !== undefined, detail: jobs.isError ? errorText(jobs.error) : `${definitions.length} loaded` },
+    { name: 'Run history readable', ok: !runs.isError && runs.data !== undefined, detail: runs.isError ? errorText(runs.error) : `${runs.data?.length ?? 0} recent runs` },
+    { name: 'Log streaming', ok: !runs.isError, detail: runs.isError ? 'unavailable' : 'SSE ready' },
+  ];
   return { daemon, jobs, runs, definitions, checks };
 }
 
@@ -196,18 +193,16 @@ function MainTab() {
   const [rotateError, setRotateError] = useState('');
   const [liveTail, setLiveTail] = useState(true);
 
-  const sources = useMemo(() => {
-    const byFile = new Map<string, number>();
-    let dbCount = 0;
-    for (const definition of definitions) {
-      if (definition.authority === 'file' && definition.source_file) {
-        byFile.set(definition.source_file, (byFile.get(definition.source_file) ?? 0) + 1);
-      } else {
-        dbCount += 1;
-      }
+  const byFile = new Map<string, number>();
+  let dbCount = 0;
+  for (const definition of definitions) {
+    if (definition.authority === 'file' && definition.source_file) {
+      byFile.set(definition.source_file, (byFile.get(definition.source_file) ?? 0) + 1);
+    } else {
+      dbCount += 1;
     }
-    return { files: [...byFile.entries()].sort(), dbCount };
-  }, [definitions]);
+  }
+  const sources = { files: [...byFile.entries()].sort(), dbCount };
 
   const failedChecks = checks.filter(check => !check.ok).length;
 

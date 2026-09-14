@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 export type RangeKey = '15m' | '1h' | '24h' | '7d' | '30d';
 
@@ -35,7 +35,7 @@ export function RangeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem('minicron_range', range);
   }, [range]);
-  const value = useMemo(() => ({ range, setRange, ms: RANGE_MS[range] }), [range]);
+  const value = { range, setRange, ms: RANGE_MS[range] };
   return <RangeContext.Provider value={value}>{children}</RangeContext.Provider>;
 }
 

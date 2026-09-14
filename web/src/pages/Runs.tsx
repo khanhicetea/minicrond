@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
@@ -23,22 +23,20 @@ export default function Runs() {
   useEffect(() => setFilter(initial), [initial]);
 
   const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
-  const items = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (runs.data ?? []).filter(run => {
-      if (q && !run.job.toLowerCase().includes(q) && !run.run_id.toLowerCase().includes(q)) return false;
-      switch (filter) {
-        case 'failed':
-          return ['failed', 'timeout', 'interrupted'].includes(run.status);
-        case 'scheduled':
-          return run.trigger === 'schedule';
-        case 'manual':
-          return run.trigger === 'manual';
-        default:
-          return true;
-      }
-    });
-  }, [runs.data, filter, query]);
+  const q = query.trim().toLowerCase();
+  const items = (runs.data ?? []).filter(run => {
+    if (q && !run.job.toLowerCase().includes(q) && !run.run_id.toLowerCase().includes(q)) return false;
+    switch (filter) {
+      case 'failed':
+        return ['failed', 'timeout', 'interrupted'].includes(run.status);
+      case 'scheduled':
+        return run.trigger === 'schedule';
+      case 'manual':
+        return run.trigger === 'manual';
+      default:
+        return true;
+    }
+  });
 
   return (
     <div className="space-y-4">

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { ApiError, api, errorText, streamRunLogs } from '../api';
 import { Icon } from './Icon';
 import { decodePayload, parseAnsi } from '../lib/ansi';
@@ -136,30 +136,28 @@ export default function LogViewer({ runId, footer }: { runId: string; footer?: R
   }, [runId]);
 
   // Filtered + capped view.
-  const visible = useMemo(() => {
-    let matcher: ((line: LogLine) => boolean) | null = null;
-    const q = query.trim();
-    if (q) {
-      let regex: RegExp | null = null;
-      try {
-        regex = new RegExp(q, 'i');
-      } catch {
-        regex = null;
-      }
-      const needle = q.toLowerCase();
-      matcher = line => {
-        const text = line.segments.map(segment => segment.text).join('');
-        return regex ? regex.test(text) : text.toLowerCase().includes(needle);
-      };
+  let matcher: ((line: LogLine) => boolean) | null = null;
+  const q = query.trim();
+  if (q) {
+    let regex: RegExp | null = null;
+    try {
+      regex = new RegExp(q, 'i');
+    } catch {
+      regex = null;
     }
-    const filtered = lines.filter(line => {
-      if (streamFilter === 'stderr' && line.stream !== STREAM_STDERR) return false;
-      if (streamFilter === 'system' && line.stream !== STREAM_SYSTEM) return false;
-      if (streamFilter === 'stdout' && line.stream !== 1) return false;
-      return matcher ? matcher(line) : true;
-    });
-    return filtered.slice(Math.max(0, filtered.length - limit));
-  }, [lines, streamFilter, query, limit]);
+    const needle = q.toLowerCase();
+    matcher = line => {
+      const text = line.segments.map(segment => segment.text).join('');
+      return regex ? regex.test(text) : text.toLowerCase().includes(needle);
+    };
+  }
+  const filtered = lines.filter(line => {
+    if (streamFilter === 'stderr' && line.stream !== STREAM_STDERR) return false;
+    if (streamFilter === 'system' && line.stream !== STREAM_SYSTEM) return false;
+    if (streamFilter === 'stdout' && line.stream !== 1) return false;
+    return matcher ? matcher(line) : true;
+  });
+  const visible = filtered.slice(Math.max(0, filtered.length - limit));
 
   useEffect(() => {
     const element = containerRef.current;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from './Icon';
@@ -81,19 +81,12 @@ function GlobalSearch() {
   }, [location]);
 
   const q = query.trim().toLowerCase();
-  const jobHits = useMemo(
-    () => (jobs.data ?? []).filter(job => job.name.toLowerCase().includes(q)).slice(0, 5),
-    [jobs.data, q],
-  );
-  const runHits = useMemo(
-    () =>
-      q
-        ? (runs.data ?? [])
-            .filter(run => run.run_id.toLowerCase().includes(q) || run.job.toLowerCase().includes(q))
-            .slice(0, 5)
-        : [],
-    [runs.data, q],
-  );
+  const jobHits = (jobs.data ?? []).filter(job => job.name.toLowerCase().includes(q)).slice(0, 5);
+  const runHits = q
+    ? (runs.data ?? [])
+        .filter(run => run.run_id.toLowerCase().includes(q) || run.job.toLowerCase().includes(q))
+        .slice(0, 5)
+    : [];
 
   const go = (path: string) => {
     setOpen(false);

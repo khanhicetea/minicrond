@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import type { Definition } from '../types';
 import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
@@ -74,12 +74,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   }, []);
 
   const tz = draft.timezone || 'UTC';
-  const nextFireList = useMemo(() => {
-    if (isJob && parseSchedule(draft.schedule ?? '')) {
-      return nextFires(draft.schedule!, 5, now, tz);
-    }
-    return [];
-  }, [draft.schedule, tz, now, isJob]);
+  const nextFireList = isJob && parseSchedule(draft.schedule ?? '') ? nextFires(draft.schedule!, 5, now, tz) : [];
 
   const field = 'mc-input';
   const label = 'field-label';

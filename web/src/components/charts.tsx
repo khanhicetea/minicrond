@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { barY, defineChart, lineY } from '@tanstack/charts';
 import { scaleLinear } from '@tanstack/charts/scales/linear';
 import { tooltip } from '@tanstack/charts/tooltip';
@@ -61,23 +60,18 @@ export function LineChart({
   formatY?: (value: number) => string;
 }) {
   const count = Math.max(...series.map(s => s.points.length), 1);
-  const rows = useMemo(
-    () =>
-      series.flatMap(item =>
-        item.points.map((value, index): LineRow => ({
-          index,
-          series: item.name,
-          value,
-          color: item.color,
-          label: labelFor(labels, count, index),
-        })),
-      ),
-    [series, labels],
+  const rows = series.flatMap(item =>
+    item.points.map((value, index): LineRow => ({
+      index,
+      series: item.name,
+      value,
+      color: item.color,
+      label: labelFor(labels, count, index),
+    })),
   );
 
-  const definition = useMemo(() => {
-    const { top } = niceScale(Math.max(...rows.map(row => row.value ?? 0), 0));
-    return defineChart({
+  const { top } = niceScale(Math.max(...rows.map(row => row.value ?? 0), 0));
+  const definition = defineChart({
       marks: [
         lineY(rows, {
           x: 'index',
@@ -115,8 +109,7 @@ export function LineChart({
           return `${point.datum.label}\n${point.datum.series}: ${formatY(point.yValue)}`;
         },
       },
-    });
-  }, [rows, count, labels, formatY, series]);
+  });
 
   return <Chart definition={definition} height={height} ariaLabel="Line chart" />;
 }
@@ -154,18 +147,13 @@ export function StackedBars({
   formatY?: (value: number) => string;
 }) {
   const count = Math.max(buckets.length, 1);
-  const rows = useMemo(
-    () =>
-      buckets.flatMap((bucket, index): BarRow[] => [
-        { index, status: 'Success', value: bucket.success, label: labelFor(labels, count, index) },
-        { index, status: 'Failure', value: bucket.failure, label: labelFor(labels, count, index) },
-      ]),
-    [buckets, labels, count],
-  );
+  const rows = buckets.flatMap((bucket, index): BarRow[] => [
+    { index, status: 'Success', value: bucket.success, label: labelFor(labels, count, index) },
+    { index, status: 'Failure', value: bucket.failure, label: labelFor(labels, count, index) },
+  ]);
 
-  const definition = useMemo(() => {
-    const { top } = niceScale(Math.max(...buckets.map(bucket => bucket.success + bucket.failure), 0));
-    return defineChart({
+  const { top } = niceScale(Math.max(...buckets.map(bucket => bucket.success + bucket.failure), 0));
+  const definition = defineChart({
       marks: [
         barY(rows, {
           x: 'index',
@@ -205,8 +193,7 @@ export function StackedBars({
           return `${point.datum.label}\n${point.datum.status}: ${formatY(point.datum.value)}`;
         },
       },
-    });
-  }, [rows, buckets, count, labels, formatY]);
+  });
 
   return <Chart definition={definition} height={height} ariaLabel="Stacked bar chart" />;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from '../components/Icon';
@@ -46,18 +46,16 @@ export default function Dashboard() {
   const activeRuns = recentRuns.filter(run => run.status === 'running' || run.status === 'pending');
   const disabledCount = definitions.filter(definition => definition.enabled === false).length;
 
-  const workerNames = useMemo(() => definitions.filter(d => d.kind === 'worker').map(d => d.name), [definitions]);
+  const workerNames = definitions.filter(d => d.kind === 'worker').map(d => d.name);
   const workerStates = useWorkerStates(workerNames);
   const fatalWorkers = workerNames.filter(name => (workerStates[name]?.failures ?? 0) > 0).length;
 
-  const upNext = useMemo(() => {
-    return definitions
-      .filter(definition => definition.kind === 'job' && definition.enabled !== false && definition.next_fire_at)
-      .map(definition => ({ definition, fire: Date.parse(definition.next_fire_at!) }))
-      .filter(entry => Number.isFinite(entry.fire))
-      .sort((a, b) => a.fire - b.fire)
-      .slice(0, 6);
-  }, [definitions]);
+  const upNext = definitions
+    .filter(definition => definition.kind === 'job' && definition.enabled !== false && definition.next_fire_at)
+    .map(definition => ({ definition, fire: Date.parse(definition.next_fire_at!) }))
+    .filter(entry => Number.isFinite(entry.fire))
+    .sort((a, b) => a.fire - b.fire)
+    .slice(0, 6);
 
   const schedulerTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const healthState = daemon.isError ? 'error' : daemon.data ? 'ok' : 'connecting';

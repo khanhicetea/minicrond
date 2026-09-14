@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
@@ -54,8 +54,8 @@ export default function JobEditor({ params }: JobEditorProps) {
 
   const patch = (changes: Partial<Definition>) => setDraft(previous => ({ ...previous, ...changes }));
 
-  const { text: tomlText, lineOf } = useMemo(() => definitionToToml(draft), [draft]);
-  const issues = useMemo(() => validateDefinition(draft, lineOf), [draft, lineOf]);
+  const { text: tomlText, lineOf } = definitionToToml(draft);
+  const issues = validateDefinition(draft, lineOf);
   const errors = issues.filter(issue => issue.severity === 'error');
   const hints = issues.filter(issue => issue.severity === 'hint');
   const fileManaged = draft.authority === 'file' && !creating;

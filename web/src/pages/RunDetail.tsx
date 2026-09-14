@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from '../components/Icon';
@@ -49,20 +49,18 @@ export default function RunDetail() {
   const jobDetail = useQuery({ ...jobQuery(jobId), enabled: Boolean(jobId) });
   const siblings = useQuery(runsQuery(jobId, 30));
 
-  const filteredSiblings = useMemo(() => {
-    return (siblings.data ?? []).filter(sibling => {
-      switch (filter) {
-        case 'failed':
-          return ['failed', 'timeout', 'interrupted'].includes(sibling.status);
-        case 'scheduled':
-          return sibling.trigger === 'schedule';
-        case 'manual':
-          return sibling.trigger === 'manual';
-        default:
-          return true;
-      }
-    });
-  }, [siblings.data, filter]);
+  const filteredSiblings = (siblings.data ?? []).filter(sibling => {
+    switch (filter) {
+      case 'failed':
+        return ['failed', 'timeout', 'interrupted'].includes(sibling.status);
+      case 'scheduled':
+        return sibling.trigger === 'schedule';
+      case 'manual':
+        return sibling.trigger === 'manual';
+      default:
+        return true;
+    }
+  });
 
   if (run.isPending) return <div className="skeleton h-64 w-full" />;
   if (run.isError) {

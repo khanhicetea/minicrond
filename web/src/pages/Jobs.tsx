@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
@@ -42,61 +42,53 @@ export default function Jobs() {
   const remove = useDeleteJob();
 
   const definitions = jobs.data ?? [];
-  const workerNames = useMemo(() => definitions.filter(d => d.kind === 'worker').map(d => d.name), [definitions]);
+  const workerNames = definitions.filter(d => d.kind === 'worker').map(d => d.name);
   const workerStates = useWorkerStates(workerNames);
 
   // Latest run per definition.
-  const lastRun = useMemo(() => {
-    const map = new Map<string, Run>();
-    for (const run of runs.data ?? []) {
-      if (!map.has(run.job)) map.set(run.job, run);
-    }
-    return map;
-  }, [runs.data]);
+  const lastRun = new Map<string, Run>();
+  for (const run of runs.data ?? []) {
+    if (!lastRun.has(run.job)) lastRun.set(run.job, run);
+  }
 
   const workerAttention = (definition: Definition): boolean => {
     const state = workerStates[definition.name];
     return (state?.failures ?? 0) > 0 || state?.held === true;
   };
 
-  const counts = useMemo(
-    () => ({
-      all: definitions.length,
-      jobs: definitions.filter(d => d.kind === 'job').length,
-      workers: workerNames.length,
-      enabled: definitions.filter(d => d.enabled !== false).length,
-      attention:
-        definitions.filter(
-          d =>
-            (d.kind === 'worker' && workerAttention(d)) ||
-            (d.kind === 'job' && d.enabled !== false && (lastRun.get(d.name)?.status === 'failed' || lastRun.get(d.name)?.status === 'timeout')),
-        ).length,
-      disabled: definitions.filter(d => d.enabled === false).length,
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [definitions, workerStates, lastRun],
-  );
+  const counts = {
+    all: definitions.length,
+    jobs: definitions.filter(d => d.kind === 'job').length,
+    workers: workerNames.length,
+    enabled: definitions.filter(d => d.enabled !== false).length,
+    attention:
+      definitions.filter(
+        d =>
+          (d.kind === 'worker' && workerAttention(d)) ||
+          (d.kind === 'job' && d.enabled !== false && (lastRun.get(d.name)?.status === 'failed' || lastRun.get(d.name)?.status === 'timeout')),
+      ).length,
+    disabled: definitions.filter(d => d.enabled === false).length,
+  };
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let items = definitions.filter(definition => {
-      if (q && !definition.name.toLowerCase().includes(q) && !(definition.labels?.description ?? '').toLowerCase().includes(q)) return false;
-      switch (filter) {
-        case 'jobs':
-          return definition.kind === 'job';
-        case 'workers':
-          return definition.kind === 'worker';
-        case 'enabled':
-          return definition.enabled !== false;
-        case 'disabled':
-          return definition.enabled === false;
-        case 'attention':
-          return workerAttention(definition) || (definition.kind === 'job' && ['failed', 'timeout'].includes(lastRun.get(definition.name)?.status ?? ''));
-        default:
-          return true;
-      }
-    });
-    items = [...items].sort((a, b) => {
+  const q = query.trim().toLowerCase();
+  let filtered = definitions.filter(definition => {
+    if (q && !definition.name.toLowerCase().includes(q) && !(definition.labels?.description ?? '').toLowerCase().includes(q)) return false;
+    switch (filter) {
+      case 'jobs':
+        return definition.kind === 'job';
+      case 'workers':
+        return definition.kind === 'worker';
+      case 'enabled':
+        return definition.enabled !== false;
+      case 'disabled':
+        return definition.enabled === false;
+      case 'attention':
+        return workerAttention(definition) || (definition.kind === 'job' && ['failed', 'timeout'].includes(lastRun.get(definition.name)?.status ?? ''));
+      default:
+        return true;
+    }
+  });
+  filtered = [...filtered].sort((a, b) => {
       let cmp = 0;
       if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
       if (sortKey === 'schedule') cmp = (a.schedule ?? '').localeCompare(b.schedule ?? '');
@@ -114,9 +106,6 @@ export default function Jobs() {
       }
       return sortAsc ? cmp : -cmp;
     });
-    return items;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [definitions, filter, query, sortKey, sortAsc, workerStates, lastRun, now]);
 
   const copyCurl = async () => {
     const sample = filtered[0];
