@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
 import type { Definition } from '../types';
 import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
+import { TIMEZONES } from '../lib/timezones';
 
 export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
   const base: Definition = {
@@ -23,22 +24,6 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
     base.max_restart_attempts = 0;
   }
   return base;
-}
-
-const FALLBACK_TIMEZONES = ['UTC', 'UTC', 'Europe/London', 'Europe/Berlin', 'Europe/Istanbul', 'America/New_York', 'America/Chicago', 'America/Los_Angeles', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Ho_Chi_Minh', 'Australia/Sydney'];
-
-function timezoneOptions(): string[] {
-  try {
-    const supported = Intl.supportedValuesOf?.('timeZone') ?? [];
-    if (supported.length > 0) {
-      const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      return local && !supported.includes(local) ? [local, ...supported] : [...supported];
-    }
-  } catch {
-    // older engines
-  }
-  const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return [...new Set([local ?? 'UTC', ...FALLBACK_TIMEZONES])];
 }
 
 const MINUTE_OPTIONS = ['*', '*/5', '*/10', '*/15', '*/30', ...Array.from({ length: 60 }, (_, i) => String(i))];
@@ -68,7 +53,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   const isJob = draft.kind !== 'worker';
   const disabled = readOnly;
   const scheduleType = (draft.schedule ?? '').trim().toLowerCase().startsWith('@every') ? 'every' : 'cron';
-  const tzOptions = useMemo(timezoneOptions, []);
+  const tzOptions = TIMEZONES;
 
   const setKind = (kind: 'job' | 'worker') => {
     onChange({ ...emptyDefinition(kind), name: draft.name });

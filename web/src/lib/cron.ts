@@ -6,6 +6,8 @@
  * restricted day-of-month OR day-of-week matches when the other is "*".
  */
 
+import { isSupportedTimezone } from './timezones';
+
 export interface CronFields {
   minute: number[];
   hour: number[];
@@ -165,7 +167,7 @@ function tzFormatter(tz: string): Intl.DateTimeFormat | null {
 }
 
 export function isValidTimezone(tz: string): boolean {
-  return tzFormatter(tz) !== null;
+  return isSupportedTimezone(tz);
 }
 
 function wallParts(tz: string, ms: number): TzParts | null {
