@@ -15,7 +15,6 @@ import (
 
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/logstore"
-	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
 	"github.com/khanhicetea/minicrond/internal/supervisor"
 )
@@ -36,7 +35,8 @@ func setup(t *testing.T) (*Server, string, *store.Store) {
 	// Cleanup runs in LIFO order, so stop all executions before closing st.
 	t.Cleanup(func() { ex.Shutdown(context.Background()) })
 	sup := supervisor.New(st, ex)
-	srv := New(st, logs, ex, sup, func(context.Context, string) error { return nil }, "test")
+	callback := func(context.Context) error { return nil }
+	srv := New(st, logs, ex, sup, callback, callback, "test")
 	token, err := srv.InitializeToken(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -89,19 +89,19 @@ func mustCreate(t *testing.T, s *Server, name, command string) {
 	}
 }
 
-func TestReloadPassesRequestedSource(t *testing.T) {
-	var got string
-	s := &Server{reload: func(_ context.Context, source string) error {
-		got = source
+func TestReload(t *testing.T) {
+	called := false
+	s := &Server{reload: func(context.Context) error {
+		called = true
 		return nil
 	}}
 
-	rec := call(s, true, "POST", "/api/v1/daemon/reload", "", `{"source":"workers/*.toml"}`, nil)
+	rec := call(s, true, "POST", "/api/v1/daemon/reload", "", "", nil)
 	if rec.Code != 200 {
 		t.Fatalf("reload: %d %s", rec.Code, rec.Body.String())
 	}
-	if got != "workers/*.toml" {
-		t.Fatalf("reload source = %q, want workers/*.toml", got)
+	if !called {
+		t.Fatal("reload callback was not called")
 	}
 }
 
@@ -302,7 +302,7 @@ func TestSSEStreamAndWindowedReads(t *testing.T) {
 	}
 }
 
-func TestImportPreviewApplyHashBindingAndAuthority(t *testing.T) {
+func TestImportPreviewApplyHashBinding(t *testing.T) {
 	s, _, _ := setup(t)
 	content := "[[job]]\nname = \"imported\"\nargv = [\"/bin/echo\", \"hi\"]\n"
 	previewBody := func(c string) string { b, _ := json.Marshal(importRequest{Content: c}); return string(b) }
@@ -320,22 +320,20 @@ func TestImportPreviewApplyHashBindingAndAuthority(t *testing.T) {
 	if rec := call(s, true, "POST", "/api/v1/import/apply", "", previewBodyWithHash(content, hash), nil); rec.Code != 200 {
 		t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
 	}
+}
 
-	// A file claiming the imported (db-authority) name is an authority
-	// conflict and the whole file sync rolls back.
-	fileDef := model.Definition{Name: "imported", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml",
-		Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	if err := s.store.SyncFiles(t.Context(), []model.Definition{fileDef}, false); err == nil {
-		t.Fatal("expected authority conflict at file level")
+func TestDefinitionMutationReconcilesWithoutReloadingSettings(t *testing.T) {
+	s, _, _ := setup(t)
+	reloads, reconciles := 0, 0
+	s.reload = func(context.Context) error { reloads++; return nil }
+	s.reconcile = func(context.Context) error { reconciles++; return nil }
+
+	rec := call(s, true, "PUT", "/api/v1/jobs/hello", "", `{"name":"hello","kind":"job","command":"true"}`, nil)
+	if rec.Code != 200 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
 	}
-	// A genuinely file-authority definition cannot be edited through the API.
-	linked := fileDef
-	linked.Name = "linked"
-	if err := s.store.SyncFiles(t.Context(), []model.Definition{linked}, false); err != nil {
-		t.Fatal(err)
-	}
-	if rec := call(s, true, "PUT", "/api/v1/jobs/linked", "", `{"name":"linked","kind":"job","command":"true","shell":"/bin/sh"}`, nil); rec.Code != 409 {
-		t.Fatalf("file-authority edit: %d", rec.Code)
+	if reloads != 0 || reconciles != 1 {
+		t.Fatalf("reloads=%d reconciles=%d, want 0 and 1", reloads, reconciles)
 	}
 }
 

@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -45,8 +44,8 @@ func TestScheduleNextRoundTrip(t *testing.T) {
 	}
 	defer st.Close()
 
-	def := model.Definition{Name: "scheduled", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml", Schedule: "@every 1m", Timezone: "UTC"}
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	def := model.Definition{Name: "scheduled", Kind: model.KindJob, Schedule: "@every 1m", Timezone: "UTC"}
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	stored, _, err := st.Definition(t.Context(), def.Name)
@@ -75,92 +74,6 @@ func TestScheduleNextRoundTrip(t *testing.T) {
 	}
 	if !got.IsZero() {
 		t.Fatalf("next fire after reset = %s, want zero", got)
-	}
-}
-
-func TestAuthorityConflictRollsBackWholeReload(t *testing.T) {
-	s, err := Open(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	dbDef := model.Definition{Name: "owned", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	if _, err := s.PutDefinition(t.Context(), dbDef, 0, "test"); err != nil {
-		t.Fatal(err)
-	}
-	fileDef := dbDef
-	fileDef.Authority = "file"
-	fileDef.SourceFile = "jobs.toml"
-	fileDef.Command = "false"
-	if err := s.SyncFiles(t.Context(), []model.Definition{fileDef}, false); err == nil {
-		t.Fatal("expected authority conflict")
-	}
-	got, _, err := s.Definition(t.Context(), "owned")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Command != "true" || got.Authority != "db" {
-		t.Fatalf("definition changed: %#v", got)
-	}
-}
-
-func TestSyncSourceLeavesOtherSourcesUnchanged(t *testing.T) {
-	s, err := Open(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	job := model.Definition{Name: "job", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml", Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	worker := job
-	worker.Name = "worker"
-	worker.Kind = model.KindWorker
-	worker.SourceFile = "workers.toml"
-	if err := s.SyncFiles(t.Context(), []model.Definition{job, worker}, false); err != nil {
-		t.Fatal(err)
-	}
-
-	job.Command = "false"
-	if err := s.SyncSource(t.Context(), []model.Definition{job}, job.SourceFile, false); err != nil {
-		t.Fatal(err)
-	}
-	updated, _, err := s.Definition(t.Context(), job.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Command != "false" {
-		t.Fatalf("reloaded job command = %q, want false", updated.Command)
-	}
-	unchanged, _, err := s.Definition(t.Context(), worker.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unchanged.Command != "true" {
-		t.Fatalf("other source changed: %#v", unchanged)
-	}
-}
-
-func TestCopyDefinitionsIsAtomicOnAuthorityConflict(t *testing.T) {
-	s, err := Open(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	file := model.Definition{Name: "file-owned", Kind: model.KindJob, Authority: "file", SourceFile: "jobs.toml", Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	if err = s.SyncFiles(t.Context(), []model.Definition{file}, false); err != nil {
-		t.Fatal(err)
-	}
-	newDef := file
-	newDef.Name = "new-copy"
-	newDef.Authority = "db"
-	newDef.SourceFile = ""
-	conflict := file
-	conflict.Authority = "db"
-	conflict.SourceFile = ""
-	if err = s.CopyDefinitions(t.Context(), []model.Definition{newDef, conflict}, "test"); err == nil {
-		t.Fatal("expected conflict")
-	}
-	if _, _, err = s.Definition(t.Context(), "new-copy"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("partial import committed: %v", err)
 	}
 }
 
@@ -222,15 +135,30 @@ func TestNewerSchemaRefused(t *testing.T) {
 	}
 }
 
+func TestLegacyAuthoritySchemaRefused(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", dir+"/minicron.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version=1"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, err = Open(t.Context(), dir)
+	if err == nil || !strings.Contains(err.Error(), "remove the development database") {
+		t.Fatalf("expected incompatible-schema error, got %v", err)
+	}
+}
+
 func TestRunMetricsCountsBeyondRunsLimit(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	def := model.Definition{Name: "metric", Kind: model.KindJob, Authority: "file", SourceFile: "t",
-		Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	if err := s.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	def := model.Definition{Name: "metric", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	if _, err := s.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	stored, _, err := s.Definition(t.Context(), "metric")
@@ -260,9 +188,8 @@ func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	def := model.Definition{Name: "ret", Kind: model.KindJob, Authority: "file", SourceFile: "t",
-		Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
-	if err := s.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	def := model.Definition{Name: "ret", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	if _, err := s.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	stored, _, err := s.Definition(t.Context(), "ret")

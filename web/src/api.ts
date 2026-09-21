@@ -58,7 +58,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 export const api = {
   daemon: () => request<DaemonInfo>('/api/v1/daemon'),
 
-  reload: (source?: string) => request<{ reloaded: boolean }>('/api/v1/daemon/reload', { method: 'POST', body: source ? { source } : undefined }),
+  reload: () => request<{ reloaded: boolean }>('/api/v1/daemon/reload', { method: 'POST' }),
 
   listJobs: () => request<{ items: Definition[] }>('/api/v1/jobs'),
 

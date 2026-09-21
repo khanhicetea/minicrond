@@ -315,7 +315,6 @@ function Row({
   const menuRef = useRef<HTMLDivElement>(null);
   const isWorker = definition.kind === 'worker';
   const enabled = definition.enabled !== false;
-  const fileManaged = definition.authority === 'file';
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -432,7 +431,7 @@ function Row({
           <input
             type="checkbox"
             checked={enabled}
-            disabled={fileManaged || busy}
+            disabled={busy}
             onChange={event => onToggle(event.target.checked)}
             aria-label={`Enable ${definition.name}`}
           />
@@ -492,8 +491,7 @@ function Row({
               <button
                 type="button"
                 className="menu-item danger"
-                disabled={fileManaged || busy}
-                title={fileManaged ? 'Managed by a file — edit the source instead' : undefined}
+                disabled={busy}
                 onClick={() => {
                   setMenuOpen(false);
                   onDelete();

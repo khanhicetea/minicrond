@@ -23,26 +23,16 @@ import (
 )
 
 type Config struct {
-	Path          string             `toml:"-" json:"path"`
-	Server        Server             `toml:"server" json:"server"`
-	Include       Include            `toml:"include" json:"include"`
-	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
-	Storage       Storage            `toml:"storage" json:"storage"`
-	Logs          Logs               `toml:"logs" json:"logs"`
-	AlertChannels []AlertChannel     `toml:"alert_channel" json:"alert_channels,omitempty"`
-	Defaults      model.Definition   `toml:"defaults" json:"defaults"`
-	Jobs          []model.Definition `toml:"job" json:"jobs"`
-	Workers       []model.Definition `toml:"worker" json:"workers"`
-	Definitions   []model.Definition `toml:"-" json:"definitions"`
+	Server        Server         `toml:"server" json:"server"`
+	Scheduler     Scheduler      `toml:"scheduler" json:"scheduler"`
+	Storage       Storage        `toml:"storage" json:"storage"`
+	Logs          Logs           `toml:"logs" json:"logs"`
+	AlertChannels []AlertChannel `toml:"alert_channel" json:"alert_channels,omitempty"`
 }
 
 type Server struct {
 	Bind       string `toml:"bind" json:"bind"`
 	UnixSocket *bool  `toml:"unix_socket" json:"unix_socket,omitempty"`
-}
-type Include struct {
-	Paths        []string `toml:"paths" json:"paths,omitempty"`
-	PruneMissing bool     `toml:"prune_missing" json:"prune_missing"`
 }
 type Scheduler struct {
 	Timezone          string `toml:"timezone" json:"timezone"`
@@ -74,7 +64,7 @@ type Logs struct {
 	DBPruneAt string `toml:"db_prune_at" json:"db_prune_at"`
 }
 
-type includeFile struct {
+type importBundle struct {
 	Defaults model.Definition   `toml:"defaults"`
 	Jobs     []model.Definition `toml:"job"`
 	Workers  []model.Definition `toml:"worker"`
@@ -84,67 +74,19 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,99}$`)
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 func Load(path string) (*Config, error) {
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
-	}
 	var cfg Config
 	if err := decode(path, &cfg); err != nil {
 		return nil, err
 	}
-	cfg.Path = path
 	applyConfigDefaults(&cfg)
-	for i := range cfg.Jobs {
-		cfg.Jobs[i].Kind = model.KindJob
-		cfg.Jobs[i].Authority = "file"
-		cfg.Jobs[i].SourceFile = path
-		applyDefinitionDefaults(&cfg.Jobs[i], cfg.Defaults)
-	}
-	for i := range cfg.Workers {
-		cfg.Workers[i].Kind = model.KindWorker
-		cfg.Workers[i].Authority = "file"
-		cfg.Workers[i].SourceFile = path
-		applyDefinitionDefaults(&cfg.Workers[i], cfg.Defaults)
-	}
-	cfg.Definitions = append(cfg.Definitions, cfg.Jobs...)
-	cfg.Definitions = append(cfg.Definitions, cfg.Workers...)
-	for _, pattern := range cfg.Include.Paths {
-		if !filepath.IsAbs(pattern) {
-			pattern = filepath.Join(filepath.Dir(path), pattern)
-		}
-		matches, globErr := filepath.Glob(pattern)
-		if globErr != nil {
-			return nil, fmt.Errorf("include %q: %w", pattern, globErr)
-		}
-		for _, included := range matches {
-			var part includeFile
-			if err := decode(included, &part); err != nil {
-				return nil, err
-			}
-			for i := range part.Jobs {
-				part.Jobs[i].Kind = model.KindJob
-				part.Jobs[i].Authority = "file"
-				part.Jobs[i].SourceFile = included
-				applyDefinitionDefaults(&part.Jobs[i], mergeDefaults(cfg.Defaults, part.Defaults))
-			}
-			for i := range part.Workers {
-				part.Workers[i].Kind = model.KindWorker
-				part.Workers[i].Authority = "file"
-				part.Workers[i].SourceFile = included
-				applyDefinitionDefaults(&part.Workers[i], mergeDefaults(cfg.Defaults, part.Defaults))
-			}
-			cfg.Definitions = append(cfg.Definitions, part.Jobs...)
-			cfg.Definitions = append(cfg.Definitions, part.Workers...)
-		}
-	}
-	if err := validate(&cfg, true); err != nil {
+	if err := validateConfig(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
 }
 
 func ParseImport(content []byte) ([]model.Definition, error) {
-	var part includeFile
+	var part importBundle
 	dec := toml.NewDecoder(strings.NewReader(string(content)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&part); err != nil {
@@ -154,22 +96,17 @@ func ParseImport(content []byte) ([]model.Definition, error) {
 	applyConfigDefaults(&cfg)
 	for i := range part.Jobs {
 		part.Jobs[i].Kind = model.KindJob
-		part.Jobs[i].Authority = "db"
-		part.Jobs[i].SourceFile = "upload"
 		applyDefinitionDefaults(&part.Jobs[i], part.Defaults)
 	}
 	for i := range part.Workers {
 		part.Workers[i].Kind = model.KindWorker
-		part.Workers[i].Authority = "db"
-		part.Workers[i].SourceFile = "upload"
 		applyDefinitionDefaults(&part.Workers[i], part.Defaults)
 	}
-	cfg.Definitions = append(cfg.Definitions, part.Jobs...)
-	cfg.Definitions = append(cfg.Definitions, part.Workers...)
-	if err := validate(&cfg, false); err != nil {
+	definitions := append(part.Jobs, part.Workers...)
+	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
 		return nil, err
 	}
-	return cfg.Definitions, nil
+	return definitions, nil
 }
 
 func decode(path string, dst any) error {
@@ -218,8 +155,7 @@ func applyConfigDefaults(c *Config) {
 	}
 }
 func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
-	// Every field consumed here must also be merged by mergeDefaults, or
-	// include-file defaults silently lose it.
+	// Bundle defaults fill omitted definition fields; built-in defaults apply last.
 	d.Shell = cmp.Or(d.Shell, defaults.Shell, "/bin/sh")
 	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
 	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp, "none")
@@ -244,32 +180,7 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, defaults.MaxRestartAttempts, 5)
 }
 
-// mergeDefaults overlays include-file defaults (b) on top of bootstrap
-// defaults (a): explicit values in b win, empty fields fall back to a.
-func mergeDefaults(a, b model.Definition) model.Definition {
-	b.Shell = cmp.Or(b.Shell, a.Shell)
-	b.Timezone = cmp.Or(b.Timezone, a.Timezone)
-	b.CatchUp = cmp.Or(b.CatchUp, a.CatchUp)
-	b.OnOverlap = cmp.Or(b.OnOverlap, a.OnOverlap)
-	b.EnvBase = cmp.Or(b.EnvBase, a.EnvBase)
-	b.Grace = cmp.Or(b.Grace, a.Grace)
-	b.Timeout = cmp.Or(b.Timeout, a.Timeout)
-	b.StopSignal = cmp.Or(b.StopSignal, a.StopSignal)
-	b.Restart = cmp.Or(b.Restart, a.Restart)
-	b.RestartDelay = cmp.Or(b.RestartDelay, a.RestartDelay)
-	b.HealthyAfter = cmp.Or(b.HealthyAfter, a.HealthyAfter)
-	b.LogOnFull = cmp.Or(b.LogOnFull, a.LogOnFull)
-	if len(b.Alerts) == 0 {
-		b.Alerts = a.Alerts
-	}
-	if len(b.SuccessCodes) == 0 {
-		b.SuccessCodes = a.SuccessCodes
-	}
-	b.MaxRestartAttempts = cmp.Or(b.MaxRestartAttempts, a.MaxRestartAttempts)
-	return b
-}
-
-func validate(c *Config, validateAlertReferences bool) error {
+func validateConfig(c *Config) error {
 	if _, err := time.LoadLocation(c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("scheduler.timezone: %w", err)
 	}
@@ -308,69 +219,66 @@ func validate(c *Config, validateAlertReferences bool) error {
 			return fmt.Errorf("alert channel %q: bot_token must be env:NAME or file:/absolute/path", channel.Name)
 		}
 	}
-	seen := make(map[string]string)
-	for i := range c.Definitions {
-		d := &c.Definitions[i]
+	return nil
+}
+
+func validateDefinitions(definitions []model.Definition, schedulerTimezone string) error {
+	seen := make(map[string]bool)
+	for i := range definitions {
+		d := &definitions[i]
 		if !namePattern.MatchString(d.Name) {
-			return fmt.Errorf("%s: invalid name %q", d.SourceFile, d.Name)
+			return fmt.Errorf("invalid definition name %q", d.Name)
 		}
-		if prior := seen[d.Name]; prior != "" {
-			return fmt.Errorf("duplicate definition %q in %s and %s", d.Name, prior, d.SourceFile)
+		if seen[d.Name] {
+			return fmt.Errorf("duplicate definition %q", d.Name)
 		}
-		seen[d.Name] = d.SourceFile
+		seen[d.Name] = true
 		if (d.Command == "") == (len(d.Argv) == 0) {
-			return fmt.Errorf("%s: %s: exactly one of command or argv is required", d.SourceFile, d.Name)
+			return fmt.Errorf("%s: exactly one of command or argv is required", d.Name)
 		}
 		for field, value := range map[string]string{"timeout": d.Timeout, "grace": d.Grace, "restart_delay": d.RestartDelay, "healthy_after": d.HealthyAfter} {
 			if _, err := time.ParseDuration(value); err != nil {
-				return fmt.Errorf("%s: %s.%s: %w", d.SourceFile, d.Name, field, err)
+				return fmt.Errorf("%s.%s: %w", d.Name, field, err)
 			}
 		}
 		if d.Kind == model.KindJob && d.Schedule != "" {
 			if err := ValidateSchedule(d.Schedule); err != nil {
-				return fmt.Errorf("%s: %s.schedule: %w", d.SourceFile, d.Name, err)
+				return fmt.Errorf("%s.schedule: %w", d.Name, err)
 			}
 		}
 		if d.Timezone == "" {
-			d.Timezone = c.Scheduler.Timezone
+			d.Timezone = schedulerTimezone
 		}
 		if _, err := time.LoadLocation(d.Timezone); err != nil {
-			return fmt.Errorf("%s: %s.timezone: %w", d.SourceFile, d.Name, err)
+			return fmt.Errorf("%s.timezone: %w", d.Name, err)
 		}
 		if d.CatchUp != "none" && d.CatchUp != "latest" {
-			return fmt.Errorf("%s: %s.catch_up must be none or latest", d.SourceFile, d.Name)
+			return fmt.Errorf("%s.catch_up must be none or latest", d.Name)
 		}
 		if d.OnOverlap != "skip" && d.OnOverlap != "parallel" {
-			return fmt.Errorf("%s: %s.on_overlap must be skip or parallel", d.SourceFile, d.Name)
+			return fmt.Errorf("%s.on_overlap must be skip or parallel", d.Name)
 		}
 		if d.LogOnFull != "drop_old" && d.LogOnFull != "drop_new" {
-			return fmt.Errorf("%s: %s.log_on_full must be drop_old or drop_new", d.SourceFile, d.Name)
+			return fmt.Errorf("%s.log_on_full must be drop_old or drop_new", d.Name)
 		}
 		if !validSignal(d.StopSignal) {
-			return fmt.Errorf("%s: %s.stop_signal must be one of INT, HUP, QUIT, USR1, USR2, TERM, KILL", d.SourceFile, d.Name)
+			return fmt.Errorf("%s.stop_signal must be one of INT, HUP, QUIT, USR1, USR2, TERM, KILL", d.Name)
 		}
 		if d.KeepFor != "" {
 			if keep, err := time.ParseDuration(d.KeepFor); err != nil || keep <= 0 {
-				return fmt.Errorf("%s: %s.keep_for must be a positive duration", d.SourceFile, d.Name)
+				return fmt.Errorf("%s.keep_for must be a positive duration", d.Name)
 			}
 		}
 		if d.LogMax != "" {
 			if _, err := logstore.ParseBytes(d.LogMax); err != nil {
-				return fmt.Errorf("%s: %s.log_max must be a byte size like 64MiB", d.SourceFile, d.Name)
+				return fmt.Errorf("%s.log_max must be a byte size like 64MiB", d.Name)
 			}
 		}
 		if d.Kind == model.KindWorker && d.Schedule != "" {
-			return fmt.Errorf("%s: worker %s cannot have schedule", d.SourceFile, d.Name)
+			return fmt.Errorf("worker %s cannot have schedule", d.Name)
 		}
 		if err := validateRunAs(d.RunAs); err != nil {
-			return fmt.Errorf("%s: %s.run_as: %w", d.SourceFile, d.Name, err)
-		}
-		if validateAlertReferences {
-			for _, channel := range d.Alerts {
-				if !channels[channel] {
-					return fmt.Errorf("%s: %s.alerts: unknown alert channel %q", d.SourceFile, d.Name, channel)
-				}
-			}
+			return fmt.Errorf("%s.run_as: %w", d.Name, err)
 		}
 	}
 	return nil
@@ -380,15 +288,14 @@ func ValidateDefinition(d *model.Definition) error {
 	if d.Kind == "" {
 		d.Kind = model.KindJob
 	}
-	d.Authority = "db"
-	d.SourceFile = "api"
-	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}, Definitions: []model.Definition{*d}}
+	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}}
 	applyConfigDefaults(&cfg)
-	applyDefinitionDefaults(&cfg.Definitions[0], model.Definition{})
-	if err := validate(&cfg, false); err != nil {
+	applyDefinitionDefaults(d, model.Definition{})
+	definitions := []model.Definition{*d}
+	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
 		return err
 	}
-	*d = cfg.Definitions[0]
+	*d = definitions[0]
 	return nil
 }
 
@@ -451,7 +358,6 @@ func validateRunAsPrivilege(value string, euid int) error {
 
 func Canonical(d model.Definition) ([]byte, string, error) {
 	d.ID, d.Revision = 0, 0
-	d.Authority, d.SourceFile = "", ""
 	b, err := json.Marshal(d)
 	if err != nil {
 		return nil, "", err

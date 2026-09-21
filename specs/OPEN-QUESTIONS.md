@@ -24,9 +24,8 @@ ADR and update the referencing spec's Status.
 - Specs: [04](04-configuration.md).
 
 ### OQ-3 — ~~Source-of-truth model for definitions~~ — RESOLVED
-- Resolved 2026-08-26 by ADR-3: provenance-locked authority. File-imported
-  definitions are file-authoritative (DB stores a reference + cache; UI/API
-  edits rejected); db-native definitions are editable via UI/API. Design:
+- SQLite is the sole authoritative definition registry. TOML is explicit
+  import/export only; imported files are not linked or watched. Design:
   [05](05-config-sync-import-export.md).
 
 ### OQ-4 — Config table style

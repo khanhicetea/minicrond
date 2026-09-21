@@ -18,7 +18,7 @@ func TestStartFailureReleasesTCPListener(t *testing.T) {
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s := New(nil, nil, nil, nil, nil, "test")
+	s := New(nil, nil, nil, nil, nil, nil, "test")
 	socket := filepath.Join(t.TempDir(), "missing", "minicron.sock")
 	if err := s.Start(addr, socket); err == nil {
 		_ = s.Shutdown(context.Background())

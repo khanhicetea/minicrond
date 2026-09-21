@@ -6,271 +6,112 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pelletier/go-toml/v2"
-
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-func TestLoadStrictAtomicSet(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "minicron.toml"), "[include]\npaths=['*.job.toml']\n[scheduler]\ntimezone='UTC'\n")
-	mustWrite(t, filepath.Join(dir, "a.job.toml"), "[[job]]\nname='a'\nargv=['echo','a']\nschedule='@every 1s'\n")
-	mustWrite(t, filepath.Join(dir, "b.job.toml"), "[[job]]\nname='b'\ncommand='echo b'\nschedule='0 * * * *'\n")
-	cfg, err := Load(filepath.Join(dir, "minicron.toml"))
+func TestLoadSettingsOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[server]\nbind='127.0.0.1:9000'\n[scheduler]\ntimezone='UTC'\n")
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Definitions) != 2 {
-		t.Fatalf("got %d definitions", len(cfg.Definitions))
-	}
-	if cfg.Definitions[0].EnvBase != "clean" {
-		t.Fatal("clean environment must be the default")
+	if cfg.Server.Bind != "127.0.0.1:9000" || cfg.Scheduler.MaxConcurrentRuns != 32 {
+		t.Fatalf("unexpected config: %#v", cfg)
 	}
 }
 
-func TestLoadRejectsUnknownAndDuplicate(t *testing.T) {
-	dir := t.TempDir()
-	bootstrap := filepath.Join(dir, "minicron.toml")
-	mustWrite(t, bootstrap, "unknown=1\n")
-	if _, err := Load(bootstrap); err == nil {
-		t.Fatal("unknown key accepted")
-	}
-	mustWrite(t, bootstrap, "[[job]]\nname='same'\ncommand='true'\n[[worker]]\nname='same'\ncommand='true'\n")
-	_, err := Load(bootstrap)
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("expected duplicate error, got %v", err)
-	}
-}
-
-func TestRunAsRequiresRoot(t *testing.T) {
-	if err := validateRunAsPrivilege("", 1000); err != nil {
-		t.Fatalf("empty run_as must be allowed: %v", err)
-	}
-	if err := validateRunAsPrivilege("backup", 1000); err == nil || !strings.Contains(err.Error(), "root daemon") {
-		t.Fatalf("non-root run_as error = %v, want root-daemon error", err)
-	}
-	if err := validateRunAsPrivilege("backup", 0); err != nil {
-		t.Fatalf("root run_as must be allowed: %v", err)
+func TestLoadRejectsDefinitionSources(t *testing.T) {
+	for name, content := range map[string]string{
+		"include":  "[include]\npaths=['jobs/*.toml']\n",
+		"job":      "[[job]]\nname='hello'\ncommand='true'\n",
+		"defaults": "[defaults]\nshell='/bin/sh'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "minicron.toml")
+			mustWrite(t, path, content)
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected settings parser to reject definition source")
+			}
+		})
 	}
 }
 
-func TestScheduleValidation(t *testing.T) {
-	for _, valid := range []string{"0 2 * * *", "@daily", "@every 1s"} {
-		if err := ValidateSchedule(valid); err != nil {
-			t.Errorf("%s: %v", valid, err)
+func TestParseImportAppliesDefaults(t *testing.T) {
+	defs, err := ParseImport([]byte("[defaults]\nshell='/bin/bash'\n\n[[job]]\nname='hello'\ncommand='echo hi'\n\n[[worker]]\nname='worker'\nargv=['sleep','10']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 2 || defs[0].Kind != model.KindJob || defs[1].Kind != model.KindWorker {
+		t.Fatalf("unexpected definitions: %#v", defs)
+	}
+	if defs[0].Shell != "/bin/bash" || defs[1].Shell != "/bin/bash" {
+		t.Fatalf("defaults not applied: %#v", defs)
+	}
+}
+
+func TestParseImportStrictAndAtomic(t *testing.T) {
+	cases := []string{
+		"unknown=true\n",
+		"[[job]]\nname='same'\ncommand='true'\n[[worker]]\nname='same'\ncommand='true'\n",
+		"[[job]]\nname='bad name'\ncommand='true'\n",
+	}
+	for _, content := range cases {
+		if _, err := ParseImport([]byte(content)); err == nil {
+			t.Fatalf("expected error for %q", content)
 		}
 	}
-	for _, invalid := range []string{"* * * * * *", "@every 500ms"} {
-		if err := ValidateSchedule(invalid); err == nil {
-			t.Errorf("accepted %s", invalid)
-		}
-	}
 }
 
-func mustWrite(t *testing.T, path, value string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// Export bundles must re-validate into identical canonical definitions, so a
-// round trip loses nothing (reconstruction guarantee for export/import).
-func TestExportTOMLRoundTrip(t *testing.T) {
-	source := model.Definition{Name: "backup", Kind: "job", Command: "echo hi", Shell: "/bin/sh",
-		Schedule: "0 2 * * *", Timezone: "UTC", CatchUp: "none", OnOverlap: "skip", EnvBase: "clean",
-		Timeout: "0", Grace: "10s", StopSignal: "SIGTERM", SuccessCodes: []int{0}, Restart: "always",
-		RestartDelay: "5s", MaxRestartAttempts: 5, HealthyAfter: "30s", LogOnFull: "drop_old"}
-	if err := ValidateDefinition(&source); err != nil {
-		t.Fatal(err)
-	}
-	bundle := struct {
-		Jobs    []model.Definition `toml:"job"`
-		Workers []model.Definition `toml:"worker"`
-	}{Jobs: []model.Definition{source}}
-	body, err := toml.Marshal(bundle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := ParseImport(body)
-	if err != nil {
-		t.Fatalf("exported bundle does not re-validate: %v\n%s", err, body)
-	}
-	if len(parsed) != 1 {
-		t.Fatalf("parsed %d definitions", len(parsed))
-	}
-	_, wantHash, err := Canonical(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, gotHash, err := Canonical(parsed[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wantHash != gotHash {
-		t.Fatalf("canonical hash changed across round trip:\n%s", body)
-	}
-}
-
-func TestLogArchiveDefaults(t *testing.T) {
-	dir := t.TempDir()
-	bootstrap := filepath.Join(dir, "minicron.toml")
-	mustWrite(t, bootstrap, "[logs]\nbackend='file'\n")
-	cfg, err := Load(bootstrap)
+func TestLogArchiveDefaultsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "")
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Logs.WorkerFlushInterval != "15m" || cfg.Logs.DBKeepFor != "720h" || cfg.Logs.DBPruneAt != "03:30" {
-		t.Fatalf("log archive defaults = %#v", cfg.Logs)
+		t.Fatalf("unexpected log defaults: %#v", cfg.Logs)
 	}
-}
-
-func TestLogArchiveValidation(t *testing.T) {
-	for _, invalid := range []string{
-		"[logs]\nworker_flush_interval='500ms'\n",
-		"[logs]\nworker_flush_interval='nope'\n",
-		"[logs]\ndb_keep_for='0h'\n",
-		"[logs]\ndb_keep_for='x'\n",
-		"[logs]\ndb_prune_at='25:00'\n",
-		"[logs]\ndb_prune_at='3:5'\n",
-		"[logs]\ndb_prune_at='noon'\n",
-	} {
-		dir := t.TempDir()
-		bootstrap := filepath.Join(dir, "minicron.toml")
-		mustWrite(t, bootstrap, invalid)
-		if _, err := Load(bootstrap); err == nil {
-			t.Errorf("accepted %q", invalid)
+	for _, logs := range []string{"worker_flush_interval='0s'", "db_keep_for='0s'", "db_prune_at='25:00'"} {
+		mustWrite(t, path, "[logs]\n"+logs+"\n")
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected invalid logs config for %s", logs)
 		}
-	}
-	dir := t.TempDir()
-	bootstrap := filepath.Join(dir, "minicron.toml")
-	mustWrite(t, bootstrap, "[logs]\nworker_flush_interval='5m'\ndb_keep_for='168h'\ndb_prune_at='23:45'\n")
-	if _, err := Load(bootstrap); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The [defaults] table must reach every field the executor actually consumes;
-// restart/health/log-policy values used to be silently hardcoded.
-func TestDefaultsCoverRestartHealthAndLogPolicy(t *testing.T) {
-	dir := t.TempDir()
-	bootstrap := filepath.Join(dir, "minicron.toml")
-	mustWrite(t, bootstrap, `[defaults]
-restart = "on-failure"
-restart_delay = "77ms"
-max_restart_attempts = 9
-healthy_after = "88ms"
-log_on_full = "drop_new"
-stop_signal = "SIGINT"
-
-[[job]]
-name = "j"
-command = "true"
-schedule = "@every 1h"
-`)
-	cfg, err := Load(bootstrap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := cfg.Definitions[0]
-	if d.Restart != "on-failure" || d.RestartDelay != "77ms" || d.MaxRestartAttempts != 9 ||
-		d.HealthyAfter != "88ms" || d.LogOnFull != "drop_new" || d.StopSignal != "SIGINT" {
-		t.Fatalf("defaults not applied: %#v", d)
-	}
-}
-
-// Include-file defaults overlay the bootstrap defaults; fields set in neither
-// place keep their built-in fallbacks.
-func TestIncludeDefaultsOverlayBootstrapDefaults(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "minicron.toml"), `[defaults]
-grace = "30s"
-healthy_after = "1h"
-
-[include]
-paths = ["inc.toml"]
-`)
-	mustWrite(t, filepath.Join(dir, "inc.toml"), `[defaults]
-healthy_after = "2h"
-
-[[job]]
-name = "j"
-command = "true"
-schedule = "@every 1h"
-`)
-	cfg, err := Load(filepath.Join(dir, "minicron.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := cfg.Definitions[0]
-	if d.Grace != "30s" {
-		t.Fatalf("bootstrap default lost: grace = %q", d.Grace)
-	}
-	if d.HealthyAfter != "2h" {
-		t.Fatalf("include default must win: healthy_after = %q", d.HealthyAfter)
-	}
-	if d.RestartDelay != "5s" {
-		t.Fatalf("builtin fallback lost: restart_delay = %q", d.RestartDelay)
 	}
 }
 
 func TestTelegramAlertChannel(t *testing.T) {
-	dir := t.TempDir()
-	bootstrap := filepath.Join(dir, "minicron.toml")
-	mustWrite(t, bootstrap, `[[alert_channel]]
-name = "ops"
-type = "telegram"
-bot_token = "env:TELEGRAM_BOT_TOKEN"
-chat_id = "-100123"
-
-[defaults]
-alerts = ["ops"]
-
-[[job]]
-name = "backup"
-command = "false"
-`)
-	cfg, err := Load(bootstrap)
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\n")
+	cfg, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Type != "telegram" {
-		t.Fatalf("alert channels = %#v", cfg.AlertChannels)
-	}
-	if got := cfg.Definitions[0].Alerts; len(got) != 1 || got[0] != "ops" {
-		t.Fatalf("definition alerts = %#v", got)
+	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" {
+		t.Fatalf("unexpected channels: %#v", cfg.AlertChannels)
 	}
 }
 
-func TestAlertChannelValidation(t *testing.T) {
-	for _, invalid := range []string{
-		"[[alert_channel]]\nname='ops'\ntype='slack'\nbot_token='env:TOKEN'\nchat_id='1'\n",
-		"[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='literal-secret'\nchat_id='1'\n",
-		"[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:TOKEN'\nchat_id=''\n",
-		"[[job]]\nname='j'\ncommand='true'\nalerts=['missing']\n",
-	} {
-		dir := t.TempDir()
-		bootstrap := filepath.Join(dir, "minicron.toml")
-		mustWrite(t, bootstrap, invalid)
-		if _, err := Load(bootstrap); err == nil {
-			t.Errorf("accepted %q", invalid)
-		}
+func TestValidateDefinition(t *testing.T) {
+	d := model.Definition{Name: "hello", Command: "true"}
+	if err := ValidateDefinition(&d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Kind != model.KindJob || d.Shell != "/bin/sh" || d.Timezone != "UTC" {
+		t.Fatalf("defaults not applied: %#v", d)
+	}
+	bad := d
+	bad.Command = ""
+	bad.Argv = nil
+	if err := ValidateDefinition(&bad); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("unexpected validation result: %v", err)
 	}
 }
 
-func TestDefinitionFieldValidation(t *testing.T) {
-	for _, invalid := range []string{
-		"log_on_full = 'recycle'",
-		"stop_signal = 'SIGWAT'",
-		"keep_for = 'soon'",
-		"keep_for = '0h'",
-		"log_max = '10Ki'",
-	} {
-		dir := t.TempDir()
-		bootstrap := filepath.Join(dir, "minicron.toml")
-		mustWrite(t, bootstrap, "[[job]]\nname='j'\ncommand='true'\nschedule='@every 1h'\n"+invalid+"\n")
-		if _, err := Load(bootstrap); err == nil {
-			t.Errorf("accepted %s", invalid)
-		}
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

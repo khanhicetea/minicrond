@@ -7,7 +7,7 @@
 
 v0.1 uses Go 1.24, strict TOML, a handler-first HTTP API with a checked-in OpenAPI 3.1 contract, a React 19 SPA source (React Compiler, wouter, daisyUI 5, TanStack Query) with embedded generated assets, bearer-token TCP authentication, Unix-socket local authentication, port 7423, UTC defaults, and Apache-2.0. Only user mode, local execution, file logs, `skip|parallel`, and `none|latest` catch-up ship.
 
-Definitions have file or DB authority. Browser/`--copy` imports create DB-authority copies; `--link` adds a daemon-local include. Runs use the non-overlapping terminal vocabulary in `codex-decisions.md`. Lifecycle records commit before spawning or returning success.
+SQLite is the sole definition authority. Browser, CLI, and API TOML imports explicitly copy into the registry; export provides portable TOML. Runs use the non-overlapping terminal vocabulary in `codex-decisions.md`. Lifecycle records commit before spawning or returning success.
 
 ## Consequences
 

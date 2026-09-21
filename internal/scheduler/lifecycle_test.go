@@ -33,7 +33,7 @@ func TestStopJoinsSchedulingLoops(t *testing.T) {
 	st, _, s := setup(t)
 	d := worker("stopped", "none")
 	d.Schedule = "@every 1h"
-	if err := st.SyncFiles(t.Context(), []model.Definition{d}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := st.Definitions(t.Context())

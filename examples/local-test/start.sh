@@ -36,6 +36,10 @@ if ! wait_ready; then
 	exit 1
 fi
 
+for definition in "$EXAMPLE_DIR"/jobs/*.toml; do
+	"$BIN" import "$definition" >/dev/null
+done
+
 pid=$(daemon_pid) || true
 echo "daemon ready (pid ${pid:-unknown})"
 echo

@@ -35,24 +35,21 @@ Identity is the OS identity. A user is whoever the kernel says connected.
 ## Namespaces
 
 - Definition identity is the pair (owner, name). The admin scope is the
-  bootstrap config + its includes (owner = root).
+  registry entries with no owner (owner = root).
 - Display and CLI form: dotted — `alice.backup-db`, root's definitions
   shown bare (`backup-db`). The API accepts the dotted form, or `name` +
   `?owner=alice`. Job-name grammar per `01` applies to the bare name.
 - Admin sees and manages every scope; a user sees and manages their own.
 
-## User-owned sources & imports
+## User-owned definitions and imports
 
-- **`minicron import <path>`** run by a registered user registers that
-  file as a **file-authority source in their scope** (spec `05` rules: the
-  file is the single source of truth; reloads re-read it; UI/API cannot
-  edit its metadata). `--copy` instead materializes **db-authority**
-  definitions in their scope (editable later via UI/CLI as `05` allows).
+- **`minicron import <path>`** run by a registered user transactionally
+  imports definitions into their SQLite-backed scope. The file is not linked;
+  later edits use the same UI/API/CLI registry operations (`05`).
 - **`run_as` is locked to the owner** in user scopes: any other value is a
   validation error naming the line — never a silent override. `~` and
   `working_dir` resolve against the owner's home.
-- Auto-scanning `~/.config/minicron/jobs/*.toml` per registered user is a
-  MAY for later; explicit import first (no implicit magic).
+- There is no per-user filesystem scan or implicit definition discovery.
 
 ## Authorization matrix
 
@@ -61,27 +58,20 @@ Identity is the OS identity. A user is whoever the kernel says connected.
 | List jobs — status, next fire, last run status | all scopes | own scope |
 | View run logs (incl. live stream) | all | own runs |
 | Trigger / stop / restart runs | all | own |
-| Import file sources, create/edit db-authority definitions | any scope | own scope, `run_as` = self |
-| Reload | all sources | re-validates & re-applies **own sources only** |
+| Import, create, or edit definitions | any scope | own scope, `run_as` = self |
+| Reload runtime | all scopes | own scope |
 | Daemon settings, users, tokens, retention, storage | ✅ | ❌ |
 
-Reload is scoped by ownership so a user's reload can never force
-re-evaluation (and worker restarts) of root's or another user's definitions.
-
-## Reload isolation
-
-Every source — the bootstrap, each include, each user source — validates
-**independently**. An invalid source keeps its previous definitions and
-raises a scoped error (event + UI banner + CLI message to that owner);
-every other source applies normally. One user's broken TOML never blocks
-the box.
+Reconciliation is scoped by ownership so one user's operation cannot restart
+root's or another user's workers. Invalid imports are rejected atomically and
+leave that owner's registry unchanged.
 
 ## Execution
 
 - User-owned definitions spawn **as the owner**: `setgroups → setgid →
   setuid` to the registered uid/gid, `chdir` to the resolved working dir,
   umask/env per `07`. Supervised workers likewise run as the owner.
-- Admin/bootstrap definitions keep the full `run_as` machinery of `07`
+- Admin-owned definitions keep the full `run_as` machinery of `07`
   (any user, root daemon).
 - Log capture is unchanged — output flows through the daemon's sinks; users
   read their logs via CLI/API, never via filesystem access to the data dir.
@@ -102,24 +92,23 @@ the box.
 
 - New `users` table: `(id, uid, username, gid, home, token_hash,
   registered_at)`.
-- `definitions` gains `owner_user_id` (NULL = admin scope) and the
-  `authority` column (`file` | `db`); uniqueness becomes
-  `(owner_user_id, name)`.
-- Audit `actor` values gain `user:<name>` alongside `file:<path>` / `ui` /
-  `api` / `cli:<cmd>`.
+- `definitions` gains `owner_user_id` (NULL = admin scope); uniqueness
+  becomes `(owner_user_id, name)`.
+- Audit `actor` values gain `user:<name>` alongside `ui`, `api`, and
+  `cli:<cmd>`.
 
 ## Security posture (details in `13`)
 
 A compromised registered user can: run arbitrary code **as themselves**
 (by design), read their own logs. Cannot: set `run_as` to anyone else,
-touch other scopes, edit file-authority metadata, change daemon settings,
+touch other scopes, change daemon settings,
 or read auth material. The daemon's own surface (root) is not reachable
 through the socket beyond the operations above.
 
 ## Roadmap
 
-System mode lands in **v0.2** (with `user register/token`, scoped reload,
-per-source isolation, socket layout). It can be pulled into v0.1 if the
+System mode lands in **v0.2** (with `user register/token`, scoped
+reconciliation, socket layout). It can be pulled into v0.1 if the
 core lands early. The `users` table and `owner_user_id` column exist from
 the v0.1 schema (always NULL) so no migration is needed.
 

@@ -14,7 +14,7 @@ Status: Draft · Deliberately minimal v1 [v0.2]
 | `disk.low` | warn | pre-run disk check tripped |
 | `logs.unwritable` | error | active LogSink failing |
 | `config.rejected` | error | reload validation failed (live set untouched) |
-| `config.stale` | info | import sources drifted |
+| `config.reload_failed` | warning | daemon settings reload failed validation |
 | `docker.unavailable` | warn | docker driver runtime missing |
 
 ## Routing (v0.2)

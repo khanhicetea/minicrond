@@ -35,15 +35,11 @@ Status: Draft
 
 ## Components
 
-- **Config Loader** — reads `minicron.toml` + include globs, keeps values literal, resolves only typed environment/file references, validates (strict, positional errors), computes a content
-  fingerprint. Produces a desired-state definition set. Never talks to the
-  executor directly.
-- **Registry** — SQLite holds the definition set: authoritative copies of
-  `db`-authority definitions, and references + cached parses for
-  `file`-authority ones (`05`, ADR-3). The loader *imports into* the
-  registry; the UI and API edit only `db`-authority entries; the scheduler
-  and supervisor *read* the registry. In system mode, entries are scoped by
-  an owning user (`17`).
+- **Config Loader** — reads strict daemon settings from `minicron.toml`.
+  Definition files are accepted only by the explicit import flow (`05`).
+- **Registry** — SQLite is the authoritative definition set. The UI, API,
+  and explicit TOML import edit it; the scheduler and supervisor read it.
+  In system mode, entries are scoped by an owning user (`17`).
 - **Scheduler** — computes next fire times per job (in that job's tz),
   wakes on the earliest deadline, enqueues triggers. Owns overlap/queue
   admission decisions before a run is created.
@@ -86,7 +82,7 @@ Status: Draft
    holder's PID.
 3. Open SQLite (WAL), run migrations (forward-only; newer-schema-than-binary
    is a hard error with version guidance).
-4. Config load → validate → **import** into registry → diff against live set.
+4. Load and validate daemon settings; load definitions from the registry.
 5. Crash recovery: any run in `pending`/`running` from a previous life →
    `interrupted` (`crash_recovery`); apply missed-run policy per job (`06`).
 6. Start supervisor (workers by `priority`, gated by `depends_on`),
@@ -96,26 +92,23 @@ Status: Draft
 ## Reload / reconciliation
 
 Triggered by SIGHUP, `minicron reload`, or `POST /api/v1/daemon/reload`.
-Pipeline: load + validate (reject whole reload on any error) → import to
-registry → compute diff classes:
+Pipeline: load and validate daemon settings → read the SQLite registry →
+compute diff classes:
 
 - **added** — start scheduling; workers with `autostart` start now. Jobs do
   **not** fire catch-up for time before they existed.
-- **removed** (in registry, not in any import source and not db-authority)
-  — stop schedules, kill active runs per policy, soft-delete definition
-  (restorable; see OQ-18).
+- **removed** — stop schedules; existing active runs retain their captured
+  revision while no new runs are admitted.
 - **changed** (content hash differs) — in-flight runs finish under their
   original definition; new runs use the new one; workers restart only if
   their spec changed.
-- **unchanged** — no action. Definition *source-path* moves (same content,
-  different file) MUST NOT restart workers.
+- **unchanged** — no action.
 
 Restart-only settings (bind address, data dir, storage backend) are rejected
 in hot reload with a clear "requires restart" error listing the keys.
 
-In user mode the bootstrap and every include are one desired set: any invalid
-file rejects the complete reload. Future system mode uses one independent
-atomic desired set per owner (`17`).
+Definition imports are independently validated and transactionally applied;
+a failed import leaves the registry and runtime unchanged.
 
 ## Concurrency & footguns
 
@@ -137,6 +130,5 @@ atomic desired set per owner (`17`).
 
 ## Open questions
 
-- OQ-13: opt-in file-watch auto-reload vs manual-only reload.
-- Source-of-truth model is decided: provenance-locked authority (ADR-3,
-  spec `05`); system-mode scoping per `17`.
+- Source-of-truth model is decided: the SQLite definition registry (`05`);
+  system-mode scoping remains per `17`.

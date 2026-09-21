@@ -75,24 +75,16 @@ Not debated — fixed inputs to every other decision.
 - Consequences: smaller scope; the CLI gains run-log viewing (`minicron
   logs`) to keep headless/SSH workflows first-class.
 
-## ADR-3: Provenance-locked single source of truth
+## ADR-3: SQLite definition registry
 
-- Date: 2026-08-26
-- Status: accepted (product owner) — resolves OQ-3
-- Context: a definition whose bytes live in a reviewed file must not be
-  quietly mutable through a second channel (UI/API/DB) — that is how a
-  file and reality drift apart. The earlier hybrid draft allowed UI edits
-  of file-imported definitions with conflict flags; rejected as drift-prone.
-- Decision: every definition has exactly one authority. `file` authority:
-  the TOML file is the single source of truth; the DB stores only a
-  reference (path, hash) plus a non-authoritative cached parse; metadata
-  edits via UI/API/DB are rejected (409). `db` authority: created via
-  UI/API/CLI, registry-authoritative, freely editable there. Converting
-  db→file is an explicit, audited `takeover` at import time.
-- Consequences: git-managed definitions are immutable outside git; the UI
-  editor applies only to db-native definitions (read-only view + managing
-  path otherwise); no conflict-resolution state machine at reload. Spec
-  `05`.
+- Date: 2026-09-21
+- Status: accepted (product owner) — supersedes the provenance-locked model
+- Context: two live authorities made reload, editing, and ownership behavior
+  unnecessarily complex.
+- Decision: SQLite is the sole source of truth for definitions. TOML is an
+  explicit, hash-bound import/export format and is never linked or watched.
+- Consequences: one edit and revision path serves UI, API, and CLI; imports
+  are transactional; version-controlled TOML is applied explicitly. Spec `05`.
 
 ## ADR-4: System mode — root daemon with registered users
 
@@ -104,11 +96,9 @@ Not debated — fixed inputs to every other decision.
 - Decision: add `[server] mode = "system"` (restart-only). Unix users run
   `minicron user register` over the system socket (kernel peer
   credentials prove identity — no passwords); each registered user gets a
-  scoped namespace, may import file sources and create db-authority
-  definitions (locked to `run_as` = self), and uses the CLI for listing
-  (status, next fire, last run status), viewing run logs, triggering, and
-  scoped reload. Reload validates sources independently so one broken file
-  never blocks others.
+  scoped namespace, may import and edit registry definitions (locked to
+  `run_as` = self), and uses the CLI for listing, viewing run logs,
+  triggering, and registry operations.
 - Consequences: multi-tenant authorization matrix, `users` table,
   owner-scoped definitions (`08`, `17`); users are CLI-first (UI namespace
   scoping v1.1); lands v0.2 with schema columns present (NULL) from v0.1.

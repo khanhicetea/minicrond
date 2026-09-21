@@ -34,7 +34,6 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
 | `GET /metrics` | Prometheus text (auth'd; separate bind optional — OQ-19) |
 | `GET /api/v1/daemon` | daemon info (above) |
 | `POST /api/v1/daemon/reload` | config reload (validate-first; errors → 422 with details) |
-| `GET /api/v1/config/state` | import sources, hashes, staleness, last reload |
 | `GET /api/v1/jobs` / `GET /api/v1/jobs/{name}` | list (filter kind/label/enabled) / detail incl. `next_fire_at`, `next_5_firings`, active runs |
 | `POST /api/v1/jobs` / `PATCH /api/v1/jobs/{name}` / `DELETE /api/v1/jobs/{name}` | registry editing (spec `05`); PATCH = partial spec update, full validation |
 | `POST /api/v1/jobs/{name}/trigger` | run now; body = params (v0.2); `?wait=true&timeout=120` sync mode returns final status |
@@ -87,10 +86,8 @@ Status: Draft · Auth details: `13` · Default port 7423 (OQ-8)
   (default on).
 - Authorization: admin (socket peer = root, or admin token) sees all
   scopes; in system mode a user identity (peer uid or user token) is
-  scoped to their own definitions (`17`). Metadata mutations
-  (`POST`/`PATCH`/`DELETE` on jobs) apply **only** to `db`-authority
-  definitions — a `file`-authority target returns `409 authority_conflict`
-  naming the managing file (ADR-3).
+  scoped to their own definitions (`17`). Authorized metadata mutations
+  update the SQLite definition registry.
 
 ## Open questions
 

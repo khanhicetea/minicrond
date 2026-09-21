@@ -61,13 +61,10 @@ CREATE TABLE users (                -- system-mode registration (spec 17);
 CREATE TABLE definitions (
   name         TEXT NOT NULL,       -- unique per (owner, name)
   owner_user_id INTEGER,            -- NULL = admin scope (system mode, 17)
-  authority    TEXT NOT NULL CHECK (authority IN ('file','db')),
   kind         TEXT NOT NULL CHECK (kind IN ('job','worker')),
-  spec         TEXT NOT NULL,       -- canonical JSON — authoritative for db,
-                                    -- cached parse for file (spec 05)
+  spec         TEXT NOT NULL,       -- authoritative canonical JSON
   spec_hash    TEXT NOT NULL,       -- sha256(spec), change detection
-  source_file  TEXT,                -- managing file when authority = 'file'
-  revision     INTEGER NOT NULL,    -- bumps on db-authority changes
+  revision     INTEGER NOT NULL,    -- bumps on every definition change
   enabled      INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT NOT NULL,
   updated_at   TEXT NOT NULL,
@@ -114,13 +111,6 @@ CREATE TABLE schedule_state (       -- per job, scheduler bookkeeping
   last_fire_at TEXT,                -- last admitted-or-recorded fire
   next_fire_at TEXT,                -- cache; recomputed on boot/reload
   last_missed_count INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE import_sources (       -- include-file tracking (spec 05)
-  path TEXT PRIMARY KEY,
-  sha256 TEXT NOT NULL, mtime TEXT NOT NULL,
-  imported_at TEXT NOT NULL,
-  provides TEXT NOT NULL            -- JSON array of names
 );
 
 CREATE TABLE events (               -- notification inbox + event history

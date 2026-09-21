@@ -10,9 +10,7 @@ export interface Definition {
   definition_id?: number /* int64 */;
   name: string;
   kind: Kind;
-  authority?: string;
   revision?: number /* int64 */;
-  source_file?: string;
   enabled?: boolean;
   command?: string;
   argv?: string[];

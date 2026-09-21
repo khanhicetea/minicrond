@@ -2,9 +2,6 @@
 bind = "127.0.0.1:7423"
 unix_socket = true
 
-[include]
-paths = ["jobs/*.toml"]
-
 [scheduler]
 timezone = "UTC"
 max_concurrent_runs = 32
@@ -18,8 +15,3 @@ worker_flush_interval = "15m"
 db_prune_at = "03:30"
 # Archived logs older than this are deleted by the daily prune.
 db_keep_for = "720h"
-
-[defaults]
-shell = "/bin/sh"
-env_base = "clean"
-grace = "10s"

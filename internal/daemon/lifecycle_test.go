@@ -13,7 +13,7 @@ import (
 func TestStartupFailureStopsExecutionAndReleasesLock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "minicron.toml")
-	config := "[server]\nbind='127.0.0.1:99999'\nunix_socket=false\n[[job]]\nname='scheduled'\ncommand='true'\nschedule='@every 1s'\n"
+	config := "[server]\nbind='127.0.0.1:99999'\nunix_socket=false\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

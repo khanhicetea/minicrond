@@ -16,7 +16,7 @@ var contractRoutes = []contractRoute{
 	{"POST", "/api/v1/jobs/{name}/trigger", "Trigger job"}, {"POST", "/api/v1/jobs/{name}/enable", "Enable definition"}, {"POST", "/api/v1/jobs/{name}/disable", "Disable definition"},
 	{"POST", "/api/v1/workers/{name}/start", "Start worker"}, {"POST", "/api/v1/workers/{name}/stop", "Hold worker"}, {"POST", "/api/v1/workers/{name}/restart", "Restart worker"},
 	{"GET", "/api/v1/metrics/runs", "Run metrics"}, {"GET", "/api/v1/runs", "List runs"}, {"GET", "/api/v1/runs/{id}", "Run detail"}, {"POST", "/api/v1/runs/{id}/stop", "Stop run"}, {"GET", "/api/v1/runs/{id}/log", "Windowed tagged logs"}, {"GET", "/api/v1/runs/{id}/log/raw", "Raw log download"}, {"GET", "/api/v1/runs/{id}/log/stream", "Resumable SSE logs"},
-	{"POST", "/api/v1/token/rotate", "Rotate bearer token"}, {"GET", "/api/v1/export", "Export definitions"}, {"POST", "/api/v1/import/preview", "Preview hash-bound import"}, {"POST", "/api/v1/import/apply", "Apply DB-authority import"},
+	{"POST", "/api/v1/token/rotate", "Rotate bearer token"}, {"GET", "/api/v1/export", "Export definitions"}, {"POST", "/api/v1/import/preview", "Preview hash-bound import"}, {"POST", "/api/v1/import/apply", "Apply definition import"},
 }
 
 func OpenAPIContract(version string) []byte {

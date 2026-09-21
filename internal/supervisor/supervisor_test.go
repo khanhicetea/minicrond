@@ -30,8 +30,7 @@ func setup(t *testing.T) (*store.Store, *Supervisor) {
 }
 
 func workerDef(name, argv0 string, argv []string, healthyAfter string, attempts int) model.Definition {
-	d := model.Definition{Name: name, Kind: model.KindWorker, Authority: "file", SourceFile: "test",
-		Argv: argv, Shell: "/bin/sh", Timeout: "0", Grace: "0", SuccessCodes: []int{0},
+	d := model.Definition{Name: name, Kind: model.KindWorker, Argv: argv, Shell: "/bin/sh", Timeout: "0", Grace: "0", SuccessCodes: []int{0},
 		Restart: "always", RestartDelay: "10ms", HealthyAfter: healthyAfter, MaxRestartAttempts: attempts,
 		Timezone: "UTC", OnOverlap: "skip", CatchUp: "none"}
 	enabled := true
@@ -54,7 +53,7 @@ func runCount(t *testing.T, st *store.Store, name string) int {
 func TestWorkerGoesFatalAfterConsecutiveUnhealthyStarts(t *testing.T) {
 	st, sup := setup(t)
 	def := workerDef("flappy", "", []string{"/bin/true"}, "1h", 3)
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := st.Definitions(t.Context())
@@ -76,46 +75,12 @@ func TestWorkerGoesFatalAfterConsecutiveUnhealthyStarts(t *testing.T) {
 	}
 }
 
-func TestReloadSourceRestartsOnlyItsWorkers(t *testing.T) {
-	st, sup := setup(t)
-	first := workerDef("first", "", []string{"/bin/sleep", "30"}, "0", 5)
-	first.SourceFile = "first.toml"
-	second := workerDef("second", "", []string{"/bin/sleep", "30"}, "0", 5)
-	second.SourceFile = "second.toml"
-	if err := st.SyncFiles(t.Context(), []model.Definition{first, second}, false); err != nil {
-		t.Fatal(err)
-	}
-	defs, err := st.Definitions(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	sup.Reload(defs)
-	deadline := time.Now().Add(5 * time.Second)
-	for (runCount(t, st, first.Name) < 1 || runCount(t, st, second.Name) < 1 || !sup.State(first.Name).Active || !sup.State(second.Name).Active) && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if runCount(t, st, first.Name) != 1 || runCount(t, st, second.Name) != 1 || !sup.State(first.Name).Active || !sup.State(second.Name).Active {
-		t.Fatalf("workers did not start once: first=%d second=%d first_state=%+v second_state=%+v", runCount(t, st, first.Name), runCount(t, st, second.Name), sup.State(first.Name), sup.State(second.Name))
-	}
-
-	sup.ReloadSource(first.SourceFile, defs)
-	for runCount(t, st, first.Name) < 2 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if got := runCount(t, st, first.Name); got != 2 {
-		t.Fatalf("reloaded worker runs = %d, want 2", got)
-	}
-	if got := runCount(t, st, second.Name); got != 1 {
-		t.Fatalf("unrelated worker restarted: %d runs", got)
-	}
-}
-
 // An operator stop is a hold: restart = "always" must not immediately undo
 // it by respawning the worker.
 func TestOperatorHoldPreventsAlwaysRestart(t *testing.T) {
 	st, sup := setup(t)
 	def := workerDef("sleeper", "", []string{"/bin/sleep", "30"}, "0", 5)
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := st.Definitions(t.Context())

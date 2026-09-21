@@ -26,7 +26,6 @@ type Supervisor struct {
 	failures      map[string]int
 	active        map[string]string
 	workerCancels map[string]context.CancelFunc
-	workerSources map[string]string
 }
 
 type workerLoop struct {
@@ -42,14 +41,12 @@ func New(st *store.Store, ex *executor.Service) *Supervisor {
 		failures:      make(map[string]int),
 		active:        make(map[string]string),
 		workerCancels: make(map[string]context.CancelFunc),
-		workerSources: make(map[string]string),
 	}
 }
 
 func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 	ctx, cancel := context.WithCancel(s.ctx)
 	s.workerCancels[d.Name] = cancel
-	s.workerSources[d.Name] = d.SourceFile
 	return workerLoop{ctx: ctx, def: d}
 }
 
@@ -60,36 +57,10 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.workerCancels = make(map[string]context.CancelFunc)
-	s.workerSources = make(map[string]string)
 	workers := make([]workerLoop, 0)
 	for _, d := range defs {
 		if d.Kind == model.KindWorker && d.IsEnabled() && d.DoesAutostart() {
 			workers = append(workers, s.startLocked(d))
-		}
-	}
-	s.mu.Unlock()
-	for _, worker := range workers {
-		go s.loop(worker.ctx, worker.def)
-	}
-}
-
-// ReloadSource restarts only workers managed by source. Job-only source
-// reloads therefore leave every worker running.
-func (s *Supervisor) ReloadSource(source string, defs []model.Definition) {
-	s.mu.Lock()
-	for name, workerSource := range s.workerSources {
-		if workerSource == source {
-			s.workerCancels[name]()
-			delete(s.workerCancels, name)
-			delete(s.workerSources, name)
-		}
-	}
-	workers := make([]workerLoop, 0)
-	if s.ctx != nil {
-		for _, d := range defs {
-			if d.SourceFile == source && d.Kind == model.KindWorker && d.IsEnabled() && d.DoesAutostart() {
-				workers = append(workers, s.startLocked(d))
-			}
 		}
 	}
 	s.mu.Unlock()

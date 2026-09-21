@@ -85,5 +85,5 @@ These are fixed inputs, not open for debate (recorded as D-1..D-7 in
    include syntax.
 
 Post-draft product-owner decisions, recorded as ADRs: **ADR-2** (no TUI),
-**ADR-3** (provenance-locked single source of truth), **ADR-4** (system
+**ADR-3** (SQLite definition registry), **ADR-4** (system
 mode — root daemon with registered unprivileged users).

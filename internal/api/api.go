@@ -33,14 +33,15 @@ import (
 )
 
 type Server struct {
-	store   *store.Store
-	logs    *logstore.Store
-	exec    *executor.Service
-	super   *supervisor.Supervisor
-	reload  func(context.Context, string) error
-	started time.Time
-	version string
-	ready   atomic.Bool
+	store     *store.Store
+	logs      *logstore.Store
+	exec      *executor.Service
+	super     *supervisor.Supervisor
+	reload    func(context.Context) error
+	reconcile func(context.Context) error
+	started   time.Time
+	version   string
+	ready     atomic.Bool
 	// tokenHash holds the hex SHA-256 of the active bearer token; the raw
 	// token exists only at rotation time.
 	tokenHash atomic.Pointer[string]
@@ -90,17 +91,14 @@ type errorEnvelope struct {
 	Error apiError `json:"error"`
 }
 
-type reloadRequest struct {
-	Source string `json:"source"`
-}
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Details any    `json:"details,omitempty"`
 }
 
-func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload func(context.Context, string) error, version string) *Server {
-	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, started: time.Now(), version: version}
+func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload, reconcile func(context.Context) error, version string) *Server {
+	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version}
 }
 func (s *Server) InitializeToken(ctx context.Context) (string, error) {
 	hash, err := s.store.Meta(ctx, "token_hash")
@@ -259,14 +257,7 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": capabilities, "token_fingerprint": fingerprint(s.currentTokenHash())})
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
-	var request reloadRequest
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, 400, "invalid_request", "invalid reload request")
-			return
-		}
-	}
-	if err := s.reload(r.Context(), request.Source); err != nil {
+	if err := s.reload(r.Context()); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -332,8 +323,6 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 	saved, err := s.store.PutDefinition(r.Context(), d, expected, "api")
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrAuthorityConflict):
-			writeError(w, 409, "authority_conflict", err.Error())
 		case errors.Is(err, store.ErrRevisionConflict):
 			writeError(w, 412, "revision_conflict", err.Error())
 		default:
@@ -341,7 +330,7 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.reload(r.Context(), ""); err != nil {
+	if err := s.reconcile(r.Context()); err != nil {
 		writeError(w, 500, "reconcile_failed", err.Error())
 		return
 	}
@@ -349,14 +338,10 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteDefinition(r.Context(), r.PathValue("name"), "api"); err != nil {
-		status, code := 404, "not_found"
-		if errors.Is(err, store.ErrAuthorityConflict) {
-			status, code = 409, "authority_conflict"
-		}
-		writeError(w, status, code, err.Error())
+		writeError(w, 404, "not_found", err.Error())
 		return
 	}
-	if err := s.reload(r.Context(), ""); err != nil {
+	if err := s.reconcile(r.Context()); err != nil {
 		internal(w, err)
 		return
 	}
@@ -366,10 +351,10 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
 	enabled := strings.HasSuffix(r.URL.Path, "/enable")
 	if err := s.store.SetEnabled(r.Context(), r.PathValue("name"), enabled); err != nil {
-		writeError(w, 409, "authority_conflict", err.Error())
+		writeError(w, 404, "not_found", err.Error())
 		return
 	}
-	if err := s.reload(r.Context(), ""); err != nil {
+	if err := s.reconcile(r.Context()); err != nil {
 		internal(w, err)
 		return
 	}
@@ -661,8 +646,6 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	for _, d := range defs {
 		d.ID = 0
 		d.Revision = 0
-		d.Authority = ""
-		d.SourceFile = ""
 		if d.Kind == model.KindWorker {
 			bundle.Workers = append(bundle.Workers, d)
 		} else {
@@ -715,20 +698,11 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
-	for _, d := range defs {
-		if existing, _, lookupErr := s.store.Definition(r.Context(), d.Name); lookupErr == nil && existing.Authority == "file" {
-			writeError(w, 409, "authority_conflict", d.Name+" is managed by a file")
-			return
-		} else if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
-			internal(w, lookupErr)
-			return
-		}
-	}
-	if err = s.store.CopyDefinitions(r.Context(), defs, "api:import"); err != nil {
+	if err = s.store.ImportDefinitions(r.Context(), defs, "api:import"); err != nil {
 		internal(w, err)
 		return
 	}
-	if err = s.reload(r.Context(), ""); err != nil {
+	if err = s.reconcile(r.Context()); err != nil {
 		internal(w, err)
 		return
 	}

@@ -56,7 +56,7 @@ export default function Settings() {
     <div className="space-y-5">
       <PageHeader
         title="Settings & diagnostics"
-        subtitle="Security, storage, import sources, and daemon diagnostics."
+        subtitle="Security, storage, definition registry, and daemon diagnostics."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {/* Icon-only daemon health check; hover for details. */}
@@ -193,17 +193,6 @@ function MainTab() {
   const [rotateError, setRotateError] = useState('');
   const [liveTail, setLiveTail] = useState(true);
 
-  const byFile = new Map<string, number>();
-  let dbCount = 0;
-  for (const definition of definitions) {
-    if (definition.authority === 'file' && definition.source_file) {
-      byFile.set(definition.source_file, (byFile.get(definition.source_file) ?? 0) + 1);
-    } else {
-      dbCount += 1;
-    }
-  }
-  const sources = { files: [...byFile.entries()].sort(), dbCount };
-
   const failedChecks = checks.filter(check => !check.ok).length;
 
   const copyToken = async () => {
@@ -335,7 +324,7 @@ function MainTab() {
         </Panel>
       </div>
 
-      {/* Right (8): recent activity, import sources. */}
+      {/* Right (8): recent activity and definition registry. */}
       <div className="flex min-w-0 flex-col gap-4 lg:col-span-8">
         {/* Activity tail (in place of a daemon log tail, which the API does not expose) */}
         <Panel
@@ -384,11 +373,11 @@ function MainTab() {
           {liveTail && <LiveRefresher />}
         </Panel>
 
-        {/* Import sources */}
+        {/* Definition registry */}
         <Panel
           icon="file-text"
-          title="Import sources"
-          badge={<span className={`chip chip-neutral ${BADGE}`}>{sources.files.length + 1} sources</span>}
+          title="Definition registry"
+          badge={<span className={`chip chip-neutral ${BADGE}`}>{definitions.length} definitions</span>}
           actions={
             <button
               type="button"
@@ -397,7 +386,7 @@ function MainTab() {
               onClick={() => reload.mutate(undefined)}
             >
               <Icon name="refresh" size={12} className={reload.isPending ? 'spin' : ''} />
-              Reload all
+              Reload settings & runtime
             </button>
           }
         >
@@ -405,54 +394,17 @@ function MainTab() {
             <table className="mc-table">
               <thead>
                 <tr>
-                  <th>Source</th>
+                  <th>Registry</th>
                   <th>Definitions</th>
-                  <th>Authority</th>
                   <th>Current status</th>
-                  <th className="text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {sources.files.map(([file, count]) => (
-                  <tr key={file}>
-                    <td className="font-mono text-[0.8rem]">{file}</td>
-                    <td className="num">{count}</td>
-                    <td><span className={`chip chip-outline ${BADGE}`}>file</span></td>
-                    <td>
-                      <span className={`chip chip-success ${BADGE}`}><Icon name="circle-check" size={11} /> Loaded</span>
-                    </td>
-                    <td className="text-right">
-                      <button
-                        type="button"
-                        className="btn-sub !px-2 !py-1.5"
-                        disabled={reload.isPending}
-                        onClick={() => reload.mutate(file)}
-                        title="Reload source"
-                        aria-label={`Reload ${file}`}
-                      >
-                        <Icon name="refresh" size={13} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
                 <tr>
-                  <td className="font-mono text-[0.8rem]">database (uploaded / API definitions)</td>
-                  <td className="num">{sources.dbCount}</td>
-                  <td><span className={`chip chip-outline-job ${BADGE}`}>db</span></td>
+                  <td className="font-mono text-[0.8rem]">SQLite</td>
+                  <td className="num">{definitions.length}</td>
                   <td>
                     <span className={`chip chip-success ${BADGE}`}><Icon name="circle-check" size={11} /> Loaded</span>
-                  </td>
-                  <td className="text-right">
-                    <button
-                      type="button"
-                      className="btn-sub !px-2 !py-1.5"
-                      disabled={reload.isPending}
-                      onClick={() => reload.mutate(undefined)}
-                      title="Reload source"
-                      aria-label="Reload database definitions"
-                    >
-                      <Icon name="refresh" size={13} />
-                    </button>
                   </td>
                 </tr>
               </tbody>
@@ -464,7 +416,7 @@ function MainTab() {
             </p>
           ) : (
             <p className="mt-2 flex items-center gap-1.5 text-xs text-green-400">
-              <Icon name="circle-check" size={13} /> All sources are up to date.
+              <Icon name="circle-check" size={13} /> Runtime matches the definition registry.
               {reload.isSuccess && <span className="muted">Reloaded just now.</span>}
             </p>
           )}
@@ -551,7 +503,7 @@ function ImportTab() {
         className="lg:col-span-7"
       >
         <p className="mb-3 text-sm muted">
-          Paste a minicron TOML bundle, preview it, then apply. Imported definitions become DB-authority copies.
+          Paste a minicron TOML bundle, preview it, then apply it to the definition registry.
         </p>
         <input
           ref={fileRef}

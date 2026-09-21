@@ -4,13 +4,10 @@ Status: Draft · Format decision: OQ-2 (TOML recommended) · Table style: OQ-4
 
 ## Philosophy
 
-- **One small bootstrap file + includes.** `minicron.toml` holds daemon-level
-  settings and points at include globs that carry job/worker definitions.
-- **One authority per definition** (ADR-3, details in `05`): a definition
-  imported from a file is file-authoritative — the UI, API, and DB cannot
-  edit its metadata (the DB stores a reference + cache). Definitions created
-  in the UI/API are registry-authoritative and freely editable there.
-  Files + reload is the git-friendly path; the UI is the interactive path.
+- **One small settings file.** `minicron.toml` contains daemon settings only.
+- **One definition registry.** SQLite is authoritative. TOML bundles enter
+  through explicit import and can be exported for review or version control
+  (`05`). Imported files are never watched or linked.
 - **Strict and positional.** Unknown keys, bad durations, invalid cron fail
   with file:line:column and a "did you mean" suggestion. A config that
   doesn't validate never touches the running set.
@@ -37,11 +34,6 @@ bind        = "127.0.0.1:7423"      # OQ-8 default port
 unix_socket = true                  # peer-auth CLI channel, data_dir/minicron.sock
 tls         = "off"                 # off | auto (self-signed) | cert (with tls_cert/tls_key)
 
-[include]
-paths = ["jobs/*.toml", "workers/*.toml"]   # globs, relative to THIS file
-prune_missing = false               # OQ-18: true = registry entries from a missing
-                                    # file are removed, not just disabled
-
 [scheduler]
 timezone        = "UTC"             # default for jobs; per-job override
 max_catchup     = 5                 # cap for catch_up = "all"
@@ -64,18 +56,12 @@ max_line  = "256KiB"                # hard per-line cap (truncated + flagged)
 # credentials = "env"                # env | file (~/.aws/credentials) | static
 # force_path_style = false           # true for MinIO/R2-style endpoints
 
-[defaults]                          # fallbacks for any [[job]]/[[worker]] key
-shell       = "/bin/sh"
-grace       = "10s"
-timeout     = "0"                   # 0 = no timeout
-success_codes = [0]
-
 [notify]
 on_failure = ["inbox"]              # default channels; see spec 16
 ```
 
 ```toml
-# jobs/backup.toml — an include file
+# definitions.toml — an explicit import/export bundle
 [[job]]
 name        = "backup-db"
 schedule    = "0 2 * * *"           # 5-field cron; see spec 06
@@ -103,7 +89,7 @@ enabled     = true
 ```
 
 ```toml
-# workers/queue.toml
+# another entry in the same import bundle
 [[worker]]
 name        = "queue-worker"
 command     = "node /app/worker.js"
@@ -158,19 +144,15 @@ Job-only: `schedule`, `timezone`, `jitter`, `catch_up` (`latest`\|`all`\|`none`)
 - Configuration values are literal; there is no global interpolation.
 - `secret_env` alone accepts explicit `env:NAME` and absolute `file:/path`
   references. Resolved values are never persisted, returned, or audited.
-- Relative `env_file` paths are allowed only for linked-file definitions and
-  resolve against that source file. DB-authority paths are absolute.
+- Definition paths are absolute so their meaning does not depend on an
+  import file that may later move or disappear.
 
 ## Validation
 
-`minicron validate [path]` runs the daemon's real loader in dry-run mode:
-
-- strict decode (unknown key → error with suggestion),
-- schedule grammar + timezone existence,
-- `run_as` availability and resolvability (a non-root daemon rejects it during validation),
-- path existence for `env_file`/`working_dir` (warning, not error),
-- cross-file duplicate `name` detection with both source paths listed,
-- output: human (file:line:col) or `--json` for editors/CI.
+`minicron validate [path]` runs the daemon-settings loader in dry-run mode
+with strict decoding and timezone/log-setting validation. Definition bundles
+are validated by `minicrond import PATH` before any transaction is applied,
+including schedule grammar, command shape, paths, and duplicate names.
 
 A JSON Schema is published (`minicron schema > schema.json`) for editor
 autocomplete; the TOML itself remains authoritative.
@@ -185,7 +167,6 @@ under `[server]` (except nothing), `[storage]` sqlite path, `[logs] backend`.
 
 - OQ-2 TOML vs YAML (TOML recommended: no indentation traps, better
   multiline strings for scripts, round-trips cleanly from the UI editor).
-- OQ-4 `[[job]]` array-of-tables (recommended: include files append
-  naturally, name collisions caught by validation) vs `[jobs.<name>]`.
+- OQ-4 `[[job]]` array-of-tables remains the import/export bundle format.
 - OQ-16 `on_overlap` default: `skip` recommended (cron jobs stacking
   silently is the classic foot-gun) vs classic `parallel`.

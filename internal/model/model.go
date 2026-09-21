@@ -15,9 +15,7 @@ type Definition struct {
 	ID                 int64             `json:"definition_id,omitzero" toml:"-"`
 	Name               string            `json:"name" toml:"name"`
 	Kind               Kind              `json:"kind" toml:"-"`
-	Authority          string            `json:"authority,omitempty" toml:"-"`
 	Revision           int64             `json:"revision,omitzero" toml:"-"`
-	SourceFile         string            `json:"source_file,omitempty" toml:"-"`
 	Enabled            *bool             `json:"enabled,omitempty" toml:"enabled"`
 	Command            string            `json:"command,omitempty" toml:"command"`
 	Argv               []string          `json:"argv,omitempty" toml:"argv"`

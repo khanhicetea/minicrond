@@ -10,16 +10,14 @@
 
 A timeout remains `timeout` even if termination yields exit code 0. An operator stop remains `stopped`. Recovery marks unobservable active runs `interrupted`.
 
-## Reload and authority
+## Registry, import, and reload
 
 | Case | Result |
 |---|---|
-| all bootstrap/includes valid | one DB transaction, then reconciliation |
-| any file invalid or duplicate | desired set unchanged |
-| file edits file-authority definition | revision increments |
-| file collides with DB authority | whole reload rejected |
-| linked source absent | retain disabled (or delete with `prune_missing`) |
-| API writes file authority | 409 `authority_conflict` |
+| valid hash-bound TOML import | one DB transaction, then reconciliation |
+| invalid or duplicate bundle entry | registry and runtime unchanged |
+| API/UI edit | revision increments, then reconciliation |
+| daemon settings reload | settings validated, runtime reconciled from SQLite |
 
 ## Scheduling/workers
 

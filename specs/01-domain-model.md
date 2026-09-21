@@ -24,11 +24,9 @@ parallel copies.
 ### Definition (spec)
 The full declarative description of a job or worker (schedule, command, env,
 run_as, policies…). Stored as canonical JSON in SQLite with a content hash.
-Each definition has exactly one **authority** (ADR-3): `file` — a TOML file
-is the single source of truth and the registry keeps only a reference plus a
-cached parse for run-history; or `db` — the registry is authoritative, and
-UI/API changes produce a new revision and an audit record (`05`). In system
-mode, definitions are additionally scoped by an owning user (`17`).
+SQLite is the single source of truth. UI/API edits and explicit TOML imports
+produce a new revision and an audit record (`05`). In system mode, definitions
+are additionally scoped by an owning user (`17`).
 
 ### Run
 One execution instance of a job (or one supervised lifetime of a worker
@@ -80,17 +78,10 @@ Internal event bus facts (`run.failed`, `worker.fatal`, `disk.low`, …) routed
 to channels (in-app inbox, webhook, later SMTP/Slack). Coalesced by
 (kind, job) within a window. Details in `16`.
 
-### Import source
-A file (or glob of files) that definitions are imported from, tracked with
-path + content hash per definition. Definitions gained from it carry `file`
-**authority** — the file is their single source of truth (`05`). Drives
-file-include sync and staleness detection. In system mode, users own their
-own sources (`17`).
-
 ### Audit record
 Who changed what, when, through which channel (`file:<path>`, `ui`, `api`,
 `cli:<cmd>`, `user:<name>` in system mode), before/after definition
-snapshots. Powers UI history and export/import traceability. Stored in
+snapshots. Powers UI history and explicit import/export traceability. Stored in
 SQLite, capped.
 
 ## State machines

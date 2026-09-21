@@ -23,8 +23,7 @@ Status: Draft · Framework: OQ-9 · Constraint D-6: simple, DX-friendly
 ## Pages
 
 ### Dashboard (`/`)
-- Health strip: daemon up/down, version, scheduler timezone, config
-  staleness banner when import sources drifted.
+- Health strip: daemon up/down, version, scheduler timezone, and registry status.
 - "Needs attention": failed runs (last 24 h), fatal workers, disabled jobs
   that fired nothing in 7 days.
 - Active runs (live status chips + jump to log).
@@ -41,8 +40,7 @@ Status: Draft · Framework: OQ-9 · Constraint D-6: simple, DX-friendly
 
 ### Job detail (`/jobs/{name}`)
 - Summary card: schedule (raw + humanized + tz), next 5 firings, overlap &
-  retry policy, `run_as`, authority badge (`file: jobs/backup.toml` / `db`)
-  + owner badge (system mode, `17`),
+  retry policy, `run_as`, revision, and owner badge (system mode, `17`),
   enabled toggle, definition revision + history drawer (audit entries).
 - History: run list with filters (status/trigger/time), each row → run page.
 - Actions: **Run now** (opens params form when the job declares params
@@ -64,9 +62,7 @@ Status: Draft · Framework: OQ-9 · Constraint D-6: simple, DX-friendly
 - Retry chain strip: attempt 1 → 2 → 3 with statuses.
 
 ### Editor (`/jobs/{name}/edit`, `/jobs/new`)
-- **File-authority definitions open read-only** (ADR-3): a banner shows the
-  managing file path with a copy button and an "edit the file, then reload"
-  hint. The editor proper is for `db`-authority definitions.
+- Every definition is editable through the same registry-backed editor.
 - Form mode (structured fields with inline docs) **and** TOML source mode
   (textarea with validation) side by side; either saves through the same
   `PATCH /api/v1/jobs` path. Server-side validation errors map back to
@@ -78,15 +74,15 @@ Status: Draft · Framework: OQ-9 · Constraint D-6: simple, DX-friendly
 - Save = new revision + audit; "diff against current" preview before apply.
 
 ### Import / Export (`/settings/io`)
-- Export panel (scope pickers, format, authority/source comments, secrets
+- Export panel (scope pickers, format, revision metadata, secrets
   stripped notice) and Import panel (paste/upload → validation → diff table
   → conflict resolution → apply → summary) — the exact flow of spec `05`,
   since the UI is a client of those endpoints.
 
 ### Settings (`/settings`)
 - Auth token display/rotate, retention overview, storage/log backend status
-  (incl. S3 log storage health when enabled), import sources table (paths, hashes,
-  staleness, reload button), daemon log tail (last 200 lines, SSE-follow).
+  (incl. S3 log storage health when enabled), definition-registry status,
+  daemon log tail (last 200 lines, SSE-follow).
 
 ## Non-goals in the UI
 

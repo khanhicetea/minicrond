@@ -80,7 +80,7 @@ func TestReloadFiresEveryInterval(t *testing.T) {
 	st, _, sched := setup(t)
 	def := worker("ticker-job", "none")
 	def.Schedule = "@every 2s"
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := st.Definitions(t.Context())
@@ -130,8 +130,7 @@ func setup(t *testing.T) (*store.Store, *executor.Service, *Scheduler) {
 }
 
 func worker(name, catchUp string) model.Definition {
-	d := model.Definition{Name: name, Kind: model.KindJob, Authority: "file", SourceFile: "test",
-		Schedule: "@every 30m", Timezone: "UTC", CatchUp: catchUp, OnOverlap: "skip",
+	d := model.Definition{Name: name, Kind: model.KindJob, Schedule: "@every 30m", Timezone: "UTC", CatchUp: catchUp, OnOverlap: "skip",
 		Command: "true", Shell: "/bin/sh", Timeout: "0", Grace: "0", SuccessCodes: []int{0}}
 	enabled := true
 	d.Enabled = &enabled
@@ -144,7 +143,7 @@ func worker(name, catchUp string) model.Definition {
 func TestCatchUpNoneRecordsSummarizedMissedRun(t *testing.T) {
 	st, _, sched := setup(t)
 	def := worker("missed-job", "none")
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, err := st.Definitions(t.Context())
@@ -184,7 +183,7 @@ func TestCatchUpNoneRecordsSummarizedMissedRun(t *testing.T) {
 func TestScheduleChangeResetsAnchorNotCatchUp(t *testing.T) {
 	st, _, sched := setup(t)
 	def := worker("changed-job", "none")
-	if err := st.SyncFiles(t.Context(), []model.Definition{def}, false); err != nil {
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
 	defs, _ := st.Definitions(t.Context())

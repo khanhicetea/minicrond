@@ -18,13 +18,10 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
-var (
-	ErrAuthorityConflict = errors.New("authority conflict")
-	ErrRevisionConflict  = errors.New("revision conflict")
-)
+var ErrRevisionConflict = errors.New("revision conflict")
 
 type Store struct{ db *sql.DB }
 
@@ -115,6 +112,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if version > SchemaVersion {
 		return fmt.Errorf("database schema %d is newer than supported schema %d", version, SchemaVersion)
 	}
+	if version != 0 && version < SchemaVersion {
+		return fmt.Errorf("database schema %d is incompatible with schema %d; remove the development database", version, SchemaVersion)
+	}
 	if version == 0 {
 		if _, err := s.db.ExecContext(ctx, schema); err != nil {
 			return fmt.Errorf("migration 1: %w", err)
@@ -128,9 +128,8 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE definitions (
  definition_id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
- authority TEXT NOT NULL CHECK(authority IN ('file','db')),
  kind TEXT NOT NULL CHECK(kind IN ('job','worker')), spec TEXT NOT NULL,
- spec_hash TEXT NOT NULL, source_file TEXT, revision INTEGER NOT NULL,
+ spec_hash TEXT NOT NULL, revision INTEGER NOT NULL,
  enabled INTEGER NOT NULL, created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL,
  deleted_us INTEGER
 );
@@ -154,122 +153,13 @@ CREATE TABLE schedule_state (
  definition_id INTEGER PRIMARY KEY REFERENCES definitions(definition_id), schedule_hash TEXT NOT NULL,
  anchor_us INTEGER NOT NULL, last_fire_us INTEGER, next_fire_us INTEGER
 );
-CREATE TABLE import_sources (path TEXT PRIMARY KEY, sha256 TEXT NOT NULL, mtime_us INTEGER NOT NULL, imported_us INTEGER NOT NULL, provides TEXT NOT NULL);
 CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, before TEXT, after TEXT);
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 COMMIT;`
 
-// SyncFiles atomically reconciles all file-managed definitions.
-func (s *Store) SyncFiles(ctx context.Context, defs []model.Definition, prune bool) error {
-	return s.syncFiles(ctx, defs, prune, "")
-}
-
-// SyncSource atomically reconciles definitions from one source without changing
-// definitions from other file sources.
-func (s *Store) SyncSource(ctx context.Context, defs []model.Definition, source string, prune bool) error {
-	for _, d := range defs {
-		if d.SourceFile != source {
-			return fmt.Errorf("definition %q does not belong to source %q", d.Name, source)
-		}
-	}
-	return s.syncFiles(ctx, defs, prune, source)
-}
-
-func (s *Store) syncFiles(ctx context.Context, defs []model.Definition, prune bool, source string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	seen := make(map[string]bool)
-	for _, d := range defs {
-		seen[d.Name] = true
-		b, hash, err := config.Canonical(d)
-		if err != nil {
-			return err
-		}
-		var id, rev int64
-		var authority, oldHash string
-		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,authority,spec_hash FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &authority, &oldHash)
-		now := time.Now().UnixMicro()
-		enabled := d.IsEnabled()
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			res, err := tx.ExecContext(ctx, `INSERT INTO definitions(name,authority,kind,spec,spec_hash,source_file,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,?,?,1,?,?,?)`, d.Name, "file", d.Kind, string(b), hash, d.SourceFile, enabled, now, now)
-			if err != nil {
-				return err
-			}
-			id, _ = res.LastInsertId()
-			rev = 1
-		case err != nil:
-			return err
-		case authority == "db":
-			return fmt.Errorf("%w: %s is managed by the database", ErrAuthorityConflict, d.Name)
-		case oldHash == hash:
-			_, err = tx.ExecContext(ctx, "UPDATE definitions SET source_file=?,enabled=?,updated_us=? WHERE definition_id=?", d.SourceFile, enabled, now, id)
-			if err != nil {
-				return err
-			}
-			continue
-		default:
-			rev++
-			if _, err := tx.ExecContext(ctx, "UPDATE definitions SET spec=?,spec_hash=?,source_file=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", string(b), hash, d.SourceFile, rev, enabled, now, id); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO definition_revisions(definition_id,revision,spec,spec_hash,actor,at_us) VALUES(?,?,?,?,?,?)`, id, rev, string(b), hash, "file:"+d.SourceFile, now); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO audit(at_us,actor,action,target,after) VALUES(?,?,?,?,?)`, now, "file:"+d.SourceFile, "import", d.Name, string(b)); err != nil {
-			return err
-		}
-	}
-	query := "SELECT definition_id,name FROM definitions WHERE authority='file' AND deleted_us IS NULL"
-	var args []any
-	if source != "" {
-		query += " AND source_file=?"
-		args = append(args, source)
-	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	type missing struct {
-		id   int64
-		name string
-	}
-	var absent []missing
-	for rows.Next() {
-		var x missing
-		if err := rows.Scan(&x.id, &x.name); err != nil {
-			rows.Close()
-			return err
-		}
-		if !seen[x.name] {
-			absent = append(absent, x)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, x := range absent {
-		if prune {
-			_, err = tx.ExecContext(ctx, "UPDATE definitions SET deleted_us=?,enabled=0 WHERE definition_id=?", time.Now().UnixMicro(), x.id)
-		} else {
-			_, err = tx.ExecContext(ctx, "UPDATE definitions SET enabled=0 WHERE definition_id=?", x.id)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,authority,COALESCE(source_file,''),revision,enabled FROM definitions WHERE deleted_us IS NULL ORDER BY name")
+	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled FROM definitions WHERE deleted_us IS NULL ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +169,7 @@ func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
 		var d model.Definition
 		var raw string
 		var enabled bool
-		if err := rows.Scan(&d.ID, &raw, &d.Authority, &d.SourceFile, &d.Revision, &enabled); err != nil {
+		if err := rows.Scan(&d.ID, &raw, &d.Revision, &enabled); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &d); err != nil {
@@ -294,7 +184,7 @@ func (s *Store) Definition(ctx context.Context, name string) (model.Definition, 
 	var d model.Definition
 	var raw, hash string
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,authority,COALESCE(source_file,''),revision,enabled FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Authority, &d.SourceFile, &d.Revision, &enabled)
+	err := s.db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,revision,enabled FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Revision, &enabled)
 	if err != nil {
 		return d, "", err
 	}
@@ -305,7 +195,7 @@ func (s *Store) Definition(ctx context.Context, name string) (model.Definition, 
 	return d, hash, nil
 }
 
-func (s *Store) CopyDefinitions(ctx context.Context, defs []model.Definition, actor string) error {
+func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -313,17 +203,15 @@ func (s *Store) CopyDefinitions(ctx context.Context, defs []model.Definition, ac
 	defer tx.Rollback()
 	now := time.Now().UnixMicro()
 	for _, d := range defs {
-		d.Authority = "db"
-		d.SourceFile = ""
 		b, hash, err := config.Canonical(d)
 		if err != nil {
 			return err
 		}
 		var id, rev int64
-		var authority, before string
-		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,authority,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &authority, &before)
+		var before string
+		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &before)
 		if errors.Is(err, sql.ErrNoRows) {
-			res, execErr := tx.ExecContext(ctx, `INSERT INTO definitions(name,authority,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,'db',?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
+			res, execErr := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 			if execErr != nil {
 				return execErr
 			}
@@ -332,9 +220,6 @@ func (s *Store) CopyDefinitions(ctx context.Context, defs []model.Definition, ac
 		} else if err != nil {
 			return err
 		} else {
-			if authority == "file" {
-				return fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, d.Name)
-			}
 			rev++
 			if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
 				return err
@@ -356,12 +241,9 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 		return err
 	}
 	defer tx.Rollback()
-	var authority, before string
-	if err = tx.QueryRowContext(ctx, "SELECT authority,spec FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&authority, &before); err != nil {
+	var before string
+	if err = tx.QueryRowContext(ctx, "SELECT spec FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&before); err != nil {
 		return err
-	}
-	if authority == "file" {
-		return fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, name)
 	}
 	now := time.Now().UnixMicro()
 	if _, err = tx.ExecContext(ctx, "UPDATE definitions SET deleted_us=?,enabled=0,updated_us=? WHERE name=?", now, now, name); err != nil {
@@ -374,20 +256,18 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 }
 
 func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE definitions SET enabled=?,updated_us=? WHERE name=? AND authority='db' AND deleted_us IS NULL", enabled, time.Now().UnixMicro(), name)
+	res, err := s.db.ExecContext(ctx, "UPDATE definitions SET enabled=?,updated_us=? WHERE name=? AND deleted_us IS NULL", enabled, time.Now().UnixMicro(), name)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("%w or definition not found", ErrAuthorityConflict)
+		return sql.ErrNoRows
 	}
 	return nil
 }
 
 func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected int64, actor string) (model.Definition, error) {
-	d.Authority = "db"
-	d.SourceFile = ""
 	b, hash, err := config.Canonical(d)
 	if err != nil {
 		return d, err
@@ -399,11 +279,10 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 	defer tx.Rollback()
 	now := time.Now().UnixMicro()
 	var id, rev int64
-	var authority string
 	var before string
-	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,authority,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &authority, &before)
+	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &before)
 	if errors.Is(err, sql.ErrNoRows) {
-		res, e := tx.ExecContext(ctx, `INSERT INTO definitions(name,authority,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,'db',?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
+		res, e := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 		if e != nil {
 			return d, e
 		}
@@ -412,9 +291,6 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 	} else if err != nil {
 		return d, err
 	} else {
-		if authority == "file" {
-			return d, fmt.Errorf("%w: %s is managed by a file", ErrAuthorityConflict, d.Name)
-		}
 		if expected != 0 && expected != rev {
 			return d, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, rev)
 		}

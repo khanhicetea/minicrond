@@ -16,12 +16,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/pelletier/go-toml/v2"
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/daemon"
@@ -118,9 +115,6 @@ func initConfig(args []string) error {
 bind = "127.0.0.1:7423"
 unix_socket = true
 
-[include]
-paths = ["jobs/*.toml"]
-
 [scheduler]
 timezone = "UTC"
 max_concurrent_runs = 32
@@ -130,27 +124,8 @@ backend = "file"
 worker_flush_interval = "15m"
 db_prune_at = "03:30"
 db_keep_for = "720h"
-
-[defaults]
-shell = "/bin/sh"
-env_base = "clean"
-grace = "10s"
 `
 	if err := os.WriteFile(*path, []byte(content), 0o600); err != nil {
-		return err
-	}
-	jobs := filepath.Join(filepath.Dir(*path), "jobs")
-	if err := os.MkdirAll(jobs, 0o700); err != nil {
-		return err
-	}
-	example := `[[job]]
-name = "hello"
-schedule = "@every 1h"
-argv = ["/bin/echo", "hello from minicron"]
-catch_up = "none"
-on_overlap = "skip"
-`
-	if err := os.WriteFile(filepath.Join(jobs, "hello.toml"), []byte(example), 0o600); err != nil {
 		return err
 	}
 	fmt.Printf("created %s\n", *path)
@@ -161,11 +136,11 @@ func validate(args []string) error {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	cfg, err := config.Load(path)
+	_, err := config.Load(path)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("valid: %d definitions\n", len(cfg.Definitions))
+	fmt.Println("valid configuration")
 	return nil
 }
 func trigger(args []string) error {
@@ -227,59 +202,28 @@ func token(args []string) error {
 	return postPrint("/api/v1/token/rotate", nil)
 }
 func importConfig(args []string) error {
-	if len(args) < 2 || (args[0] != "--link" && args[0] != "--copy") {
-		return fmt.Errorf("usage: minicrond import --link|--copy PATH")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: minicrond import PATH")
 	}
-	path, err := filepath.Abs(args[1])
+	content, err := os.ReadFile(args[0])
 	if err != nil {
 		return err
 	}
-	if args[0] == "--link" {
-		cfgPath := env("MINICRON_CONFIG", "minicron.toml")
-		cfg, err := config.Load(cfgPath)
-		if err != nil {
-			return err
-		}
-		cfg.Include.Paths = append(cfg.Include.Paths, path)
-		b, err := toml.Marshal(cfg)
-		if err != nil {
-			return err
-		}
-		tmp := cfgPath + ".tmp"
-		if err = os.WriteFile(tmp, b, 0o600); err != nil {
-			return err
-		}
-		if _, err = config.Load(tmp); err != nil {
-			os.Remove(tmp)
-			return err
-		}
-		if err = os.Rename(tmp, cfgPath); err != nil {
-			return err
-		}
-		return postPrint("/api/v1/daemon/reload", nil)
+	request := map[string]string{"content": string(content)}
+	var preview struct {
+		ContentHash string `json:"content_hash"`
 	}
-	tmpDir, err := os.MkdirTemp("", "minicron-import-")
-	if err != nil {
+	if err := requestJSON("POST", "/api/v1/import/preview", request, &preview); err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
-	bootstrap := filepath.Join(tmpDir, "minicron.toml")
-	if err = os.WriteFile(bootstrap, []byte("[include]\npaths = ["+strconv.Quote(path)+"]\n"), 0o600); err != nil {
+	request["hash"] = preview.ContentHash
+	var result struct {
+		Applied int `json:"applied"`
+	}
+	if err := requestJSON("POST", "/api/v1/import/apply", request, &result); err != nil {
 		return err
 	}
-	cfg, err := config.Load(bootstrap)
-	if err != nil {
-		return err
-	}
-	for _, d := range cfg.Definitions {
-		d.Authority = "db"
-		d.SourceFile = ""
-		var out any
-		if err = requestJSON("POST", "/api/v1/jobs", d, &out); err != nil {
-			return err
-		}
-	}
-	fmt.Printf("copied %d definitions\n", len(cfg.Definitions))
+	fmt.Printf("imported %d definitions\n", result.Applied)
 	return nil
 }
 func exportConfig(args []string) error {

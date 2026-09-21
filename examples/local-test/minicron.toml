@@ -1,13 +1,10 @@
-# Bootstrap config for the local-test sandbox. Loaded by start.sh via
-# MINICRON_CONFIG / `daemon --config`. Include paths are resolved relative
-# to this file, so jobs/*.toml below are the checked-in example jobs.
+# Daemon settings for the local-test sandbox. Loaded by start.sh via
+# MINICRON_CONFIG / `daemon --config`. start.sh explicitly imports jobs/*.toml
+# into the SQLite definition registry after the daemon is ready.
 
 [server]
 bind = "0.0.0.0:7423"
 unix_socket = true
-
-[include]
-paths = ["jobs/*.toml"]
 
 [scheduler]
 timezone = "UTC"
@@ -21,11 +18,6 @@ keep_for_default = "24h"
 worker_flush_interval = "15m"   # worker log checkpoint cadence                                                         
 db_keep_for = "720h"            # archive retention                                                                     
 db_prune_at = "03:30"           # daily prune time
-
-[defaults]
-shell = "/bin/sh"
-env_base = "clean"
-grace = "5s"
 
 [[alert_channel]]
 name = "ops"
