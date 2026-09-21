@@ -11,6 +11,32 @@ import (
 	"github.com/khanhicetea/minicrond/internal/store"
 )
 
+func TestResolveLogMax(t *testing.T) {
+	const defaultMax int64 = 100 << 20
+	tests := []struct {
+		name    string
+		value   string
+		want    int64
+		wantErr bool
+	}{
+		{name: "unset", want: defaultMax},
+		{name: "zero", value: "0", want: defaultMax},
+		{name: "configured", value: "10MiB", want: 10 << 20},
+		{name: "invalid", value: "invalid", want: defaultMax, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveLogMax(tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveLogMax(%q) error = %v, wantErr %v", tt.value, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("resolveLogMax(%q) = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 	st, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {

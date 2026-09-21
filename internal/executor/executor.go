@@ -121,13 +121,10 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 		return r, err
 	}
-	maxBytes, err := logstore.ParseBytes(d.LogMax)
+	maxBytes, err := resolveLogMax(d.LogMax)
 	if err != nil {
 		// Unreachable through validated config; keep the run honest anyway.
 		slog.Error("invalid log_max, falling back to default", "job", d.Name, "log_max", d.LogMax, "error", err)
-		maxBytes = 100 << 20
-	} else if maxBytes == 0 {
-		maxBytes = 100 << 20
 	}
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
@@ -150,6 +147,21 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 	go s.execute(runCtx, r, d, writer, a)
 	return r, nil
 }
+func resolveLogMax(value string) (int64, error) {
+	const defaultMax = 100 << 20
+	if value == "" {
+		return defaultMax, nil
+	}
+	maxBytes, err := logstore.ParseBytes(value)
+	if err != nil {
+		return defaultMax, err
+	}
+	if maxBytes == 0 {
+		return defaultMax, nil
+	}
+	return maxBytes, nil
+}
+
 func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
