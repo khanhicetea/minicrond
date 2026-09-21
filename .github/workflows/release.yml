@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "$TAG"
+          fi
+
+  build-and-upload:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build Linux binary
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          VERSION="${TAG#v}"
+          COMMIT="$(git rev-parse --short=12 HEAD)"
+          ASSET="minicrond-linux-${GOARCH}"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux go build \
+            -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+            -o "dist/${ASSET}" \
+            ./cmd/minicrond
+          (cd dist && sha256sum "$ASSET" > "${ASSET}.sha256")
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          ASSET="dist/minicrond-linux-${GOARCH}"
+          gh release upload "$TAG" "$ASSET" "${ASSET}.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
