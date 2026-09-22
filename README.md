@@ -10,7 +10,7 @@ go build -o minicrond ./cmd/minicrond
 ./minicrond daemon
 ```
 
-The daemon prints the initial bearer token **once**. Save it, open <http://127.0.0.1:7423>, and enter it. Local CLI commands use the mode-0600 Unix socket without a token:
+On first boot the daemon writes the initial bearer token once to the mode-0600 `initial-token` file in the data directory. Read and remove that file after provisioning, then open <http://127.0.0.1:7423>. Local CLI commands use the mode-0600 Unix socket without a token:
 
 ```sh
 ./minicrond list
@@ -25,11 +25,12 @@ Daemon settings use strict TOML. Job and worker definitions have one source of t
 - Data defaults to `~/.local/share/minicron`; permissions are forced to 0700.
 - `run_as` is available only to a root daemon; in user mode, jobs and workers always run as the daemon user.
 - SQLite uses WAL. Never directly write the DB. This development build intentionally rejects databases from the former file-authority schema; remove the development database and restart.
-- **Log storage is hybrid.** Live runs write compressed chunk files under `data/logs/<run_id>/` first (crash-safe). Finished runs are archived into the separate SQLite log database `data/minicron-logs.db` (not `minicron.db`) and the buffer files are removed. Still-running workers archive their sealed chunks every `logs.worker_flush_interval` (default 15m). Reads and streaming merge the database, buffer files, and the in-memory tail transparently. Buffers orphaned by a crash are salvaged into the archive at startup, up to the last intact frame.
-- The log archive is pruned daily at `logs.db_prune_at` (scheduler timezone); archived logs older than `logs.db_keep_for` (default 720h) are deleted. Per-run retention (`keep_runs`/`keep_for`) removes a run's logs from both tiers.
+- **Log storage is hybrid.** Live runs write compressed chunk files under `data/logs/<run_id>/` first. Every accepted frame is flushed and synced before `Write` succeeds. Finished runs are archived into the separate SQLite log database `data/minicron-logs.db` (not `minicron.db`) and the buffer files are removed. Still-running workers archive their sealed chunks every `logs.worker_flush_interval` (default 15m). Reads and streaming merge the database, buffer files, and a byte-bounded in-memory tail transparently. Buffers orphaned by a crash are salvaged into the archive at startup, up to the last intact frame.
+- `log_max` is the per-run hot-buffer accounting budget; it is not an archive-size quota. The archive has a rolling age budget: chunks older than `logs.db_keep_for` (default 720h) are pruned daily at `logs.db_prune_at`. Per-run retention (`keep_runs`/`keep_for`) removes a run's logs from both tiers. Monitor data-directory free space and SQLite WAL/freelist growth.
 - `/healthz` and `/readyz` are public and disclose no details. The SPA shell and bundled assets are public; every `/api/` endpoint requires a bearer token.
 - Rotate a lost token locally with `minicrond token --rotate`; the existing token cannot be recovered.
-- Stop the daemon before copying its database for rollback. A binary that encounters a newer schema refuses to start. Restore by replacing `minicron.db` and restarting.
+- Stop the daemon before backup or restore. Back up and restore the complete data directory together: `minicron.db`, `minicron-logs.db`, their WAL files, and `logs/` buffers. Copying only `minicron.db` does not preserve log history. A binary that encounters a newer schema refuses to start.
+- TCP is plaintext HTTP and defaults to loopback. A non-loopback bind is rejected unless `server.allow_insecure_remote = true`; use that opt-in only behind a TLS-authenticated tunnel or reverse proxy.
 - The daemon signals process groups. Deliberately daemonized descendants can escape; v0.1 is not a hostile-workload sandbox.
 
 ## Telegram alerts
@@ -51,7 +52,7 @@ schedule = "0 2 * * *"
 alerts = ["ops"]
 ```
 
-`bot_token` must be an environment-variable or absolute-file reference, so the token is not embedded directly in configuration. Additional providers can implement the alert channel interface without changing run execution.
+`bot_token` must be an environment-variable or absolute-file reference, so the token is not embedded directly in configuration. Alert delivery is best-effort: an in-memory bounded queue uses limited parallelism and retries transient failures, but queued alerts do not survive a daemon crash. Additional providers can implement the alert channel interface without changing run execution.
 
 ## Development
 

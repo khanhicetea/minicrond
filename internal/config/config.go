@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -31,8 +32,9 @@ type Config struct {
 }
 
 type Server struct {
-	Bind       string `toml:"bind" json:"bind"`
-	UnixSocket *bool  `toml:"unix_socket" json:"unix_socket,omitempty"`
+	Bind                string `toml:"bind" json:"bind"`
+	UnixSocket          *bool  `toml:"unix_socket" json:"unix_socket,omitempty"`
+	AllowInsecureRemote bool   `toml:"allow_insecure_remote" json:"allow_insecure_remote,omitempty"`
 }
 type Scheduler struct {
 	Timezone          string `toml:"timezone" json:"timezone"`
@@ -135,6 +137,9 @@ func applyConfigDefaults(c *Config) {
 	if c.Storage.KeepRunsDefault == 0 {
 		c.Storage.KeepRunsDefault = 200
 	}
+	if c.Storage.AuditKeep == 0 {
+		c.Storage.AuditKeep = 10000
+	}
 	if c.Storage.KeepForDefault == "" {
 		c.Storage.KeepForDefault = "720h"
 	}
@@ -181,11 +186,31 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 }
 
 func validateConfig(c *Config) error {
+	host, _, err := net.SplitHostPort(c.Server.Bind)
+	if err != nil {
+		return fmt.Errorf("server.bind: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if !c.Server.AllowInsecureRemote && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("server.bind: non-loopback plaintext HTTP requires allow_insecure_remote=true")
+	}
+	if c.Scheduler.MaxConcurrentRuns < 1 || c.Scheduler.MaxConcurrentRuns > 1024 {
+		return errors.New("scheduler.max_concurrent_runs: must be between 1 and 1024")
+	}
+	if c.Storage.KeepRunsDefault < 1 || c.Storage.AuditKeep < 1 {
+		return errors.New("storage retention counts must be positive")
+	}
+	if d, err := time.ParseDuration(c.Storage.KeepForDefault); err != nil || d <= 0 {
+		return errors.New("storage.keep_for_default: must be a positive duration")
+	}
 	if _, err := time.LoadLocation(c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("scheduler.timezone: %w", err)
 	}
 	if c.Logs.Backend != "file" {
 		return errors.New("logs.backend: only file is supported in v0.1")
+	}
+	if n, err := logstore.ParseBytes(c.Logs.MaxLine); err != nil || n < 1 || n > 16<<20 {
+		return errors.New("logs.max_line: must be between 1B and 16MiB")
 	}
 	if d, err := time.ParseDuration(c.Logs.WorkerFlushInterval); err != nil || d < time.Second {
 		return errors.New("logs.worker_flush_interval: must be a duration of at least 1s")
@@ -237,9 +262,36 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 			return fmt.Errorf("%s: exactly one of command or argv is required", d.Name)
 		}
 		for field, value := range map[string]string{"timeout": d.Timeout, "grace": d.Grace, "restart_delay": d.RestartDelay, "healthy_after": d.HealthyAfter} {
-			if _, err := time.ParseDuration(value); err != nil {
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
 				return fmt.Errorf("%s.%s: %w", d.Name, field, err)
 			}
+			if parsed < 0 || (field != "timeout" && parsed == 0) {
+				return fmt.Errorf("%s.%s: must be positive (timeout may be zero)", d.Name, field)
+			}
+		}
+		if d.EnvBase != "clean" && d.EnvBase != "inherit" {
+			return fmt.Errorf("%s.env_base must be clean or inherit", d.Name)
+		}
+		if d.Restart != "always" && d.Restart != "on-failure" && d.Restart != "never" {
+			return fmt.Errorf("%s.restart must be always, on-failure, or never", d.Name)
+		}
+		if d.MaxRestartAttempts < 1 || d.MaxRestartAttempts > 1000 {
+			return fmt.Errorf("%s.max_restart_attempts must be between 1 and 1000", d.Name)
+		}
+		for _, code := range d.SuccessCodes {
+			if code < 0 || code > 255 {
+				return fmt.Errorf("%s.success_codes values must be between 0 and 255", d.Name)
+			}
+		}
+		if d.KeepRuns < 0 {
+			return fmt.Errorf("%s.keep_runs must be nonnegative", d.Name)
+		}
+		if d.Priority != 0 {
+			return fmt.Errorf("%s.priority is not supported", d.Name)
+		}
+		if d.RunOnStart {
+			return fmt.Errorf("%s.run_on_start is not supported", d.Name)
 		}
 		if d.Kind == model.KindJob && d.Schedule != "" {
 			if err := ValidateSchedule(d.Schedule); err != nil {
@@ -270,8 +322,17 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 			}
 		}
 		if d.LogMax != "" {
-			if _, err := logstore.ParseBytes(d.LogMax); err != nil {
-				return fmt.Errorf("%s.log_max must be a byte size like 64MiB", d.Name)
+			n, err := logstore.ParseBytes(d.LogMax)
+			if err != nil || n <= 0 || n > 1<<40 {
+				return fmt.Errorf("%s.log_max must be between 1B and 1TiB", d.Name)
+			}
+		}
+		if d.EnvFile != "" && !filepath.IsAbs(d.EnvFile) {
+			return fmt.Errorf("%s.env_file must be an absolute path", d.Name)
+		}
+		for key, ref := range d.SecretEnv {
+			if key == "" || !validSecretRef(ref) {
+				return fmt.Errorf("%s.secret_env.%s must be env:NAME or file:/absolute/path", d.Name, key)
 			}
 		}
 		if d.Kind == model.KindWorker && d.Schedule != "" {
@@ -333,6 +394,14 @@ func ValidateSchedule(value string) error {
 	_, err := cronParser.Parse(value)
 	return err
 }
+func validSecretRef(ref string) bool {
+	if name, ok := strings.CutPrefix(ref, "env:"); ok {
+		return name != "" && !strings.ContainsAny(name, "=\x00")
+	}
+	path, ok := strings.CutPrefix(ref, "file:")
+	return ok && filepath.IsAbs(path)
+}
+
 func validateRunAs(value string) error {
 	if err := validateRunAsPrivilege(value, os.Geteuid()); err != nil {
 		return err

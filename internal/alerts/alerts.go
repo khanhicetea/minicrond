@@ -3,8 +3,10 @@ package alerts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -44,16 +46,21 @@ type Dispatcher struct {
 	queue    chan delivery
 	closed   bool
 	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // New creates a dispatcher and validates/resolves channel credentials.
 func New(channels []config.AlertChannel) (*Dispatcher, error) {
-	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256)}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), ctx: ctx, cancel: cancel}
 	if err := d.Reload(channels); err != nil {
 		return nil, err
 	}
-	d.wg.Add(1)
-	go d.run()
+	for range 4 {
+		d.wg.Add(1)
+		go d.run()
+	}
 	return d, nil
 }
 
@@ -111,17 +118,30 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 func (d *Dispatcher) run() {
 	defer d.wg.Done()
 	for item := range d.queue {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := item.channel.Send(ctx, item.alert)
-		cancel()
+		var err error
+		for attempt := range 3 {
+			ctx, cancel := context.WithTimeout(d.ctx, 15*time.Second)
+			err = item.channel.Send(ctx, item.alert)
+			cancel()
+			if err == nil || d.ctx.Err() != nil {
+				break
+			}
+			timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+			select {
+			case <-d.ctx.Done():
+				timer.Stop()
+			case <-timer.C:
+			}
+		}
 		if err != nil {
-			slog.Error("sending alert failed", "channel", item.name, "run", item.alert.Run.ID, "error", err)
+			slog.Error("sending alert failed after retries", "channel", item.name, "run", item.alert.Run.ID, "error", err)
 		}
 	}
 }
 
 // Close drains queued deliveries. Call it only after alert producers stop.
 func (d *Dispatcher) Close(ctx context.Context) error {
+	defer d.cancel()
 	d.mu.Lock()
 	if !d.closed {
 		d.closed = true
@@ -137,6 +157,7 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		d.cancel()
 		return ctx.Err()
 	}
 }
@@ -195,8 +216,20 @@ func (t *telegram) Send(ctx context.Context, alert Alert) error {
 		return errors.New("Telegram request failed")
 	}
 	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if readErr != nil {
+		return errors.New("reading Telegram response failed")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("Telegram API returned %s", resp.Status)
+	}
+	if len(body) > 0 {
+		var result struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil || !result.OK {
+			return errors.New("Telegram API rejected the alert")
+		}
 	}
 	return nil
 }

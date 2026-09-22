@@ -28,11 +28,14 @@ import (
 
 const Version byte = 1
 const chunkLimit = 1 << 20
+const maxFramePayload = 16 << 20
 
-// historyLimit bounds the in-memory tail served to live readers. Trimming
-// uses hysteresis (see Write) so the shift is amortized instead of running
-// on every frame once the tail is full.
-const historyLimit = 5000
+// The live tail is bounded by both frames and bytes. The byte limit prevents
+// a handful of valid maximum-size lines from retaining gigabytes per run.
+const (
+	historyLimit     = 5000
+	historyByteLimit = 16 << 20
+)
 
 type Stream byte
 
@@ -80,17 +83,19 @@ type index struct {
 // the database, the buffer files, and the in-memory tail transparently, so
 // callers never need to know where a frame currently lives.
 type Store struct {
-	root    string
-	db      *logdb.LogDB
-	mu      sync.Mutex
-	writers map[string]*Writer
+	root      string
+	db        *logdb.LogDB
+	mu        sync.Mutex
+	writers   map[string]*Writer
+	tailBytes int64
+	tailLimit int64
 }
 
 func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, writers: make(map[string]*Writer)}, nil
+	return &Store{root: root, writers: make(map[string]*Writer), tailLimit: 64 << 20}, nil
 }
 
 // AttachDB enables SQLite archival into the given log database.
@@ -113,7 +118,7 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	w := &Writer{runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, subs: make(map[chan Frame]chan struct{})}
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, subs: make(map[chan Frame]chan struct{})}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -300,26 +305,29 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 }
 
 type Writer struct {
-	mu         sync.Mutex
-	runID      string
-	job        string
-	kind       string
-	dir        string
-	file       *os.File
-	enc        *zstd.Encoder
-	chunk      int
-	chunkRaw   int
-	chunkFirst uint64
-	seq        uint64
-	total      int64
-	maxBytes   int64
-	maxLine    int
-	dropNew    bool
-	truncated  bool
-	idx        index
-	subs       map[chan Frame]chan struct{}
-	history    []Frame
-	closed     bool
+	mu           sync.Mutex
+	store        *Store
+	runID        string
+	job          string
+	kind         string
+	dir          string
+	file         *os.File
+	enc          *zstd.Encoder
+	chunk        int
+	chunkRaw     int
+	chunkFirst   uint64
+	seq          uint64
+	total        int64
+	maxBytes     int64
+	maxLine      int
+	dropNew      bool
+	truncated    bool
+	idx          index
+	subs         map[chan Frame]chan struct{}
+	history      []Frame
+	historyBytes int
+	closed       bool
+	closeErr     error
 }
 
 func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
@@ -360,17 +368,11 @@ func (w *Writer) rotate() error {
 	return nil
 }
 func (w *Writer) finishChunk() error {
-	if err := w.enc.Close(); err != nil {
-		return err
-	}
-	if err := w.file.Sync(); err != nil {
-		return err
-	}
-	info, err := w.file.Stat()
-	if closeErr := w.file.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	encErr := w.enc.Close()
+	syncErr := w.file.Sync()
+	info, statErr := w.file.Stat()
+	closeErr := w.file.Close()
+	if err := errors.Join(encErr, syncErr, statErr, closeErr); err != nil {
 		return err
 	}
 	if w.seq >= w.chunkFirst {
@@ -386,10 +388,31 @@ func (w *Writer) writeIndex() error {
 		return err
 	}
 	tmp := filepath.Join(w.dir, "index.json.tmp")
-	if err = os.WriteFile(tmp, b, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(w.dir, "index.json"))
+	if _, err = f.Write(b); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, filepath.Join(w.dir, "index.json")); err != nil {
+		return err
+	}
+	dir, err := os.Open(w.dir)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	if closeErr := dir.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	w.mu.Lock()
@@ -404,21 +427,31 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	}
 	frameSize := 24 + len(payload)
 	if w.maxBytes > 0 && w.total+int64(frameSize) > w.maxBytes {
-		if w.dropNew {
-			// log_on_full = drop_new: keep the retained history and refuse
-			// the incoming frame instead of evicting old chunks.
+		if w.dropNew || int64(frameSize) > w.maxBytes {
 			w.truncated = true
 			return nil
+		}
+		// Make the current segment evictable before dropping old data. This is
+		// essential when maxBytes is smaller than the normal chunk threshold.
+		if w.chunkRaw > 0 {
+			if err := w.rotate(); err != nil {
+				return err
+			}
 		}
 		w.truncated = true
 		for len(w.idx.Chunks) > 0 && w.total+int64(frameSize) > w.maxBytes {
 			oldest := w.idx.Chunks[0]
-			_ = os.Remove(w.chunkPath(oldest.Number))
+			if err := os.Remove(w.chunkPath(oldest.Number)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
 			w.total -= oldest.Raw
 			w.idx.Chunks = w.idx.Chunks[1:]
-		}
-		if w.total+int64(frameSize) > w.maxBytes {
-			return nil
+			for len(w.history) > 0 && w.history[0].Sequence <= oldest.Last {
+				released := len(w.history[0].Payload) + 24
+				w.historyBytes -= released
+				w.store.releaseTail(released)
+				w.history = slices.Delete(w.history, 0, 1)
+			}
 		}
 	}
 	if w.chunkRaw+frameSize > chunkLimit && w.chunkRaw > 0 {
@@ -431,14 +464,26 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	if err := encode(w.enc, f); err != nil {
 		return err
 	}
+	// A successful Write is a durability boundary. Flush compressed bytes and
+	// sync the hot chunk so a daemon crash cannot lose sparse accepted output.
+	if err := w.enc.Flush(); err != nil {
+		return err
+	}
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
-	w.history = append(w.history, f)
-	// Trim with hysteresis: shifting the tail on every write would cost an
-	// O(historyLimit) move per frame, so allow 25% overshoot before cutting
-	// back down to the limit.
-	if len(w.history) > historyLimit+historyLimit/4 {
-		w.history = slices.Delete(w.history, 0, len(w.history)-historyLimit)
+	historySize := len(f.Payload) + 24
+	if w.store.reserveTail(historySize) {
+		w.history = append(w.history, f)
+		w.historyBytes += historySize
+	}
+	for len(w.history) > 0 && (len(w.history) > historyLimit || w.historyBytes > historyByteLimit) {
+		released := len(w.history[0].Payload) + 24
+		w.historyBytes -= released
+		w.store.releaseTail(released)
+		w.history = slices.Delete(w.history, 0, 1)
 	}
 	for ch, dropped := range w.subs {
 		select {
@@ -452,16 +497,36 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	return nil
 }
 func (w *Writer) Pipe(stream Stream, r io.Reader) error {
-	br := bufio.NewReader(r)
+	limit := w.maxLine
+	if limit <= 0 || limit > maxFramePayload {
+		limit = maxFramePayload
+	}
+	br := bufio.NewReaderSize(r, min(limit+1, 64<<10))
+	line := make([]byte, 0, min(limit, 64<<10))
+	truncated := false
 	for {
-		line, err := br.ReadBytes('\n')
-		if len(line) > 0 {
-			flags := Flags(0)
-			if line[len(line)-1] == '\n' {
-				line = line[:len(line)-1]
-				line = bytes.TrimSuffix(line, []byte{'\r'})
+		fragment, err := br.ReadSlice('\n')
+		hasNewline := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
+		if hasNewline {
+			fragment = fragment[:len(fragment)-1]
+		}
+		if !truncated {
+			remaining := limit - len(line)
+			if len(fragment) > remaining {
+				line = append(line, fragment[:max(remaining, 0)]...)
+				truncated = true
 			} else {
+				line = append(line, fragment...)
+			}
+		}
+		if hasNewline || (errors.Is(err, io.EOF) && len(line) > 0) {
+			flags := Flags(0)
+			if !hasNewline {
 				flags |= FlagPartial
+			}
+			line = bytes.TrimSuffix(line, []byte{'\r'})
+			if truncated {
+				flags |= FlagTruncated
 			}
 			if !utf8.Valid(line) {
 				flags |= FlagInvalidUTF8
@@ -469,11 +534,13 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			if writeErr := w.Write(stream, line, flags); writeErr != nil {
 				return writeErr
 			}
+			line = line[:0]
+			truncated = false
 		}
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
 			return err
 		}
 	}
@@ -493,6 +560,11 @@ func (w *Writer) Subscribe(after uint64) (<-chan Frame, <-chan struct{}, func())
 	ch := make(chan Frame, 256)
 	dropped := make(chan struct{})
 	w.mu.Lock()
+	if w.closed {
+		close(ch)
+		w.mu.Unlock()
+		return ch, dropped, func() {}
+	}
 	w.subs[ch] = dropped
 	w.mu.Unlock()
 	return ch, dropped, func() {
@@ -508,17 +580,38 @@ func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
-		return nil
+		return w.closeErr
 	}
 	w.closed = true
 	w.idx.Final = true
-	err := w.finishChunk()
+	w.closeErr = w.finishChunk()
+	w.store.releaseTail(w.historyBytes)
+	w.historyBytes = 0
+	w.history = nil
 	for ch := range w.subs {
 		close(ch)
 		delete(w.subs, ch)
 	}
-	return err
+	return w.closeErr
 }
+func (s *Store) reserveTail(n int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tailBytes+int64(n) > s.tailLimit {
+		return false
+	}
+	s.tailBytes += int64(n)
+	return true
+}
+func (s *Store) releaseTail(n int) {
+	s.mu.Lock()
+	s.tailBytes -= int64(n)
+	if s.tailBytes < 0 {
+		s.tailBytes = 0
+	}
+	s.mu.Unlock()
+}
+
 func (w *Writer) Stats() (int64, bool) { w.mu.Lock(); defer w.mu.Unlock(); return w.total, w.truncated }
 func encode(dst io.Writer, f Frame) error {
 	var h [24]byte
@@ -548,7 +641,10 @@ func decode(src io.Reader) (Frame, error) {
 	f.Sequence = binary.BigEndian.Uint64(h[4:12])
 	f.Timestamp = time.UnixMicro(int64(binary.BigEndian.Uint64(h[12:20])))
 	n := binary.BigEndian.Uint32(h[20:24])
-	f.Payload = make([]byte, n)
+	if n > maxFramePayload {
+		return f, fmt.Errorf("log frame payload %d exceeds maximum %d", n, maxFramePayload)
+	}
+	f.Payload = make([]byte, int(n))
 	_, err := io.ReadFull(src, f.Payload)
 	return f, err
 }
@@ -556,7 +652,7 @@ func decode(src io.Reader) (Frame, error) {
 // salvageFrames decodes frames from a possibly torn chunk stream, stopping at
 // the first corruption and returning everything recovered before it.
 func salvageFrames(blob []byte) []Frame {
-	dec, err := zstd.NewReader(bytes.NewReader(blob))
+	dec, err := zstd.NewReader(bytes.NewReader(blob), zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
 	if err != nil {
 		return nil
 	}
@@ -593,12 +689,18 @@ func encodeFrames(frames []Frame) ([]byte, error) {
 // across the three storage tiers: archived chunks in the log database, sealed
 // chunk files in the buffer directory, and the active writer's memory tail.
 func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
+	return s.ReadContext(context.Background(), runID, after, limit)
+}
+
+func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, limit int) ([]Frame, error) {
 	limit = min(max(limit, 1), 5000)
 	out := make([]Frame, 0, min(limit, 100))
 	last := after
+	responseBytes := 0
+	const maxResponseBytes = 16 << 20
 	if s.db != nil {
-		err := s.db.EachChunk(context.Background(), runID, last, func(c logdb.Chunk) (bool, error) {
-			dec, err := zstd.NewReader(bytes.NewReader(c.Blob))
+		err := s.db.EachChunk(ctx, runID, last, func(c logdb.Chunk) (bool, error) {
+			dec, err := zstd.NewReader(bytes.NewReader(c.Blob), zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
 			if err != nil {
 				return false, err
 			}
@@ -612,11 +714,15 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 					return false, err
 				}
 				if frame.Sequence > last {
+					if len(out) > 0 && responseBytes+len(frame.Payload)+24 > maxResponseBytes {
+						return false, nil
+					}
 					out = append(out, frame)
+					responseBytes += len(frame.Payload) + 24
 					last = frame.Sequence
 				}
 			}
-			return len(out) < limit, nil
+			return len(out) < limit && responseBytes < maxResponseBytes, nil
 		})
 		if err != nil {
 			return nil, err
@@ -631,11 +737,17 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 	}
 	slices.Sort(entries)
 	for _, path := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		f, err := os.Open(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // tier migration raced the snapshot; the archive is retried on the next page
+		}
 		if err != nil {
 			return nil, err
 		}
-		dec, err := zstd.NewReader(f)
+		dec, err := zstd.NewReader(f, zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
 		if err != nil {
 			f.Close()
 			return nil, err
@@ -651,7 +763,11 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 				return nil, err
 			}
 			if frame.Sequence > last {
+				if len(out) > 0 && responseBytes+len(frame.Payload)+24 > maxResponseBytes {
+					break
+				}
 				out = append(out, frame)
+				responseBytes += len(frame.Payload) + 24
 				last = frame.Sequence
 			}
 		}
@@ -667,24 +783,36 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 	return out, nil
 }
 func (s *Store) Raw(runID string, w io.Writer) error {
+	return s.RawContext(context.Background(), runID, w)
+}
+
+func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error {
 	var after uint64
 	for {
-		frames, err := s.Read(runID, after, 5000)
+		frames, err := s.ReadContext(ctx, runID, after, 5000)
 		if err != nil {
 			return err
 		}
 		for _, f := range frames {
 			if f.Stream == Stderr {
-				_, _ = io.WriteString(w, "[err] ")
+				if _, err := io.WriteString(w, "[err] "); err != nil {
+					return err
+				}
 			}
 			if f.Stream == System {
-				_, _ = io.WriteString(w, "[minicron] ")
+				if _, err := io.WriteString(w, "[minicron] "); err != nil {
+					return err
+				}
 			}
-			_, _ = w.Write(f.Payload)
-			_, _ = w.Write([]byte{'\n'})
+			if _, err := w.Write(f.Payload); err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte{'\n'}); err != nil {
+				return err
+			}
 			after = f.Sequence
 		}
-		if len(frames) < 5000 {
+		if len(frames) == 0 {
 			return nil
 		}
 	}
@@ -721,8 +849,18 @@ func ParseBytes(value string) (int64, error) {
 			if err != nil {
 				return 0, err
 			}
+			if v < 0 || v > int64(^uint64(0)>>1)/u.mul {
+				return 0, errors.New("byte size must be nonnegative and fit in int64")
+			}
 			return v * u.mul, nil
 		}
 	}
-	return strconv.ParseInt(value, 10, 64)
+	v, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if v < 0 {
+		return 0, errors.New("byte size must be nonnegative")
+	}
+	return v, nil
 }

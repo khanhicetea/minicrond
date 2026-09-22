@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Chunk is one sealed, compressed stream of log frames as produced by the
 // logstore file writer. Blobs are stored verbatim so archived chunks decode
@@ -61,7 +61,7 @@ func (l *LogDB) Close() error { return l.db.Close() }
 func (l *LogDB) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 
 func (l *LogDB) migrate(ctx context.Context) error {
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
 		if _, err := l.db.ExecContext(ctx, q); err != nil {
 			return err
 		}
@@ -75,7 +75,13 @@ func (l *LogDB) migrate(ctx context.Context) error {
 	}
 	if version == 0 {
 		if _, err := l.db.ExecContext(ctx, schema); err != nil {
-			return fmt.Errorf("log database migration 1: %w", err)
+			return fmt.Errorf("log database migration: %w", err)
+		}
+		return nil
+	}
+	if version == 1 {
+		if _, err := l.db.ExecContext(ctx, migration2); err != nil {
+			return fmt.Errorf("log database migration 2: %w", err)
 		}
 	}
 	return nil
@@ -96,12 +102,22 @@ CREATE TABLE log_chunks (
  first_seq INTEGER NOT NULL,
  last_seq INTEGER NOT NULL,
  raw_bytes INTEGER NOT NULL,
+ archived_us INTEGER NOT NULL,
  blob BLOB NOT NULL,
  PRIMARY KEY(run_id, number)
 );
 CREATE INDEX idx_log_runs_time ON log_runs(created_us);
 CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
-PRAGMA user_version=1;
+CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
+PRAGMA user_version=2;
+COMMIT;`
+
+const migration2 = `
+BEGIN;
+ALTER TABLE log_chunks ADD COLUMN archived_us INTEGER NOT NULL DEFAULT 0;
+UPDATE log_chunks SET archived_us=COALESCE((SELECT updated_us FROM log_runs WHERE log_runs.run_id=log_chunks.run_id),0);
+CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
+PRAGMA user_version=2;
 COMMIT;`
 
 // PutChunks upserts chunks for a run. Re-archiving the same chunk after a
@@ -122,9 +138,9 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 		return err
 	}
 	for _, c := range chunks {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,blob) VALUES(?,?,?,?,?,?)
-			ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob`,
-			runID, c.Number, c.First, c.Last, c.RawBytes, c.Blob); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob) VALUES(?,?,?,?,?,?,?)
+			ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,archived_us=excluded.archived_us,blob=excluded.blob`,
+			runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
 			return err
 		}
 	}
@@ -135,25 +151,40 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 // frame is at or below after are skipped. Returning false from fn stops the
 // iteration; the callback error (if any) is returned wrapped.
 func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn func(Chunk) (bool, error)) error {
-	rows, err := l.db.QueryContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? ORDER BY number", runID, after)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var c Chunk
-		if err := rows.Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob); err != nil {
+	lastNumber := -1
+	for {
+		rows, err := l.db.QueryContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 32", runID, after, lastNumber)
+		if err != nil {
 			return err
 		}
-		ok, err := fn(c)
-		if err != nil {
-			return fmt.Errorf("chunk %d of run %s: %w", c.Number, runID, err)
+		batch := make([]Chunk, 0, 32)
+		for rows.Next() {
+			var c Chunk
+			if err := rows.Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, c)
 		}
-		if !ok {
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
 			return nil
 		}
+		for _, c := range batch {
+			ok, err := fn(c)
+			if err != nil {
+				return fmt.Errorf("chunk %d of run %s: %w", c.Number, runID, err)
+			}
+			if !ok {
+				return nil
+			}
+			lastNumber = c.Number
+		}
 	}
-	return rows.Err()
 }
 
 // DeleteRun removes a run and all of its archived chunks.
@@ -166,11 +197,18 @@ func (l *LogDB) DeleteRun(ctx context.Context, runID string) error {
 	return err
 }
 
-// Prune deletes archived runs whose first chunk was archived before the cutoff
-// and reports how many runs were removed. Long-running worker runs are pruned
-// by created_us as well: pruning old data never affects live buffers.
+// Prune applies a rolling age window to individual archived chunks. A run row
+// is removed only after its final retained chunk is gone.
 func (l *LogDB) Prune(ctx context.Context, before time.Time) (int64, error) {
-	res, err := l.db.ExecContext(ctx, "DELETE FROM log_runs WHERE created_us<?", before.UnixMicro())
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE archived_us<?", before.UnixMicro()); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, "DELETE FROM log_runs WHERE NOT EXISTS (SELECT 1 FROM log_chunks WHERE log_chunks.run_id=log_runs.run_id)")
 	if err != nil {
 		return 0, err
 	}
@@ -178,12 +216,7 @@ func (l *LogDB) Prune(ctx context.Context, before time.Time) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Chunks of deleted runs cascade, but rows inserted without the run row
-	// (older versions / interrupted imports) are swept defensively.
-	if _, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE run_id NOT IN (SELECT run_id FROM log_runs)"); err != nil {
-		return n, err
-	}
-	return n, nil
+	return n, tx.Commit()
 }
 
 // Stats reports archive totals for logging and diagnostics.

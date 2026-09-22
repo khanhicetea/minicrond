@@ -29,6 +29,7 @@ type Daemon struct {
 	ConfigPath, DataDir, Version string
 	mu                           sync.Mutex
 	cfg                          *config.Config
+	running                      bool
 	stopping                     bool
 	lock                         *os.File
 	store                        *store.Store
@@ -50,12 +51,16 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
+	d.mu.Lock()
 	d.cfg = cfg
+	d.mu.Unlock()
 	st, err := store.Open(ctx, d.DataDir)
 	if err != nil {
 		return err
 	}
+	d.mu.Lock()
 	d.store = st
+	d.mu.Unlock()
 	defer st.Close()
 	logs, err := logstore.New(filepath.Join(d.DataDir, "logs"))
 	if err != nil {
@@ -69,28 +74,36 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		return err
 	}
 	defer ldb.Close()
+	d.mu.Lock()
 	d.ldb = ldb
-	logs.AttachDB(ldb)
 	d.logs = logs
+	d.mu.Unlock()
+	logs.AttachDB(ldb)
 	maxLine, err := logstore.ParseBytes(cfg.Logs.MaxLine)
 	if err != nil || maxLine <= 0 {
 		// Validated at config load; keep a safe fallback for direct callers.
 		maxLine = 256 << 10
 	}
-	d.exec = executor.New(st, logs, executor.Options{
+	execService := executor.New(st, logs, executor.Options{
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
 		MaxLineBytes:      maxLine,
 		OnFinished: func(run model.Run, definition model.Definition) {
-			if d.alerts != nil {
-				d.alerts.Notify(run, definition)
+			d.mu.Lock()
+			dispatcher := d.alerts
+			d.mu.Unlock()
+			if dispatcher != nil {
+				dispatcher.Notify(run, definition)
 			}
 		},
 	})
+	d.mu.Lock()
+	d.exec = execService
+	d.mu.Unlock()
 	recoverable, err := st.Recoverable(ctx)
 	if err != nil {
 		return err
 	}
-	d.exec.CleanupRecovered(recoverable)
+	execService.CleanupRecovered(recoverable)
 	if err = st.Recover(ctx); err != nil {
 		return err
 	}
@@ -99,56 +112,70 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err = logs.ArchiveOrphans(); err != nil {
 		slog.Error("orphaned log sweep failed", "error", err)
 	}
-	d.sched = scheduler.New(st, d.exec)
-	d.super = supervisor.New(st, d.exec)
-	d.api = api.New(st, logs, d.exec, d.super, d.Reload, d.Reconcile, d.Version)
-	token, err := d.api.InitializeToken(ctx)
+	sched := scheduler.New(st, execService)
+	super := supervisor.New(st, execService)
+	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
+	d.mu.Lock()
+	d.sched, d.super, d.api = sched, super, apiServer
+	d.mu.Unlock()
+	token, err := apiServer.InitializeToken(ctx)
 	if err != nil {
 		return err
 	}
 	if token != "" {
-		slog.Warn("initial bearer token; save it now because it cannot be recovered", "token", token)
+		path := filepath.Join(d.DataDir, "initial-token")
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write initial token: %w", err)
+		}
+		slog.Warn("initial bearer token written to restricted one-time file", "path", path)
 	}
 	defs, err := st.Definitions(ctx)
 	if err != nil {
 		return err
 	}
-	d.alerts, err = alerts.New(cfg.AlertChannels)
+	dispatcher, err := alerts.New(cfg.AlertChannels)
 	if err != nil {
 		return err
 	}
+	d.mu.Lock()
+	d.alerts = dispatcher
+	d.mu.Unlock()
 	// Use the same shutdown path for startup failures and normal cancellation.
 	// Producers and HTTP handlers must stop before the databases close.
 	defer func() {
-		d.api.SetReady(false)
+		apiServer.SetReady(false)
 		d.mu.Lock()
 		d.stopping = true
-		d.sched.Stop()
-		d.super.Shutdown()
+		d.running = false
 		d.mu.Unlock()
+		sched.Stop()
+		super.Shutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		d.exec.Shutdown(shutdownCtx)
+		runErr = errors.Join(runErr, execService.Shutdown(shutdownCtx))
 		alertCtx, cancelAlerts := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelAlerts()
-		runErr = errors.Join(runErr, d.alerts.Close(alertCtx))
+		runErr = errors.Join(runErr, dispatcher.Close(alertCtx))
 		// HTTP cleanup gets its own budget even when a job used the run budget.
 		apiCtx, cancelAPI := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelAPI()
-		runErr = errors.Join(runErr, d.api.Shutdown(apiCtx))
+		runErr = errors.Join(runErr, apiServer.Shutdown(apiCtx))
 	}()
-	if err := d.sched.Reload(ctx, defs); err != nil {
+	if err := sched.Reload(ctx, defs); err != nil {
 		return err
 	}
-	d.super.Reload(defs)
+	super.Reload(defs)
 	socket := ""
 	if cfg.Server.UnixSocket == nil || *cfg.Server.UnixSocket {
 		socket = filepath.Join(d.DataDir, "minicron.sock")
 	}
-	if err = d.api.Start(cfg.Server.Bind, socket); err != nil {
+	if err = apiServer.Start(cfg.Server.Bind, socket); err != nil {
 		return err
 	}
-	d.api.SetReady(true)
+	d.mu.Lock()
+	d.running = true
+	d.mu.Unlock()
+	apiServer.SetReady(true)
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	var maintenance sync.WaitGroup
 	for _, loop := range []func(context.Context){d.retentionLoop, d.workerFlushLoop, d.logPruneLoop} {
@@ -176,8 +203,11 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Server.Bind != d.cfg.Server.Bind {
-		return errors.New("server.bind requires daemon restart")
+	if cfg.Server.Bind != d.cfg.Server.Bind || !boolPtrEqual(cfg.Server.UnixSocket, d.cfg.Server.UnixSocket) {
+		return errors.New("server.bind and server.unix_socket require daemon restart")
+	}
+	if cfg.Scheduler.MaxConcurrentRuns != d.cfg.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != d.cfg.Logs.MaxLine {
+		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
 	}
 	if err := d.alerts.Reload(cfg.AlertChannels); err != nil {
 		return err
@@ -198,7 +228,7 @@ func (d *Daemon) Reconcile(ctx context.Context) error {
 }
 
 func (d *Daemon) ready() error {
-	if d.stopping || d.cfg == nil || d.store == nil {
+	if d.stopping || !d.running || d.cfg == nil || d.store == nil || d.alerts == nil || d.sched == nil || d.super == nil {
 		return errors.New("daemon is not ready")
 	}
 	return nil
@@ -232,10 +262,13 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 	d.mu.Lock()
 	storageCfg := d.cfg.Storage
 	d.mu.Unlock()
-	defs, err := d.store.Definitions(ctx)
+	defs, err := d.store.RetentionDefinitions(ctx)
 	if err != nil {
 		slog.Error("retention list failed", "error", err)
 		return
+	}
+	if err := d.store.PruneMetadata(ctx, storageCfg.AuditKeep); err != nil {
+		slog.Error("metadata retention failed", "error", err)
 	}
 	for _, def := range defs {
 		keep := def.KeepRuns
@@ -248,15 +281,21 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 		}
 		duration, err := time.ParseDuration(keepFor)
 		if err != nil {
+			slog.Error("invalid run retention duration", "definition", def.Name, "error", err)
 			continue
 		}
 		ids, err := d.store.RetentionCandidates(ctx, def.ID, keep, time.Now().Add(-duration))
 		if err != nil {
+			slog.Error("run retention selection failed", "definition", def.Name, "error", err)
 			continue
 		}
 		for _, id := range ids {
-			if err := d.logs.Delete(id); err == nil {
-				_ = d.store.DeleteRun(ctx, id)
+			if err := d.logs.Delete(id); err != nil {
+				slog.Error("retained log deletion failed", "run", id, "error", err)
+				continue
+			}
+			if err := d.store.DeleteRun(ctx, id); err != nil {
+				slog.Error("retained run deletion failed", "run", id, "error", err)
 			}
 		}
 	}
@@ -359,12 +398,25 @@ func nextDaily(now time.Time, clock, tzName string) time.Time {
 	return candidate
 }
 
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 func (d *Daemon) acquireLock() error {
+	if info, err := os.Lstat(d.DataDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("data directory must not be a symlink")
+	}
 	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err
 	}
+	if info, err := os.Stat(d.DataDir); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("data directory must be a private directory")
+	}
 	path := filepath.Join(d.DataDir, "minicron.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}

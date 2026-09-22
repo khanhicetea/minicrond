@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -100,7 +101,7 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
+	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return err
 		}
@@ -112,12 +113,18 @@ func (s *Store) migrate(ctx context.Context) error {
 	if version > SchemaVersion {
 		return fmt.Errorf("database schema %d is newer than supported schema %d", version, SchemaVersion)
 	}
-	if version != 0 && version < SchemaVersion {
+	if version != 0 && version < 2 {
 		return fmt.Errorf("database schema %d is incompatible with schema %d; remove the development database", version, SchemaVersion)
 	}
 	if version == 0 {
 		if _, err := s.db.ExecContext(ctx, schema); err != nil {
-			return fmt.Errorf("migration 1: %w", err)
+			return fmt.Errorf("migration: %w", err)
+		}
+		return nil
+	}
+	if version == 2 {
+		if _, err := s.db.ExecContext(ctx, migration3); err != nil {
+			return fmt.Errorf("migration 3: %w", err)
 		}
 	}
 	return nil
@@ -148,14 +155,28 @@ CREATE TABLE runs (
  log_bytes INTEGER NOT NULL DEFAULT 0, log_truncated INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_runs_job_time ON runs(job, queued_us DESC);
+CREATE INDEX idx_runs_time ON runs(queued_us DESC);
+CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
 CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('pending','running');
+CREATE UNIQUE INDEX idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
 CREATE TABLE schedule_state (
  definition_id INTEGER PRIMARY KEY REFERENCES definitions(definition_id), schedule_hash TEXT NOT NULL,
  anchor_us INTEGER NOT NULL, last_fire_us INTEGER, next_fire_us INTEGER
 );
 CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, before TEXT, after TEXT);
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
-PRAGMA user_version=2;
+PRAGMA user_version=3;
+COMMIT;`
+
+const migration3 = `
+BEGIN;
+CREATE INDEX IF NOT EXISTS idx_runs_time ON runs(queued_us DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
+DELETE FROM runs WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL AND rowid NOT IN (
+ SELECT MIN(rowid) FROM runs WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL GROUP BY definition_id,scheduled_for_us
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
+PRAGMA user_version=3;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
@@ -180,6 +201,32 @@ func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
 	}
 	return out, rows.Err()
 }
+
+// RetentionDefinitions includes soft-deleted definitions so their run history
+// continues to receive the configured retention policy.
+func (s *Store) RetentionDefinitions(ctx context.Context) ([]model.Definition, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled FROM definitions ORDER BY name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Definition
+	for rows.Next() {
+		var d model.Definition
+		var raw string
+		var enabled bool
+		if err := rows.Scan(&d.ID, &raw, &d.Revision, &enabled); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(raw), &d); err != nil {
+			return nil, err
+		}
+		d.Enabled = &enabled
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Definition(ctx context.Context, name string) (model.Definition, string, error) {
 	var d model.Definition
 	var raw, hash string
@@ -209,7 +256,8 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 		}
 		var id, rev int64
 		var before string
-		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &before)
+		var deleted sql.NullInt64
+		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted)
 		if errors.Is(err, sql.ErrNoRows) {
 			res, execErr := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 			if execErr != nil {
@@ -221,7 +269,7 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 			return err
 		} else {
 			rev++
-			if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
+			if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=?,deleted_us=NULL WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
 				return err
 			}
 		}
@@ -256,15 +304,29 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 }
 
 func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE definitions SET enabled=?,updated_us=? WHERE name=? AND deleted_us IS NULL", enabled, time.Now().UnixMicro(), name)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return sql.ErrNoRows
+	defer tx.Rollback()
+	var id, revision int64
+	var spec, hash string
+	if err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,spec_hash FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&id, &revision, &spec, &hash); err != nil {
+		return err
 	}
-	return nil
+	now := time.Now().UnixMicro()
+	revision++
+	if _, err = tx.ExecContext(ctx, "UPDATE definitions SET enabled=?,revision=?,updated_us=? WHERE definition_id=?", enabled, revision, now, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO definition_revisions(definition_id,revision,spec,spec_hash,actor,at_us) VALUES(?,?,?,?,?,?)", id, revision, spec, hash, "api", now); err != nil {
+		return err
+	}
+	after := fmt.Sprintf(`{"enabled":%t}`, enabled)
+	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before,after) VALUES(?,?,?,?,?,?)", now, "api", "set_enabled", name, nil, after); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected int64, actor string) (model.Definition, error) {
@@ -280,7 +342,8 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 	now := time.Now().UnixMicro()
 	var id, rev int64
 	var before string
-	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec FROM definitions WHERE name=? AND deleted_us IS NULL", d.Name).Scan(&id, &rev, &before)
+	var deleted sql.NullInt64
+	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		res, e := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 		if e != nil {
@@ -291,11 +354,14 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 	} else if err != nil {
 		return d, err
 	} else {
-		if expected != 0 && expected != rev {
+		if !deleted.Valid && expected != 0 && expected != rev {
 			return d, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, rev)
 		}
+		if deleted.Valid && expected != 0 {
+			return d, fmt.Errorf("%w: definition was deleted", ErrRevisionConflict)
+		}
 		rev++
-		if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=? WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=?,deleted_us=NULL WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
 			return d, err
 		}
 	}
@@ -325,24 +391,86 @@ func (s *Store) IdempotentRun(ctx context.Context, principal, operation, key, re
 	return runID, nil
 }
 func (s *Store) SaveIdempotency(ctx context.Context, principal, operation, key, requestHash, runID string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us) VALUES(?,?,?,?,?,?)`, principal, operation, key, requestHash, runID, time.Now().UnixMicro())
-	return err
+	now := time.Now()
+	res, err := s.db.ExecContext(ctx, `INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us) VALUES(?,?,?,?,?,?)
+		ON CONFLICT(principal,operation,key) DO UPDATE SET request_hash=excluded.request_hash,run_id=excluded.run_id,created_us=excluded.created_us
+		WHERE idempotency.created_us<=?`, principal, operation, key, requestHash, runID, now.UnixMicro(), now.Add(-24*time.Hour).UnixMicro())
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("active idempotency key already exists")
+	}
+	return nil
 }
 
 func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,end_reason,trigger,attempt,scheduled_for_us,missed_count,boot_id,queued_us,ended_us,log_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, r.ID, r.DefinitionID, r.Job, r.Kind, r.Revision, r.DefinitionHash, r.Status, nullString(r.EndReason), r.Trigger, r.Attempt, timePtrUS(r.ScheduledFor), r.MissedCount, r.BootID, r.QueuedAt.UnixMicro(), timePtrUS(r.EndedAt), r.LogRef)
+	_, err := s.db.ExecContext(ctx, createRunSQL, runArgs(r)...)
 	return err
+}
+
+const createRunSQL = `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,end_reason,trigger,attempt,scheduled_for_us,missed_count,boot_id,queued_us,ended_us,log_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+func runArgs(r model.Run) []any {
+	return []any{r.ID, r.DefinitionID, r.Job, r.Kind, r.Revision, r.DefinitionHash, r.Status, nullString(r.EndReason), r.Trigger, r.Attempt, timePtrUS(r.ScheduledFor), r.MissedCount, r.BootID, r.QueuedAt.UnixMicro(), timePtrUS(r.EndedAt), r.LogRef}
+}
+
+// AdmitIdempotentRun atomically reserves/reuses a key and creates its pending
+// run. The returned replay ID is non-empty when a still-live key already won.
+func (s *Store) AdmitIdempotentRun(ctx context.Context, r model.Run, principal, operation, key, requestHash string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	var existingID, existingHash string
+	var created int64
+	err = tx.QueryRowContext(ctx, "SELECT run_id,request_hash,created_us FROM idempotency WHERE principal=? AND operation=? AND key=?", principal, operation, key).Scan(&existingID, &existingHash, &created)
+	if err == nil && created > now.Add(-24*time.Hour).UnixMicro() {
+		if existingHash != requestHash {
+			return "", errors.New("idempotency key reused with different request")
+		}
+		return existingID, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err == nil {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM idempotency WHERE principal=? AND operation=? AND key=?", principal, operation, key); err != nil {
+			return "", err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, createRunSQL, runArgs(r)...); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us) VALUES(?,?,?,?,?,?)", principal, operation, key, requestHash, r.ID, now.UnixMicro()); err != nil {
+		return "", err
+	}
+	return "", tx.Commit()
 }
 func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
-	return err
+	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("start run %s: invalid state transition", id)
+	}
+	return nil
 }
 func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=? WHERE run_id=? AND status IN ('pending','running')", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, id)
-	return err
+	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, id, status)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("finish run %s: invalid state transition", id)
+	}
+	return nil
 }
 func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id,COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,'') FROM runs WHERE status IN ('pending','running')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT run_id,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,'') FROM runs WHERE status IN ('pending','running')`)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +478,7 @@ func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
 	var out []model.Run
 	for rows.Next() {
 		var r model.Run
-		if err := rows.Scan(&r.ID, &r.PID, &r.PGID, &r.ProcessStartID); err != nil {
+		if err := rows.Scan(&r.ID, &r.BootID, &r.PID, &r.PGID, &r.ProcessStartID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -392,12 +520,25 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 	out := RunMetrics{Buckets: make([]RunMetricBucket, buckets)}
 	jobDurations := make(map[string][]int64)
 	bucketDurations := make([][]int64, buckets)
+	queuedDiff := make([]int, buckets+1)
+	activeDiff := make([]int, buckets+1)
 	jobStats := make(map[string]*RunJobMetrics)
 	var durations []int64
 	startUS, endUS := since.UnixMicro(), now.UnixMicro()
 	windowUS := max(endUS-startUS, 1)
 	bucketIndex := func(us int64) int {
 		return min(buckets-1, max(0, int((us-startUS)*int64(buckets)/windowUS)))
+	}
+	bucketSample := func(i int) int64 {
+		return startUS + (int64(i)*windowUS)/int64(buckets) + windowUS/int64(buckets)/2
+	}
+	addInterval := func(diff []int, from, until int64) {
+		first := sort.Search(buckets, func(i int) bool { return bucketSample(i) >= from })
+		last := sort.Search(buckets, func(i int) bool { return bucketSample(i) >= until })
+		if first < last {
+			diff[first]++
+			diff[last]--
+		}
 	}
 	isFailed := func(status string) bool {
 		return status == "failed" || status == "timeout" || status == "interrupted"
@@ -462,22 +603,28 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 				bucketDurations[index] = append(bucketDurations[index], (ended.Int64-started.Int64)/1000)
 			}
 		}
-		for i := range buckets {
-			t := startUS + (int64(i)*windowUS)/int64(buckets) + windowUS/int64(buckets)/2
-			endedUS := int64(1 << 62)
-			if ended.Valid {
-				endedUS = ended.Int64
-			}
-			if queuedUS <= t && (!started.Valid || t < started.Int64) && t < endedUS {
-				out.Buckets[i].Queued++
-			}
-			if started.Valid && started.Int64 <= t && t < endedUS {
-				out.Buckets[i].Active++
-			}
+		endedUS := endUS + 1
+		if ended.Valid && ended.Int64 < endedUS {
+			endedUS = ended.Int64
+		}
+		queuedUntil := endedUS
+		if started.Valid && started.Int64 < queuedUntil {
+			queuedUntil = started.Int64
+		}
+		addInterval(queuedDiff, queuedUS, queuedUntil)
+		if started.Valid {
+			addInterval(activeDiff, started.Int64, endedUS)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return out, err
+	}
+	queuedNow, activeNow := 0, 0
+	for i := range buckets {
+		queuedNow += queuedDiff[i]
+		activeNow += activeDiff[i]
+		out.Buckets[i].Queued = queuedNow
+		out.Buckets[i].Active = activeNow
 	}
 	out.DurationP50MS = percentileMS(durations, 0.5)
 	out.DurationP95MS = percentileMS(durations, 0.95)
@@ -507,6 +654,11 @@ func percentileMS(values []int64, p float64) *int64 {
 
 func (s *Store) Run(ctx context.Context, id string) (model.Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
+	return scanRun(row)
+}
+
+func (s *Store) ScheduledRun(ctx context.Context, definitionID int64, scheduled time.Time) (model.Run, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE definition_id=? AND scheduled_for_us=? AND trigger='schedule'`, definitionID, scheduled.UnixMicro())
 	return scanRun(row)
 }
 
@@ -567,7 +719,8 @@ func (s *Store) RetentionCandidates(ctx context.Context, definitionID int64, kee
 	return out, rows.Err()
 }
 func (s *Store) DeleteRun(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running')", id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running')
+		AND run_id NOT IN (SELECT run_id FROM idempotency WHERE created_us>?)`, id, time.Now().Add(-24*time.Hour).UnixMicro())
 	return err
 }
 
@@ -584,6 +737,23 @@ func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, 
 	}
 	return anchor, last, hash, nil
 }
+func (s *Store) ScheduleNextBatch(ctx context.Context) (map[int64]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,next_fire_us FROM schedule_state WHERE next_fire_us IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]time.Time)
+	for rows.Next() {
+		var id, next int64
+		if err := rows.Scan(&id, &next); err != nil {
+			return nil, err
+		}
+		out[id] = time.UnixMicro(next).UTC()
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ScheduleNext(ctx context.Context, definitionID int64) (time.Time, error) {
 	var nextUS sql.NullInt64
 	if err := s.db.QueryRowContext(ctx, "SELECT next_fire_us FROM schedule_state WHERE definition_id=?", definitionID).Scan(&nextUS); err != nil {
@@ -614,6 +784,27 @@ func (s *Store) setScheduleState(ctx context.Context, definitionID int64, hash s
 	_, err := s.db.ExecContext(ctx, `INSERT INTO schedule_state(definition_id,schedule_hash,anchor_us,last_fire_us,next_fire_us) VALUES(?,?,?,?,?) ON CONFLICT(definition_id) DO UPDATE SET schedule_hash=excluded.schedule_hash,anchor_us=excluded.anchor_us,last_fire_us=excluded.last_fire_us,next_fire_us=excluded.next_fire_us`, definitionID, hash, anchor.UnixMicro(), lastUS, nextUS)
 	return err
 }
+
+// PruneMetadata removes expired replay keys and bounds audit/revision growth.
+func (s *Store) PruneMetadata(ctx context.Context, auditKeep int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "DELETE FROM idempotency WHERE created_us<=?", time.Now().Add(-24*time.Hour).UnixMicro()); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", auditKeep); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM definition_revisions WHERE (definition_id,revision) NOT IN (
+		SELECT definition_id,revision FROM (SELECT definition_id,revision,ROW_NUMBER() OVER (PARTITION BY definition_id ORDER BY revision DESC) AS n FROM definition_revisions) WHERE n<=100)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func nullString(v string) any {
 	if v == "" {
 		return nil

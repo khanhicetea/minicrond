@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -56,6 +57,7 @@ type Service struct {
 type activeRun struct {
 	cancel context.CancelCauseFunc
 	done   chan struct{}
+	pgid   int
 }
 
 var ErrStopped = errors.New("operator stop")
@@ -68,9 +70,13 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	if opt.MaxLineBytes <= 0 {
 		opt.MaxLineBytes = 256 << 10
 	}
-	var b [16]byte
-	_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
-	return &Service{store: st, logs: logs, bootID: hex.EncodeToString(b[:]), capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int)}
+	bootID := kernelBootID()
+	if bootID == "" {
+		var b [16]byte
+		_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
+		bootID = hex.EncodeToString(b[:])
+	}
+	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int)}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
 
@@ -85,45 +91,75 @@ func (s *Service) Wait(id string) <-chan struct{} {
 	}
 	return nil
 }
+
+type IdempotencyRequest struct {
+	Principal, Operation, Key, RequestHash string
+}
+
 func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
+	r, _, err := s.trigger(ctx, d, hash, trigger, scheduled, nil)
+	return r, err
+}
+
+func (s *Service) TriggerIdempotent(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem IdempotencyRequest) (model.Run, bool, error) {
+	return s.trigger(ctx, d, hash, trigger, scheduled, &idem)
+}
+
+func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
 	s.admission.Lock()
 	defer s.admission.Unlock()
 	if s.closing {
-		return model.Run{}, ErrShutdown
+		return model.Run{}, false, ErrShutdown
 	}
 	if err := ctx.Err(); err != nil {
-		return model.Run{}, err
+		return model.Run{}, false, err
 	}
 	if !d.IsEnabled() {
-		return model.Run{}, fmt.Errorf("definition %s is disabled", d.Name)
+		return model.Run{}, false, fmt.Errorf("definition %s is disabled", d.Name)
 	}
 	if d.Kind == model.KindJob && d.OnOverlap == "skip" && s.Active(d.Name) > 0 {
-		return s.recordSkipped(ctx, d, hash, trigger, scheduled)
+		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem)
 	}
 	if d.Kind == model.KindJob {
 		select {
 		case s.capacity <- struct{}{}:
 		default:
-			return s.recordSkipped(ctx, d, hash, trigger, scheduled)
+			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem)
+		}
+	}
+	releaseCapacity := func() {
+		if d.Kind == model.KindJob {
+			<-s.capacity
 		}
 	}
 	id, err := uuid.NewV7()
 	if err != nil {
-		if d.Kind == model.KindJob {
-			<-s.capacity
-		}
-		return model.Run{}, err
+		releaseCapacity()
+		return model.Run{}, false, err
 	}
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "pending", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: time.Now().UTC(), LogRef: "file:" + id.String()}
-	if err := s.store.CreateRun(ctx, r); err != nil {
-		if d.Kind == model.KindJob {
-			<-s.capacity
+	if idem != nil && idem.Key != "" {
+		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
+		if err != nil {
+			releaseCapacity()
+			return r, false, err
 		}
-		return r, err
+		if existingID != "" {
+			releaseCapacity()
+			existing, err := s.store.Run(ctx, existingID)
+			return existing, true, err
+		}
+	} else if err := s.store.CreateRun(ctx, r); err != nil {
+		releaseCapacity()
+		if trigger == "schedule" && scheduled != nil {
+			if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
+				return existing, true, nil
+			}
+		}
+		return r, false, err
 	}
 	maxBytes, err := resolveLogMax(d.LogMax)
 	if err != nil {
-		// Unreachable through validated config; keep the run honest anyway.
 		slog.Error("invalid log_max, falling back to default", "job", d.Name, "log_max", d.LogMax, "error", err)
 	}
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
@@ -133,10 +169,8 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
 			s.notifyFinished(r, d)
 		}
-		if d.Kind == model.KindJob {
-			<-s.capacity
-		}
-		return r, err
+		releaseCapacity()
+		return r, false, err
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
 	a := &activeRun{cancel: cancel, done: make(chan struct{})}
@@ -145,7 +179,7 @@ func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger
 	s.byJob[d.Name]++
 	s.mu.Unlock()
 	go s.execute(runCtx, r, d, writer, a)
-	return r, nil
+	return r, false, nil
 }
 func resolveLogMax(value string) (int64, error) {
 	const defaultMax = 100 << 20
@@ -162,15 +196,31 @@ func resolveLogMax(value string) (int64, error) {
 	return maxBytes, nil
 }
 
-func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
+func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return model.Run{}, err
+		return model.Run{}, false, err
 	}
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: "overlap_skip", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
+	if idem != nil && idem.Key != "" {
+		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
+		if err != nil {
+			return r, false, err
+		}
+		if existingID != "" {
+			existing, err := s.store.Run(ctx, existingID)
+			return existing, true, err
+		}
+		return r, false, nil
+	}
 	err = s.store.CreateRun(ctx, r)
-	return r, err
+	if err != nil && trigger == "schedule" && scheduled != nil {
+		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
+			return existing, true, nil
+		}
+	}
+	return r, false, err
 }
 func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash string, count int, scheduled time.Time) (model.Run, error) {
 	id, err := uuid.NewV7()
@@ -180,6 +230,11 @@ func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash str
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "missed", EndReason: "crash_recovery", Trigger: "schedule", Attempt: 1, ScheduledFor: &scheduled, MissedCount: count, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
 	err = s.store.CreateRun(ctx, r)
+	if err != nil {
+		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, scheduled); lookupErr == nil {
+			return existing, nil
+		}
+	}
 	return r, err
 }
 func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, w *logstore.Writer, a *activeRun) {
@@ -240,7 +295,10 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		return
 	}
 	r.PID, r.PGID, r.ProcessStartID, r.StartedAt = cmd.Process.Pid, pgid, startID, &started
-	w.Write(logstore.System, []byte("process started as "+identity), 0)
+	s.mu.Lock()
+	a.pgid = pgid
+	s.mu.Unlock()
+	_ = w.Write(logstore.System, []byte("process started as "+identity), 0)
 	pumps := make(chan error, 2)
 	go func() { pumps <- w.Pipe(logstore.Stdout, stdoutR) }()
 	go func() { pumps <- w.Pipe(logstore.Stderr, stderrR) }()
@@ -255,15 +313,25 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	}
 	var waitErr error
 	var cause error
+	pumpsRemaining := 2
 	select {
 	case waitErr = <-wait:
+	case pumpErr := <-pumps:
+		pumpsRemaining--
+		if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
+			cause = fmt.Errorf("log pump failed: %w", pumpErr)
+			_ = w.Write(logstore.System, []byte("log pump error; stopping process"), 0)
+			waitErr = stopGroup(pgid, d, wait)
+		} else {
+			waitErr = <-wait
+		}
 	case <-timer:
 		cause = context.DeadlineExceeded
-		w.Write(logstore.System, []byte("timeout reached, stopping"), 0)
+		_ = w.Write(logstore.System, []byte("timeout reached, stopping"), 0)
 		waitErr = stopGroup(pgid, d, wait)
 	case <-ctx.Done():
 		cause = context.Cause(ctx)
-		w.Write(logstore.System, []byte("stop requested"), 0)
+		_ = w.Write(logstore.System, []byte("stop requested"), 0)
 		waitErr = stopGroup(pgid, d, wait)
 	}
 	// Drain remaining pipe bytes. A descendant that inherited the pipe can
@@ -271,10 +339,10 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	// see a benign os.ErrClosed which we do not report).
 	drainDeadline := time.NewTimer(5 * time.Second)
 	defer drainDeadline.Stop()
-	for remaining := 2; remaining > 0; {
+	for pumpsRemaining > 0 {
 		select {
 		case pumpErr := <-pumps:
-			remaining--
+			pumpsRemaining--
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
 				w.Write(logstore.System, []byte("log pump error: "+pumpErr.Error()), 0)
 			}
@@ -287,13 +355,19 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	stdoutR.Close()
 	stderrR.Close()
 	status, reason, code, signal := classify(waitErr, cause, d.SuccessCodes)
+	if cause != nil && !errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, ErrStopped) && !errors.Is(cause, ErrShutdown) {
+		status, reason = "failed", "log_error"
+	}
 	// Close the log sink before the terminal transition so a wait=true
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
-	_ = w.Close()
+	if err := s.logs.Close(r.ID); err != nil {
+		slog.Error("finalizing run logs failed", "run", r.ID, "error", err)
+		status, reason = "failed", "log_error"
+	}
 	ended := time.Now().UTC()
-	if err := s.store.FinishRun(context.Background(), r.ID, status, reason, code, signal, ended, bytes, truncated); err != nil {
-		slog.Error("persisting terminal run state failed", "run", r.ID, "status", status, "error", err)
+	if err := s.finishRun(r.ID, status, reason, code, signal, ended, bytes, truncated); err != nil {
+		slog.Error("persisting terminal run state failed after retries", "run", r.ID, "status", status, "error", err)
 		return
 	}
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = status, reason, code, signal, &ended
@@ -303,14 +377,32 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
 	w.Write(logstore.System, []byte("start error: "+err.Error()), 0)
 	bytes, truncated := w.Stats()
-	_ = w.Close()
+	if closeErr := s.logs.Close(r.ID); closeErr != nil {
+		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
+	}
 	ended := time.Now().UTC()
-	if ferr := s.store.FinishRun(context.Background(), r.ID, "failed", "start_error", nil, "", ended, bytes, truncated); ferr != nil {
-		slog.Error("persisting failed run state failed", "run", r.ID, "error", ferr)
+	if ferr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, bytes, truncated); ferr != nil {
+		slog.Error("persisting failed run state failed after retries", "run", r.ID, "error", ferr)
 		return
 	}
 	r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
 	s.notifyFinished(r, d)
+}
+
+func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool) error {
+	var err error
+	for attempt := range 5 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = s.store.FinishRun(ctx, id, status, reason, code, signal, ended, bytes, truncated)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		if attempt < 4 {
+			time.Sleep(time.Duration(1<<attempt) * 50 * time.Millisecond)
+		}
+	}
+	return err
 }
 
 func (s *Service) notifyFinished(r model.Run, d model.Definition) {
@@ -319,16 +411,24 @@ func (s *Service) notifyFinished(r model.Run, d model.Definition) {
 	}
 }
 func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
-	var cmd *exec.Cmd
-	if len(d.Argv) > 0 {
-		cmd = exec.Command(d.Argv[0], d.Argv[1:]...)
-	} else {
-		cmd = exec.Command(d.Shell, "-c", d.Command)
-	}
 	cred, home, label, err := identity(d.RunAs)
 	if err != nil {
 		return nil, "", err
 	}
+	env, err := environment(d, home, r)
+	if err != nil {
+		return nil, "", err
+	}
+	program := d.Shell
+	args := []string{"-c", d.Command}
+	if len(d.Argv) > 0 {
+		program, args = d.Argv[0], d.Argv[1:]
+	}
+	program, err = trustedExecutable(program)
+	if err != nil {
+		return nil, "", err
+	}
+	cmd := exec.Command(program, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 	dir := d.WorkingDir
 	if dir == "" || dir == "~" {
@@ -338,9 +438,25 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 		dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
 	}
 	cmd.Dir = dir
-	cmd.Env = environment(d, home, r)
+	cmd.Env = env
 	return cmd, label, nil
 }
+func trustedExecutable(program string) (string, error) {
+	if filepath.IsAbs(program) {
+		return program, nil
+	}
+	if strings.ContainsRune(program, filepath.Separator) {
+		return "", errors.New("executable path must be absolute or a bare trusted-path name")
+	}
+	for _, dir := range []string{"/usr/bin", "/bin"} {
+		candidate := filepath.Join(dir, program)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found in trusted PATH", program)
+}
+
 func identity(runAs string) (cred *syscall.Credential, home, label string, err error) {
 	// Config validation rejects this too. Keep the spawn path guarded so a
 	// definition persisted before that validation change cannot bypass it.
@@ -380,33 +496,47 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 	}
 	return cred, u.HomeDir, u.Username, nil
 }
-func environment(d model.Definition, home string, r model.Run) []string {
+func environment(d model.Definition, home string, r model.Run) ([]string, error) {
 	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TZ=" + d.Timezone}
 	if d.EnvBase == "inherit" {
 		env = slices.DeleteFunc(os.Environ(), func(v string) bool { return strings.HasPrefix(v, "MINICRON_") })
 	}
-	for k, v := range readEnvFile(d.EnvFile) {
+	fileEnv, err := readEnvFile(d.EnvFile)
+	if err != nil {
+		return nil, fmt.Errorf("read env_file: %w", err)
+	}
+	for k, v := range fileEnv {
 		env = append(env, k+"="+v)
 	}
 	for k, v := range d.Env {
 		env = append(env, k+"="+v)
 	}
 	for k, ref := range d.SecretEnv {
-		if value, ok := resolveSecret(ref); ok {
-			env = append(env, k+"="+value)
+		value, err := resolveSecret(ref)
+		if err != nil {
+			return nil, fmt.Errorf("resolve secret_env %s: %w", k, err)
 		}
+		env = append(env, k+"="+value)
 	}
 	env = append(env, "MINICRON_JOB="+d.Name, "MINICRON_RUN_ID="+r.ID, "MINICRON_TRIGGER="+r.Trigger, "MINICRON_ATTEMPT=1")
-	return env
+	return env, nil
 }
-func readEnvFile(path string) map[string]string {
+func readEnvFile(path string) (map[string]string, error) {
 	out := make(map[string]string)
 	if path == "" {
-		return out
+		return out, nil
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		return out
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > 1<<20 {
+		return nil, errors.New("env_file exceeds 1 MiB")
 	}
 	for line := range strings.SplitSeq(string(b), "\n") {
 		line = strings.TrimSpace(line)
@@ -417,18 +547,32 @@ func readEnvFile(path string) map[string]string {
 			out[k] = v
 		}
 	}
-	return out
+	return out, nil
 }
-func resolveSecret(ref string) (string, bool) {
+func resolveSecret(ref string) (string, error) {
 	if name, ok := strings.CutPrefix(ref, "env:"); ok {
 		v, found := os.LookupEnv(name)
-		return v, found
+		if !found {
+			return "", errors.New("required environment variable is unset")
+		}
+		return v, nil
 	}
 	if path, ok := strings.CutPrefix(ref, "file:"); ok {
-		b, err := os.ReadFile(path)
-		return strings.TrimSuffix(string(b), "\n"), err == nil
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, 1<<20+1))
+		if err != nil {
+			return "", err
+		}
+		if len(b) > 1<<20 {
+			return "", errors.New("secret file exceeds 1 MiB")
+		}
+		return strings.TrimSuffix(string(b), "\n"), nil
 	}
-	return "", false
+	return "", errors.New("invalid secret reference")
 }
 func stopGroup(pgid int, d model.Definition, wait <-chan error) error {
 	grace, _ := time.ParseDuration(d.Grace)
@@ -439,13 +583,34 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error) error {
 	killGroup(pgid, parseSignal(d.StopSignal))
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
-	select {
-	case err := <-wait:
-		return err
-	case <-timer.C:
-		killGroup(pgid, syscall.SIGKILL)
-		return <-wait
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	var leaderErr error
+	leaderDone := false
+	for {
+		select {
+		case err := <-wait:
+			leaderErr, leaderDone = err, true
+			if !groupAlive(pgid) {
+				return leaderErr
+			}
+		case <-ticker.C:
+			if leaderDone && !groupAlive(pgid) {
+				return leaderErr
+			}
+		case <-timer.C:
+			killGroup(pgid, syscall.SIGKILL)
+			if leaderDone {
+				return leaderErr
+			}
+			return <-wait
+		}
 	}
+}
+
+func groupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 func killGroup(pgid int, sig syscall.Signal) { _ = syscall.Kill(-pgid, sig) }
 func parseSignal(v string) syscall.Signal {
@@ -503,6 +668,17 @@ func classify(err, cause error, success []int) (string, string, *int, string) {
 	}
 	return "failed", "start_error", nil, ""
 }
+func kernelBootID() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func processIdentity(pid int) string {
 	if runtime.GOOS != "linux" {
 		return strconv.Itoa(pid)
@@ -533,7 +709,7 @@ func (s *Service) CleanupRecovered(runs []model.Run) {
 		return
 	}
 	for _, r := range runs {
-		if r.PGID > 0 && r.PID > 0 && r.ProcessStartID != "" && processIdentity(r.PID) == r.ProcessStartID {
+		if r.BootID == s.bootID && r.PGID > 0 && r.PID > 0 && r.ProcessStartID != "" && processIdentity(r.PID) == r.ProcessStartID {
 			killGroup(r.PGID, syscall.SIGTERM)
 			time.Sleep(100 * time.Millisecond)
 			killGroup(r.PGID, syscall.SIGKILL)
@@ -550,7 +726,7 @@ func (s *Service) Stop(id string) error {
 	a.cancel(ErrStopped)
 	return nil
 }
-func (s *Service) Shutdown(ctx context.Context) {
+func (s *Service) Shutdown(ctx context.Context) error {
 	s.admission.Lock()
 	s.closing = true
 	s.mu.Lock()
@@ -565,7 +741,13 @@ func (s *Service) Shutdown(ctx context.Context) {
 		select {
 		case <-a.done:
 		case <-ctx.Done():
-			return
+			for _, remaining := range runs {
+				if remaining.pgid > 0 {
+					killGroup(remaining.pgid, syscall.SIGKILL)
+				}
+			}
+			return ctx.Err()
 		}
 	}
+	return nil
 }

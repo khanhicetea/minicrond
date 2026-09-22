@@ -89,11 +89,17 @@ func runDaemon(args []string) error {
 	defer stop()
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 	d := &daemon.Daemon{ConfigPath: *configPath, DataDir: *dataDir, Version: version}
 	go func() {
-		for range hup {
-			if err := d.Reload(context.Background()); err != nil {
-				slog.Error("reload failed", "error", err)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				if err := d.Reload(context.Background()); err != nil {
+					slog.Error("reload failed", "error", err)
+				}
 			}
 		}
 	}()
@@ -104,9 +110,6 @@ func initConfig(args []string) error {
 	path := fs.String("config", env("MINICRON_CONFIG", "minicron.toml"), "config path")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-	if _, err := os.Stat(*path); err == nil {
-		return fmt.Errorf("%s already exists", *path)
 	}
 	if err := os.MkdirAll(filepath.Dir(*path), 0o700); err != nil && filepath.Dir(*path) != "." {
 		return err
@@ -125,7 +128,18 @@ worker_flush_interval = "15m"
 db_prune_at = "03:30"
 db_keep_for = "720h"
 `
-	if err := os.WriteFile(*path, []byte(content), 0o600); err != nil {
+	f, err := os.OpenFile(*path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err = io.WriteString(f, content); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(*path)
 		return err
 	}
 	fmt.Printf("created %s\n", *path)
@@ -189,6 +203,9 @@ func logs(args []string) error {
 			fmt.Println(string(b))
 			after = f.Sequence
 		}
+		if len(response.Items) > 0 {
+			continue
+		}
 		if !follow {
 			return nil
 		}
@@ -247,7 +264,7 @@ func exportConfig(args []string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return fmt.Errorf("HTTP %s: %s", resp.Status, string(b))
 	}
 	_, err = io.Copy(os.Stdout, resp.Body)
@@ -292,20 +309,20 @@ func requestJSON(method, path string, body, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return fmt.Errorf("HTTP %s: %s", resp.Status, string(b))
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 func client() *http.Client {
 	if os.Getenv("MINICRON_URL") != "" {
-		return http.DefaultClient
+		return &http.Client{Timeout: 5 * time.Minute}
 	}
 	socket := filepath.Join(env("MINICRON_DATA", defaultDataDir()), "minicron.sock")
 	tr := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
-	return &http.Client{Transport: tr}
+	return &http.Client{Transport: tr, Timeout: 5 * time.Minute}
 }
 func env(k, fallback string) string {
 	if v := os.Getenv(k); v != "" {

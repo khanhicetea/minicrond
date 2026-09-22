@@ -16,6 +16,11 @@
         "unix_socket": {
           "type": "boolean",
           "default": true
+        },
+        "allow_insecure_remote": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicitly allow plaintext HTTP on a non-loopback bind address"
         }
       }
     },
