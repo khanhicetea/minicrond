@@ -312,6 +312,10 @@ func (d *Daemon) workerFlushLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.logs.FlushActive()
+			// Retry failed final archival without requiring a daemon restart.
+			if err := d.logs.ArchiveOrphans(); err != nil {
+				slog.Error("orphaned log retry failed", "error", err)
+			}
 			if next := d.logFlushInterval(); next != interval {
 				interval = next
 				ticker.Reset(next)

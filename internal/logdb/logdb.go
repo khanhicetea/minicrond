@@ -122,7 +122,8 @@ COMMIT;`
 
 // PutChunks upserts chunks for a run. Re-archiving the same chunk after a
 // crash between the database write and the buffer-file cleanup is safe: the
-// row is replaced, never duplicated.
+// row is replaced, never duplicated. Retries preserve its original archive
+// time and do not erase run metadata unavailable during orphan recovery.
 func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.Time, chunks []Chunk) error {
 	if len(chunks) == 0 {
 		return nil
@@ -134,12 +135,13 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 	defer tx.Rollback()
 	now := at.UnixMicro()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
-		ON CONFLICT(run_id) DO UPDATE SET job=excluded.job, kind=excluded.kind, updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
+		ON CONFLICT(run_id) DO UPDATE SET job=COALESCE(NULLIF(excluded.job,''),log_runs.job),
+		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
 		return err
 	}
 	for _, c := range chunks {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob) VALUES(?,?,?,?,?,?,?)
-			ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,archived_us=excluded.archived_us,blob=excluded.blob`,
+			ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob`,
 			runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
 			return err
 		}
@@ -153,37 +155,25 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn func(Chunk) (bool, error)) error {
 	lastNumber := -1
 	for {
-		rows, err := l.db.QueryContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 32", runID, after, lastNumber)
-		if err != nil {
-			return err
-		}
-		batch := make([]Chunk, 0, 32)
-		for rows.Next() {
-			var c Chunk
-			if err := rows.Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob); err != nil {
-				rows.Close()
-				return err
-			}
-			batch = append(batch, c)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if len(batch) == 0 {
+		// Fetch one blob at a time and release the connection before decoding.
+		// A row-count batch alone could prefetch hundreds of MiB for a tiny page.
+		var c Chunk
+		err := l.db.QueryRowContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 1", runID, after, lastNumber).
+			Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob)
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
-		for _, c := range batch {
-			ok, err := fn(c)
-			if err != nil {
-				return fmt.Errorf("chunk %d of run %s: %w", c.Number, runID, err)
-			}
-			if !ok {
-				return nil
-			}
-			lastNumber = c.Number
+		if err != nil {
+			return err
 		}
+		ok, err := fn(c)
+		if err != nil {
+			return fmt.Errorf("chunk %d of run %s: %w", c.Number, runID, err)
+		}
+		if !ok {
+			return nil
+		}
+		lastNumber = c.Number
 	}
 }
 

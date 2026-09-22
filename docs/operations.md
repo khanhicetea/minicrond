@@ -30,16 +30,21 @@ Log storage is two-tier (ADR-6):
 
 1. **Live tier** — running runs write compressed chunk files under
    `data/logs/<run_id>/`. Every accepted frame is flushed and synced before
-   `Write` returns. `log_max` is the per-run hot-buffer *accounting* budget
-   (with `log_on_full` = `drop_old`/`drop_new`), not an archive quota.
+   `Write` returns. `log_max` defaults to `100MiB` and bounds raw frame bytes
+   in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
+   archive. Successful archival frees buffer capacity for either policy.
 2. **Archive tier** — finished runs are archived into
    `data/minicron-logs.db` and their buffer files removed. Still-running
    workers seal+archive their chunks every `logs.worker_flush_interval`
    (default 15m).
 
 Crash-safety: buffers orphaned by a crash are salvaged into the archive at
-startup, up to the last intact frame. Reads merge the database, buffer
-files, and a byte-bounded in-memory tail transparently.
+startup, up to the last intact frame. Failed final archival leaves its buffer
+on disk and is retried at the worker flush cadence, without a restart.
+Transfers are serialized and use batches of at most 8 MiB / 64 chunks (one
+oversized chunk is allowed); live writers can proceed between batches.
+Reads synchronize with migration and share one page budget across the
+database, files, and memory tail.
 
 Retention:
 
@@ -49,7 +54,11 @@ Retention:
 - **Log archive:** chunks older than `logs.db_keep_for` (default 720h) are
   pruned daily at `logs.db_prune_at` (default 03:30 local).
 
-Monitor data-directory free space and SQLite WAL/freelist growth.
+Monitor data-directory free space and SQLite WAL/freelist growth. Age
+retention is not a disk-space quota: SQL deletion makes pages reusable but
+does not normally shrink the database. If physical reclamation is needed,
+stop the daemon, back up the complete directory, and use SQLite `VACUUM` on
+`minicron-logs.db` with sufficient temporary free space before restarting.
 
 ## Backup and restore
 

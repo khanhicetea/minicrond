@@ -101,7 +101,7 @@ schema below.
 | `success_codes` | `[0]` | both | Exit codes counted as success |
 | `keep_runs` | storage default | both | Per-definition run-history length (0 = use `storage.keep_runs_default`) |
 | `keep_for` | storage default | both | Per-definition run age retention (`"168h"`) |
-| `log_max` | unbounded | both | Per-run hot-buffer accounting budget (`"10MiB"`); not an archive quota |
+| `log_max` | `"100MiB"` | both | Per-run raw-byte file-buffer budget (`"10MiB"`); successful archival frees capacity; not an archive quota |
 | `log_on_full` | `drop_old` | both | Hot buffer full: `drop_old` or `drop_new` frames |
 | `labels` | `{}` | both | Free-form metadata map |
 | `alerts` | `[]` | both | Alert channel names to notify on `failed`/`timeout` |

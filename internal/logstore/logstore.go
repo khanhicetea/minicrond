@@ -69,6 +69,8 @@ type chunkMeta struct {
 	Archived bool   `json:"archived,omitempty"`
 }
 type index struct {
+	Job       string      `json:"job,omitempty"`
+	Kind      string      `json:"kind,omitempty"`
 	Version   int         `json:"version"`
 	Chunks    []chunkMeta `json:"chunks"`
 	Final     bool        `json:"final"`
@@ -83,10 +85,14 @@ type index struct {
 // the database, the buffer files, and the in-memory tail transparently, so
 // callers never need to know where a frame currently lives.
 type Store struct {
-	root      string
-	db        *logdb.LogDB
-	mu        sync.Mutex
-	writers   map[string]*Writer
+	root     string
+	db       *logdb.LogDB
+	mu       sync.Mutex
+	writers  map[string]*Writer
+	runLocks map[string]*runLock
+	// Serialize archive transfers to bound aggregate batch memory. Acquire
+	// before any per-run lock; readers and writers never take archiveMu.
+	archiveMu sync.Mutex
 	tailBytes int64
 	tailLimit int64
 }
@@ -95,7 +101,7 @@ func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, writers: make(map[string]*Writer), tailLimit: 64 << 20}, nil
+	return &Store{root: root, writers: make(map[string]*Writer), runLocks: make(map[string]*runLock), tailLimit: 64 << 20}, nil
 }
 
 // AttachDB enables SQLite archival into the given log database.
@@ -103,7 +109,8 @@ func (s *Store) AttachDB(db *logdb.LogDB) { s.db = db }
 
 // WriterOptions configures one run's log buffer.
 type WriterOptions struct {
-	// MaxBytes caps the retained log (raw frame bytes). 0 means unbounded.
+	// MaxBytes caps raw frame bytes in the file buffer, not the archive.
+	// Successful archival frees capacity. 0 means unbounded.
 	MaxBytes int64
 	// MaxLine truncates single lines longer than this many bytes. 0 disables.
 	MaxLine int
@@ -114,8 +121,10 @@ type WriterOptions struct {
 }
 
 func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error) {
+	unlock := s.lockRun(runID, true)
+	defer unlock()
 	dir := filepath.Join(s.root, runID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, err
 	}
 	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, subs: make(map[chan Frame]chan struct{})}
@@ -138,25 +147,27 @@ func (s *Store) Active(runID string) *Writer {
 // stays queryable through Read afterwards. Without an archive the files remain
 // on disk (pure file backend).
 func (s *Store) Close(runID string) error {
-	s.mu.Lock()
-	w := s.writers[runID]
-	delete(s.writers, runID)
-	s.mu.Unlock()
+	s.archiveMu.Lock()
+	defer s.archiveMu.Unlock()
+	w := s.Active(runID)
 	if w == nil {
 		return nil
 	}
 	err := w.Close()
-	if s.db != nil {
-		w.mu.Lock()
-		aerr := s.archiveSealedLocked(w)
-		// Remove the buffer only when the writer finalized cleanly; a failed
-		// close leaves the directory for the startup salvage sweep.
-		if aerr == nil && err == nil {
-			aerr = os.RemoveAll(w.dir)
-		}
-		w.mu.Unlock()
-		err = errors.Join(err, aerr)
+	if s.db != nil && err == nil {
+		err = s.archiveWriter(w, w.chunk)
 	}
+	unlock := s.lockRun(runID, true)
+	defer unlock()
+	if s.db != nil && err == nil {
+		err = os.RemoveAll(w.dir)
+	}
+	// Failed finalization leaves a durable buffer for the next orphan sweep.
+	// Keep the writer registered until archival finishes so it cannot be
+	// mistaken for an orphan between batches.
+	s.mu.Lock()
+	delete(s.writers, runID)
+	s.mu.Unlock()
 	return err
 }
 
@@ -181,10 +192,12 @@ func (s *Store) FlushActive() {
 	}
 }
 
-// ArchiveOrphans sweeps buffer directories left behind by a crash (no active
-// writer) into the archive and deletes them. Chunk files that were mid-write
-// when the daemon died are salvaged up to the last intact frame.
+// ArchiveOrphans sweeps buffers without an active writer into the archive.
+// It handles both crash recovery and retries of failed final archival. Chunk
+// files that were mid-write are salvaged up to the last intact frame.
 func (s *Store) ArchiveOrphans() error {
+	s.archiveMu.Lock()
+	defer s.archiveMu.Unlock()
 	if s.db == nil {
 		return nil
 	}
@@ -198,110 +211,15 @@ func (s *Store) ArchiveOrphans() error {
 			continue
 		}
 		runID := e.Name()
-		if s.Active(runID) != nil {
-			continue
+		unlock := s.lockRun(runID, true)
+		if s.Active(runID) == nil {
+			if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
+				errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
+			}
 		}
-		if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
-			errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
-		}
+		unlock()
 	}
 	return errors.Join(errs...)
-}
-
-// archiveSealedLocked copies every not-yet-archived sealed chunk of an open or
-// closed writer into the archive, marks it archived in the index, and removes
-// the buffer file. Database first, file removal second: a crash in between is
-// healed by the upsert on the next attempt. Callers must hold w.mu.
-func (s *Store) archiveSealedLocked(w *Writer) error {
-	if s.db == nil {
-		return nil
-	}
-	var pending []logdb.Chunk
-	for _, m := range w.idx.Chunks {
-		if m.Archived {
-			continue
-		}
-		blob, err := os.ReadFile(w.chunkPath(m.Number))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // already removed by retention or an earlier flush
-		}
-		if err != nil {
-			return err
-		}
-		pending = append(pending, logdb.Chunk{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	if err := s.db.PutChunks(context.Background(), w.runID, w.job, w.kind, time.Now(), pending); err != nil {
-		return err
-	}
-	for _, c := range pending {
-		for i := range w.idx.Chunks {
-			if w.idx.Chunks[i].Number == c.Number {
-				w.idx.Chunks[i].Archived = true
-			}
-		}
-		if err := os.Remove(w.chunkPath(c.Number)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return w.writeIndex()
-}
-
-// archiveOrphan recovers one orphaned buffer directory. Sealed chunks named in
-// index.json are archived verbatim; chunk files missing from the index (or a
-// missing index) were mid-write at the crash and are salvaged frame by frame.
-func (s *Store) archiveOrphan(runID, dir string) error {
-	sealed := make(map[int]chunkMeta)
-	if b, err := os.ReadFile(filepath.Join(dir, "index.json")); err == nil {
-		var idx index
-		if json.Unmarshal(b, &idx) == nil {
-			for _, m := range idx.Chunks {
-				sealed[m.Number] = m
-			}
-		}
-	}
-	files, err := filepath.Glob(filepath.Join(dir, "*.zst"))
-	if err != nil {
-		return err
-	}
-	slices.Sort(files)
-	var chunks []logdb.Chunk
-	for _, path := range files {
-		number, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(path), ".zst"))
-		if err != nil {
-			continue
-		}
-		blob, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if m, ok := sealed[number]; ok {
-			chunks = append(chunks, logdb.Chunk{Number: number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
-			continue
-		}
-		frames := salvageFrames(blob)
-		if len(frames) == 0 {
-			continue
-		}
-		var raw int64
-		for _, f := range frames {
-			raw += int64(24 + len(f.Payload))
-		}
-		reenc, err := encodeFrames(frames)
-		if err != nil {
-			return err
-		}
-		chunks = append(chunks, logdb.Chunk{Number: number, First: frames[0].Sequence, Last: frames[len(frames)-1].Sequence, RawBytes: raw, Blob: reenc})
-	}
-	if len(chunks) == 0 {
-		return os.RemoveAll(dir)
-	}
-	if err := s.db.PutChunks(context.Background(), runID, "", "", time.Now(), chunks); err != nil {
-		return err
-	}
-	return os.RemoveAll(dir)
 }
 
 type Writer struct {
@@ -317,7 +235,8 @@ type Writer struct {
 	chunkRaw     int
 	chunkFirst   uint64
 	seq          uint64
-	total        int64
+	total        int64 // accepted raw bytes, less output evicted before archival
+	buffered     int64 // raw bytes still occupying the file buffer
 	maxBytes     int64
 	maxLine      int
 	dropNew      bool
@@ -335,17 +254,29 @@ func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprin
 // Flush seals the current chunk (if it has data) and archives all sealed
 // chunks of this writer.
 func (w *Writer) Flush(s *Store) error {
+	s.archiveMu.Lock()
+	defer s.archiveMu.Unlock()
+	through, err := w.sealForArchive()
+	if err != nil || through == 0 || s.db == nil {
+		return err
+	}
+	return s.archiveWriter(w, through)
+}
+
+func (w *Writer) sealForArchive() (int, error) {
+	unlock := w.store.lockRun(w.runID, true)
+	defer unlock()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.closed || s.db == nil {
-		return nil
+	if w.closed || w.store.db == nil {
+		return 0, nil
 	}
 	if w.chunkRaw > 0 {
 		if err := w.rotate(); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return s.archiveSealedLocked(w)
+	return w.chunk - 1, nil
 }
 
 func (w *Writer) rotate() error {
@@ -381,6 +312,7 @@ func (w *Writer) finishChunk() error {
 	return w.writeIndex()
 }
 func (w *Writer) writeIndex() error {
+	w.idx.Job, w.idx.Kind = w.job, w.kind
 	w.idx.Version = int(Version)
 	w.idx.Truncated = w.truncated
 	b, err := json.Marshal(w.idx)
@@ -415,6 +347,8 @@ func (w *Writer) writeIndex() error {
 	return err
 }
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
+	unlock := w.store.lockRun(w.runID, true)
+	defer unlock()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -426,7 +360,7 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 		w.truncated = true
 	}
 	frameSize := 24 + len(payload)
-	if w.maxBytes > 0 && w.total+int64(frameSize) > w.maxBytes {
+	if w.maxBytes > 0 && w.buffered+int64(frameSize) > w.maxBytes {
 		if w.dropNew || int64(frameSize) > w.maxBytes {
 			w.truncated = true
 			return nil
@@ -439,19 +373,15 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 			}
 		}
 		w.truncated = true
-		for len(w.idx.Chunks) > 0 && w.total+int64(frameSize) > w.maxBytes {
+		for len(w.idx.Chunks) > 0 && w.buffered+int64(frameSize) > w.maxBytes {
 			oldest := w.idx.Chunks[0]
 			if err := os.Remove(w.chunkPath(oldest.Number)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 			w.total -= oldest.Raw
+			w.buffered -= oldest.Raw
 			w.idx.Chunks = w.idx.Chunks[1:]
-			for len(w.history) > 0 && w.history[0].Sequence <= oldest.Last {
-				released := len(w.history[0].Payload) + 24
-				w.historyBytes -= released
-				w.store.releaseTail(released)
-				w.history = slices.Delete(w.history, 0, 1)
-			}
+			w.discardHistoryThrough(oldest.Last)
 		}
 	}
 	if w.chunkRaw+frameSize > chunkLimit && w.chunkRaw > 0 {
@@ -474,6 +404,7 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	}
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
+	w.buffered += int64(frameSize)
 	historySize := len(f.Payload) + 24
 	if w.store.reserveTail(historySize) {
 		w.history = append(w.history, f)
@@ -577,6 +508,8 @@ func (w *Writer) Subscribe(after uint64) (<-chan Frame, <-chan struct{}, func())
 	}
 }
 func (w *Writer) Close() error {
+	unlock := w.store.lockRun(w.runID, true)
+	defer unlock()
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -594,6 +527,20 @@ func (w *Writer) Close() error {
 	}
 	return w.closeErr
 }
+
+// discardHistoryThrough releases frames no longer needed in the live tail.
+// Callers hold w.mu. Archived frames must not reappear after archive pruning.
+func (w *Writer) discardHistoryThrough(sequence uint64) {
+	n, released := 0, 0
+	for n < len(w.history) && w.history[n].Sequence <= sequence {
+		released += len(w.history[n].Payload) + 24
+		n++
+	}
+	w.history = slices.Delete(w.history, 0, n)
+	w.historyBytes -= released
+	w.store.releaseTail(released)
+}
+
 func (s *Store) reserveTail(n int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -693,92 +640,91 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 }
 
 func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, limit int) ([]Frame, error) {
+	// Pin the run's tier layout for the entire page. Migration, retention,
+	// finalization and writes cannot move the cursor past unseen frames.
+	unlock := s.lockRun(runID, false)
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	limit = min(max(limit, 1), 5000)
 	out := make([]Frame, 0, min(limit, 100))
-	last := after
-	responseBytes := 0
+	last, responseBytes := after, 0
 	const maxResponseBytes = 16 << 20
-	if s.db != nil {
-		err := s.db.EachChunk(ctx, runID, last, func(c logdb.Chunk) (bool, error) {
-			dec, err := zstd.NewReader(bytes.NewReader(c.Blob), zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
+	appendFrame := func(frame Frame) bool {
+		if frame.Sequence <= last {
+			return true
+		}
+		// Allow one maximum-size frame (including its header) so every
+		// valid frame can make progress. Never skip it for a smaller one.
+		if len(out) > 0 && responseBytes+len(frame.Payload)+24 > maxResponseBytes {
+			return false
+		}
+		out = append(out, frame)
+		responseBytes += len(frame.Payload) + 24
+		last = frame.Sequence
+		return len(out) < limit && responseBytes < maxResponseBytes
+	}
+	consume := func(src io.Reader) (bool, error) {
+		dec, err := zstd.NewReader(src, zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
+		if err != nil {
+			return false, err
+		}
+		defer dec.Close()
+		for {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			frame, err := decode(dec)
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return true, nil
+			}
 			if err != nil {
 				return false, err
 			}
-			defer dec.Close()
-			for len(out) < limit {
-				frame, err := decode(dec)
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-					break
-				}
-				if err != nil {
-					return false, err
-				}
-				if frame.Sequence > last {
-					if len(out) > 0 && responseBytes+len(frame.Payload)+24 > maxResponseBytes {
-						return false, nil
-					}
-					out = append(out, frame)
-					responseBytes += len(frame.Payload) + 24
-					last = frame.Sequence
-				}
+			if !appendFrame(frame) {
+				return false, nil
 			}
-			return len(out) < limit && responseBytes < maxResponseBytes, nil
+		}
+	}
+	if s.db != nil {
+		more := true
+		err := s.db.EachChunk(ctx, runID, after, func(c logdb.Chunk) (bool, error) {
+			var err error
+			more, err = consume(bytes.NewReader(c.Blob))
+			return more, err
 		})
 		if err != nil {
 			return nil, err
 		}
-		if len(out) >= limit {
+		if !more {
 			return out, nil
 		}
 	}
-	entries, err := filepath.Glob(filepath.Join(s.root, runID, "*.zst"))
+	entries, err := chunkFiles(filepath.Join(s.root, runID))
 	if err != nil {
 		return nil, err
 	}
-	slices.Sort(entries)
-	for _, path := range entries {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		f, err := os.Open(path)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // tier migration raced the snapshot; the archive is retried on the next page
-		}
+	for _, entry := range entries {
+		f, err := os.Open(entry.path)
 		if err != nil {
 			return nil, err
 		}
-		dec, err := zstd.NewReader(f, zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
-		if err != nil {
-			f.Close()
-			return nil, err
-		}
-		for len(out) < limit {
-			frame, err := decode(dec)
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
-			if err != nil {
-				dec.Close()
-				f.Close()
-				return nil, err
-			}
-			if frame.Sequence > last {
-				if len(out) > 0 && responseBytes+len(frame.Payload)+24 > maxResponseBytes {
-					break
-				}
-				out = append(out, frame)
-				responseBytes += len(frame.Payload) + 24
-				last = frame.Sequence
-			}
-		}
-		dec.Close()
+		more, err := consume(f)
 		f.Close()
-		if len(out) >= limit {
-			break
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return out, nil
 		}
 	}
-	if active := s.Active(runID); active != nil && len(out) < limit {
-		out = append(out, active.Snapshot(last, limit-len(out))...)
+	if active := s.Active(runID); active != nil {
+		for _, frame := range active.Snapshot(last, limit-len(out)) {
+			if !appendFrame(frame) {
+				break
+			}
+		}
 	}
 	return out, nil
 }
@@ -820,6 +766,13 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 
 // Delete removes a run's logs from both the archive and the buffer directory.
 func (s *Store) Delete(runID string) error {
+	s.archiveMu.Lock()
+	defer s.archiveMu.Unlock()
+	unlock := s.lockRun(runID, true)
+	defer unlock()
+	if s.Active(runID) != nil {
+		return errors.New("cannot delete logs of an active writer")
+	}
 	if s.db != nil {
 		if err := s.db.DeleteRun(context.Background(), runID); err != nil {
 			return err
