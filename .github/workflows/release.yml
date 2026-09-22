@@ -34,7 +34,7 @@ jobs:
           make contracts
           CGO_ENABLED=0 go build ./cmd/minicrond
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   prepare-release:
     needs: verify
