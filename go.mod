@@ -2,6 +2,8 @@ module github.com/khanhicetea/minicrond
 
 go 1.24.0
 
+toolchain go1.27.0
+
 require (
 	github.com/danielgtaylor/huma/v2 v2.34.3
 	github.com/google/uuid v1.6.0
