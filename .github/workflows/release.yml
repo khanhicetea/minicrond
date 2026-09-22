@@ -57,6 +57,9 @@ jobs:
               --verify-tag \
               --generate-notes \
               --title "$TAG"
+          else
+            # Deleting a tag demotes its release to a draft; re-publish it.
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           fi
 
   build-and-upload:
@@ -65,6 +68,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
