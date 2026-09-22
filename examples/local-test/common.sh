@@ -60,11 +60,6 @@ resolve_bin() {
 		BIN=$REPO_ROOT/bin/minicrond
 		return
 	fi
-	# Keep accepting the legacy artifact when Go is unavailable.
-	if [ -x "$REPO_ROOT/bin/minicron" ]; then
-		BIN=$REPO_ROOT/bin/minicron
-		return
-	fi
 	die "no usable binary: install go, or set MINICRON_BIN in .env, or run 'make build' first"
 }
 

@@ -9,6 +9,7 @@ set -eu
 load_env
 resolve_bin
 mkdir -p "$MINICRON_DATA"
+chmod 700 "$MINICRON_DATA" # the daemon refuses non-private data directories
 write_env_local
 
 if pid=$(daemon_pid); then
@@ -36,8 +37,15 @@ if ! wait_ready; then
 	exit 1
 fi
 
+echo "==> importing job definitions (jobs/*.toml)"
+import_dir="$MINICRON_DATA/import"
+mkdir -p "$import_dir"
 for definition in "$EXAMPLE_DIR"/jobs/*.toml; do
-	"$BIN" import "$definition" >/dev/null
+	name=$(basename "$definition")
+	# Checked-in definitions use an @EXAMPLE_DIR@ placeholder; env_file must
+	# be absolute, so substitute the sandbox location before importing.
+	sed "s|@EXAMPLE_DIR@|$EXAMPLE_DIR|g" "$definition" >"$import_dir/$name"
+	"$BIN" import "$import_dir/$name" >/dev/null
 done
 
 pid=$(daemon_pid) || true
@@ -48,9 +56,10 @@ echo "  log:      $MINICRON_DATA/daemon.log"
 echo "  data:     $MINICRON_DATA"
 echo "  smoke:    ./smoke.sh              (end-to-end test)"
 
-# The initial bearer token is printed exactly once, on first boot only.
-token=$(sed -n 's/.*token=\([^ ]*\).*/\1/p' "$MINICRON_DATA/daemon.log" | head -n1)
-if [ -n "$token" ]; then
+# On first boot the daemon writes the initial bearer token once to the
+# mode-0600 initial-token file in the data directory; show it if present.
+if [ -s "$MINICRON_DATA/initial-token" ]; then
+	token=$(cat "$MINICRON_DATA/initial-token")
 	echo
 	echo "  initial bearer token (save it now, it cannot be recovered):"
 	echo "      $token"

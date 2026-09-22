@@ -5,6 +5,9 @@
 [server]
 bind = "0.0.0.0:7423"
 unix_socket = true
+# 0.0.0.0 is non-loopback; the daemon refuses to start without this opt-in.
+# Expose only on a trusted network (e.g. a tailnet) or put TLS in front.
+allow_insecure_remote = true
 
 [scheduler]
 timezone = "UTC"
@@ -19,9 +22,13 @@ worker_flush_interval = "15m"   # worker log checkpoint cadence
 db_keep_for = "720h"            # archive retention                                                                     
 db_prune_at = "03:30"           # daily prune time
 
-[[alert_channel]]
-name = "ops"
-type = "telegram"
-bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
-chat_id = "-329047830"
-disable_notification = false
+# Telegram alert demo (opt-in): uncomment, set MINICROND_TELEGRAM_TOKEN in
+# .env, and restart. The hello job opts in via alerts = ["ops"]; while the
+# channel is disabled its failed runs only log an "unavailable" error.
+# The daemon refuses to start while the token reference cannot be resolved.
+#[[alert_channel]]
+#name = "ops"
+#type = "telegram"
+#bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
+#chat_id = "-329047830"
+#disable_notification = false

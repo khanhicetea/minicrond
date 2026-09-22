@@ -3,7 +3,7 @@
 [[job]]
 name = "slow"
 schedule = "@every 6h"
-env_file = "env.local"
+env_file = "@EXAMPLE_DIR@/env.local"
 command = 'exec "$EXAMPLE_DIR/scripts/slow.sh" 30'
 timeout = "3s"
 grace = "2s"

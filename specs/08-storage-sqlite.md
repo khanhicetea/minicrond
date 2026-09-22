@@ -1,6 +1,6 @@
 # 08 — Storage: SQLite
 
-Status: v0.1 contract corrected by `codex-decisions.md`
+Status: v0.1 contract corrected by `docs/adr/0005-v01-foundations.md`
 
 The implemented schema uses surrogate `definition_id` identity, keys
 revisions/schedule state by that identity, stores timestamps as integer Unix

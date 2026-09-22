@@ -3,7 +3,7 @@
 # the API (/api/v1/workers/ticker/start|stop|restart) or the web UI.
 [[worker]]
 name = "ticker"
-env_file = "env.local"
+env_file = "@EXAMPLE_DIR@/env.local"
 command = 'exec "$EXAMPLE_DIR/scripts/loop-date.sh" 5'
 autostart = true
 restart = "on-failure"

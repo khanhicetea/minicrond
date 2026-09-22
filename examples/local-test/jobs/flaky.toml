@@ -4,7 +4,7 @@
 [[job]]
 name = "flaky"
 schedule = "@every 10m"
-env_file = "env.local"
+env_file = "@EXAMPLE_DIR@/env.local"
 command = 'exec "$EXAMPLE_DIR/scripts/fail.sh" 42'
 catch_up = "none"
 on_overlap = "skip"

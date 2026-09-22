@@ -16,7 +16,7 @@ examples/local-test/
 ├── common.sh      # shared helpers (sourced, not run directly)
 ├── minicron.toml  # sandbox bootstrap config (bind 127.0.0.1:7423)
 ├── jobs/          # example definitions included by minicron.toml
-│   ├── hello.toml         # job: run_on_start + @every 1m
+│   ├── hello.toml         # job: @every 1m, MINICRON_* metadata env
 │   ├── heartbeat.toml     # job: @every 2m, multi-line stdout
 │   ├── flaky.toml         # job: exits 42 -> recorded as failed
 │   ├── slow.toml          # job: 3s timeout + 2s grace kill
@@ -59,15 +59,16 @@ Web UI: open <http://127.0.0.1:7423> and paste the bearer token printed by
 
 ## What the sandbox demonstrates
 
-- `hello` — `run_on_start`, `@every` schedules, injected `MINICRON_JOB` /
+- `hello` — `@every` schedules, injected `MINICRON_JOB` /
   `MINICRON_RUN_ID` / `MINICRON_TRIGGER` env, tagged stdout logs
 - `heartbeat` — multi-line output captured per run
 - `flaky` — non-zero exit recorded as `failed` with `exit_code`
 - `slow` — `timeout` + `grace` process-group kill -> terminal status `timeout`
 - `ticker` — supervisor worker: autostart on boot, restart policy,
   start/stop/restart via `/api/v1/workers/ticker/*`
-- clean environment defaults (`env_base = "clean"`), include-based config
-  (`jobs/*.toml`), retention (`keep_runs_default = 100`)
+- clean environment defaults (`env_base = "clean"`), registry-based
+  definitions (`start.sh` imports `jobs/*.toml` explicitly), retention
+  (`keep_runs_default = 100`)
 
 ## HTTP mode (optional)
 
