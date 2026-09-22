@@ -48,11 +48,9 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	for _, d := range defs {
 		if d.Kind == model.KindJob && d.IsEnabled() && (d.Schedule != "") {
 			s.defs[d.Name] = d
-			s.loops.Add(1)
-			go func() {
-				defer s.loops.Done()
+			s.loops.Go(func() {
 				s.loop(runCtx, d)
-			}()
+			})
 		}
 	}
 	return nil

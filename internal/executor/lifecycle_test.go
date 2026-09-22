@@ -40,14 +40,12 @@ func TestConcurrentTriggersRespectOverlapAndShutdown(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if _, err := s.Trigger(t.Context(), d, hash, "manual", nil); err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

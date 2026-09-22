@@ -22,8 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/khanhicetea/minicrond/internal/config"

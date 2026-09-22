@@ -1,12 +1,9 @@
 module github.com/khanhicetea/minicrond
 
-go 1.24.0
-
-toolchain go1.27.0
+go 1.27.0
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.34.3
-	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/robfig/cron/v3 v3.0.1
@@ -17,6 +14,7 @@ require (
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/structtag v1.2.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gzuidhof/tygo v0.2.21 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.23 // indirect

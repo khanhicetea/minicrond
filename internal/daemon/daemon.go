@@ -179,11 +179,9 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	var maintenance sync.WaitGroup
 	for _, loop := range []func(context.Context){d.retentionLoop, d.workerFlushLoop, d.logPruneLoop} {
-		maintenance.Add(1)
-		go func() {
-			defer maintenance.Done()
+		maintenance.Go(func() {
 			loop(maintenanceCtx)
-		}()
+		})
 	}
 	defer func() {
 		stopMaintenance()

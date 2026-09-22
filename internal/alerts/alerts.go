@@ -58,8 +58,7 @@ func New(channels []config.AlertChannel) (*Dispatcher, error) {
 		return nil, err
 	}
 	for range 4 {
-		d.wg.Add(1)
-		go d.run()
+		d.wg.Go(d.run)
 	}
 	return d, nil
 }
@@ -116,7 +115,6 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 }
 
 func (d *Dispatcher) run() {
-	defer d.wg.Done()
 	for item := range d.queue {
 		var err error
 		for attempt := range 3 {

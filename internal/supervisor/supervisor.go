@@ -59,11 +59,9 @@ func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 }
 
 func (s *Supervisor) launch(worker workerLoop) {
-	s.loops.Add(1)
-	go func() {
-		defer s.loops.Done()
+	s.loops.Go(func() {
 		s.loop(worker.ctx, worker.def)
-	}()
+	})
 }
 
 func (s *Supervisor) Reload(defs []model.Definition) {

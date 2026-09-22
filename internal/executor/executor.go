@@ -19,8 +19,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
@@ -132,11 +131,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 			<-s.capacity
 		}
 	}
-	id, err := uuid.NewV7()
-	if err != nil {
-		releaseCapacity()
-		return model.Run{}, false, err
-	}
+	id := uuid.NewV7()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "pending", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: time.Now().UTC(), LogRef: "file:" + id.String()}
 	if idem != nil && idem.Key != "" {
 		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
@@ -197,10 +192,7 @@ func resolveLogMax(value string) (int64, error) {
 }
 
 func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return model.Run{}, false, err
-	}
+	id := uuid.NewV7()
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: "overlap_skip", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
 	if idem != nil && idem.Key != "" {
@@ -214,7 +206,7 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 		}
 		return r, false, nil
 	}
-	err = s.store.CreateRun(ctx, r)
+	err := s.store.CreateRun(ctx, r)
 	if err != nil && trigger == "schedule" && scheduled != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
 			return existing, true, nil
@@ -223,13 +215,10 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 	return r, false, err
 }
 func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash string, count int, scheduled time.Time) (model.Run, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return model.Run{}, err
-	}
+	id := uuid.NewV7()
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "missed", EndReason: "crash_recovery", Trigger: "schedule", Attempt: 1, ScheduledFor: &scheduled, MissedCount: count, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
-	err = s.store.CreateRun(ctx, r)
+	err := s.store.CreateRun(ctx, r)
 	if err != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, scheduled); lookupErr == nil {
 			return existing, nil
@@ -434,8 +423,8 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	if dir == "" || dir == "~" {
 		dir = home
 	}
-	if strings.HasPrefix(dir, "~/") {
-		dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
+	if after, ok := strings.CutPrefix(dir, "~/"); ok {
+		dir = filepath.Join(home, after)
 	}
 	cmd.Dir = dir
 	cmd.Env = env
@@ -632,7 +621,6 @@ func parseSignal(v string) syscall.Signal {
 	}
 }
 func classify(err, cause error, success []int) (string, string, *int, string) {
-	var exit *exec.ExitError
 	code := 0
 	if err == nil {
 		if errors.Is(cause, context.DeadlineExceeded) {
@@ -646,7 +634,7 @@ func classify(err, cause error, success []int) (string, string, *int, string) {
 		}
 		return "failed", "exit_nonzero", &code, ""
 	}
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		code = exit.ExitCode()
 		signal := ""
 		if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
@@ -693,11 +681,11 @@ func processIdentity(pid int) string {
 // processStartID extracts field 22 of /proc/PID/stat. The command name in
 // field 2 can contain spaces and parentheses, so it cannot be split on spaces.
 func processStartID(stat string) string {
-	end := strings.LastIndexByte(stat, ')')
-	if end < 0 {
+	_, rest, ok := strings.CutLast(stat, ")")
+	if !ok {
 		return ""
 	}
-	fields := strings.Fields(stat[end+1:])
+	fields := strings.Fields(rest)
 	if len(fields) > 19 {
 		return fields[19]
 	}
