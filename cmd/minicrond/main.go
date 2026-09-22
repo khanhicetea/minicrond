@@ -64,6 +64,8 @@ func run() error {
 		return importConfig(args[1:])
 	case "token":
 		return token(args[1:])
+	case "service":
+		return runService(args[1:])
 	case "schema":
 		_, _ = os.Stdout.Write(append(configSchema, '\n'))
 		return nil
@@ -114,20 +116,7 @@ func initConfig(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(*path), 0o700); err != nil && filepath.Dir(*path) != "." {
 		return err
 	}
-	content := `[server]
-bind = "127.0.0.1:7423"
-unix_socket = true
-
-[scheduler]
-timezone = "UTC"
-max_concurrent_runs = 32
-
-[logs]
-backend = "file"
-worker_flush_interval = "15m"
-db_prune_at = "03:30"
-db_keep_for = "720h"
-`
+	content := defaultConfigTOML("127.0.0.1:7423")
 	f, err := os.OpenFile(*path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -144,6 +133,22 @@ db_keep_for = "720h"
 	}
 	fmt.Printf("created %s\n", *path)
 	return nil
+}
+func defaultConfigTOML(bind string) string {
+	return fmt.Sprintf(`[server]
+bind = %q
+unix_socket = true
+
+[scheduler]
+timezone = "UTC"
+max_concurrent_runs = 32
+
+[logs]
+backend = "file"
+worker_flush_interval = "15m"
+db_prune_at = "03:30"
+db_keep_for = "720h"
+`, bind)
 }
 func validate(args []string) error {
 	path := env("MINICRON_CONFIG", "minicron.toml")
@@ -335,5 +340,6 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".local", "share", "minicron")
 }
 func usage() {
-	fmt.Println("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import export status token version")
+	fmt.Println("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import export status token service version")
+	fmt.Println("service: install/uninstall systemd units (root daemon or per-user daemons; run as root)")
 }
