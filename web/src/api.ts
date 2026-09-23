@@ -1,5 +1,5 @@
 import { auth } from './auth';
-import type { DaemonInfo, Definition, Frame, JobDetail, Run, RunMetrics } from './types';
+import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -62,6 +62,12 @@ export const api = {
 
   listJobs: () => request<{ items: Definition[] }>('/api/v1/jobs'),
 
+  listAlertChannels: () => request<{ items: AlertChannel[] }>('/api/v1/alert-channels'),
+
+  testAlertChannel: (name: string) => request<{ sent: boolean }>(`/api/v1/alert-channels/${encodeURIComponent(name)}/test`, { method: 'POST' }),
+
+  alertMetrics: () => request<{ queue_depth: number; counts: Record<string, number> }>('/api/v1/metrics/alerts'),
+
   getJob: (name: string) => request<JobDetail>(`/api/v1/jobs/${encodeURIComponent(name)}`),
 
   createJob: (definition: Definition) =>
@@ -98,6 +104,8 @@ export const api = {
   },
 
   getRun: (id: string) => request<Run>(`/api/v1/runs/${encodeURIComponent(id)}`),
+
+  runAlerts: (id: string) => request<{ items: RunAlert[] }>(`/api/v1/runs/${encodeURIComponent(id)}/alerts`),
 
   stopRun: (id: string) =>
     request<{ stopping: boolean }>(`/api/v1/runs/${encodeURIComponent(id)}/stop`, { method: 'POST' }),

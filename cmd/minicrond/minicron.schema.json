@@ -111,6 +111,11 @@
         "disable_notification": {
           "type": "boolean",
           "default": false
+        },
+        "batch_window": {
+          "type": "string",
+          "default": "10s",
+          "description": "Batch window from first alert (Go duration, 1s to 1h)"
         }
       },
       "required": [

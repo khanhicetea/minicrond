@@ -26,9 +26,9 @@ db_prune_at = "03:30"           # daily prune time
 # .env, and restart. The hello job opts in via alerts = ["ops"]; while the
 # channel is disabled its failed runs only log an "unavailable" error.
 # The daemon refuses to start while the token reference cannot be resolved.
-#[[alert_channel]]
-#name = "ops"
-#type = "telegram"
-#bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
-#chat_id = "-329047830"
-#disable_notification = false
+[[alert_channel]]
+name = "ops"
+type = "telegram"
+bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
+chat_id = "-329047830"
+disable_notification = false

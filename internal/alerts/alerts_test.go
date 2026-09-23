@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,8 +9,78 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
+
+type captureChannel struct {
+	messages chan Alert
+}
+
+func (c *captureChannel) Send(_ context.Context, alert Alert) error {
+	c.messages <- alert
+	return nil
+}
+
+func TestBatchFlushesOnClose(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "test")
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: "1h"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &captureChannel{messages: make(chan Alert, 2)}
+	d.mu.Lock()
+	d.channels["ops"] = capture
+	d.mu.Unlock()
+	def := model.Definition{Alerts: []string{"ops"}}
+	d.Notify(model.Run{ID: "one", Status: "failed"}, def)
+	d.Notify(model.Run{ID: "two", Status: "timeout"}, def)
+	if err := d.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-capture.messages:
+		if len(got.Runs) != 2 || got.Runs[0].ID != "one" || got.Runs[1].ID != "two" {
+			t.Fatalf("batch = %#v", got)
+		}
+	default:
+		t.Fatal("batch was not sent")
+	}
+	if len(capture.messages) != 0 {
+		t.Fatal("expected one message")
+	}
+}
+
+func TestBatchWindowSendsWithoutClose(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "test")
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: "1s"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close(t.Context())
+	capture := &captureChannel{messages: make(chan Alert, 2)}
+	d.mu.Lock()
+	d.channels["ops"] = capture
+	d.mu.Unlock()
+	d.Notify(model.Run{ID: "one", Status: "failed"}, model.Definition{Alerts: []string{"ops"}})
+	select {
+	case got := <-capture.messages:
+		if len(got.Runs) != 1 || got.Runs[0].ID != "one" {
+			t.Fatalf("batch = %#v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("batch window did not flush")
+	}
+}
+
+func TestFormatBatch(t *testing.T) {
+	text := formatAlert(Alert{Runs: []model.Run{{ID: "one", Job: "backup", Status: "failed"}, {ID: "two", Job: "worker", Status: "timeout"}}})
+	for _, want := range []string{"minicrond alerts", "Run: one", "Run: two", "Status: timeout"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("batch %q missing %q", text, want)
+		}
+	}
+}
 
 func TestTelegramSend(t *testing.T) {
 	var body string

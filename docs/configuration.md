@@ -46,6 +46,7 @@ type = "telegram"              # only "telegram" in v0.1
 bot_token = "env:TELEGRAM_BOT_TOKEN"  # or file:/absolute/path (never inline)
 chat_id = "-1001234567890"
 disable_notification = false   # true = silent delivery
+batch_window = "10s"         # group runs per channel (1s..1h; default 10s)
 ```
 
 ### Field notes
@@ -153,7 +154,15 @@ plus: `PATH`, `HOME` (resolved for `run_as`), everything from `env`,
 
 Failed and timed-out runs are delivered asynchronously to the named
 channels; successful, skipped, and manually stopped runs never alert.
-Delivery is best-effort: an in-memory bounded queue with limited
-parallelism and transient-failure retries; queued alerts do not survive a
-daemon crash. Additional providers implement the alert channel interface
-without touching run execution.
+Delivery is best-effort: each channel groups failures arriving within its
+`batch_window` (measured from the first alert) into one Telegram message.
+Long batches are split to fit the provider limit. An in-memory bounded queue
+and limited parallelism mean queued alerts do not survive a daemon crash.
+Delivery attempts, drops and failures can be inspected under a run's Alerts
+section or via `GET /api/v1/runs/{id}/alerts`; `GET /api/v1/metrics/alerts`
+reports status counts and outstanding delivery depth. Interrupted deliveries are
+marked on daemon restart; they are **not** resent. Test a channel with the
+web editor or `POST /api/v1/alert-channels/{name}/test`. Definitions must
+reference configured channel names; reload refuses to remove a referenced
+channel. Additional providers implement the alert channel interface without
+touching run execution.

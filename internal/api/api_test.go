@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/store"
@@ -74,6 +75,44 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 		t.Fatalf("body %q: %v", rec.Body.String(), err)
 	}
 	return out
+}
+
+func TestAlertChannelsAndValidation(t *testing.T) {
+	s, token, _ := setup(t)
+	s.SetAlertChannels(func() []config.AlertChannel {
+		return []config.AlertChannel{{Name: "ops", Type: "telegram", BatchWindow: "10s", BotToken: "env:SECRET"}}
+	})
+	list := call(s, false, "GET", "/api/v1/alert-channels", token, "", nil)
+	if list.Code != 200 || strings.Contains(list.Body.String(), "SECRET") || !strings.Contains(list.Body.String(), "batch_window") {
+		t.Fatalf("channel list: %d %s", list.Code, list.Body.String())
+	}
+	tested := false
+	s.SetAlertTest(func(_ context.Context, name string) error {
+		tested = name == "ops"
+		return nil
+	})
+	if response := call(s, false, "POST", "/api/v1/alert-channels/ops/test", token, "", nil); response.Code != 200 || !tested {
+		t.Errorf("test alert: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(s, false, "POST", "/api/v1/alert-channels/typo/test", token, "", nil); response.Code != 404 {
+		t.Errorf("unknown channel: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(s, false, "GET", "/api/v1/metrics/alerts", token, "", nil); response.Code != 200 || !strings.Contains(response.Body.String(), "queue_depth") {
+		t.Errorf("alert metrics: %d %s", response.Code, response.Body.String())
+	}
+	for _, body := range []string{
+		`{"name":"example","command":"true","alerts":["typo"]}`,
+		`{"name":"example","command":"true","alerts":["ops","ops"]}`,
+	} {
+		response := call(s, false, "POST", "/api/v1/jobs", token, body, nil)
+		if response.Code != 422 {
+			t.Errorf("expected invalid alerts: %d %s", response.Code, response.Body.String())
+		}
+	}
+	preview := call(s, false, "POST", "/api/v1/import/preview", token, previewBodyWithHash("[[job]]\nname='example'\ncommand='true'\nalerts=['typo']\n", ""), nil)
+	if preview.Code != 422 {
+		t.Errorf("expected invalid import: %d %s", preview.Code, preview.Body.String())
+	}
 }
 
 func previewBodyWithHash(content, hash string) string {

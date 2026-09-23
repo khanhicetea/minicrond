@@ -88,8 +88,14 @@ func TestTelegramAlertChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" {
+	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" || cfg.AlertChannels[0].BatchWindow != "10s" {
 		t.Fatalf("unexpected channels: %#v", cfg.AlertChannels)
+	}
+	for _, window := range []string{"0s", "500ms", "2h", "invalid"} {
+		mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\nbatch_window='"+window+"'\n")
+		if _, err := Load(path); err == nil {
+			t.Errorf("expected invalid batch_window %q", window)
+		}
 	}
 }
 

@@ -46,12 +46,15 @@ type Server struct {
 	ready     atomic.Bool
 	// tokenHash holds the hex SHA-256 of the active bearer token; the raw
 	// token exists only at rotation time.
-	tokenHash   atomic.Pointer[string]
-	tcp         *http.Server
-	unix        *http.Server
-	idemMu      sync.Mutex
-	tokenMu     sync.Mutex
-	streamSlots chan struct{}
+	tokenHash       atomic.Pointer[string]
+	tcp             *http.Server
+	unix            *http.Server
+	idemMu          sync.Mutex
+	tokenMu         sync.Mutex
+	streamSlots     chan struct{}
+	alertChannels   func() []config.AlertChannel
+	testAlert       func(context.Context, string) error
+	alertQueueDepth func() int
 }
 
 func (s *Server) currentTokenHash() string {
@@ -121,6 +124,35 @@ type apiError struct {
 func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload, reconcile func(context.Context) error, version string) *Server {
 	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version, streamSlots: make(chan struct{}, 64)}
 }
+
+// SetAlertChannels provides a redacted view of the live channel registry.
+func (s *Server) SetAlertChannels(list func() []config.AlertChannel)    { s.alertChannels = list }
+func (s *Server) SetAlertTest(test func(context.Context, string) error) { s.testAlert = test }
+func (s *Server) SetAlertQueueDepth(depth func() int)                   { s.alertQueueDepth = depth }
+
+func (s *Server) validateAlerts(defs []model.Definition) error {
+	if s.alertChannels == nil {
+		return nil
+	}
+	available := make(map[string]bool)
+	for _, ch := range s.alertChannels() {
+		available[ch.Name] = true
+	}
+	for _, def := range defs {
+		seen := make(map[string]bool)
+		for _, name := range def.Alerts {
+			if !available[name] {
+				return fmt.Errorf("%s.alerts: unknown channel %q", def.Name, name)
+			}
+			if seen[name] {
+				return fmt.Errorf("%s.alerts: duplicate channel %q", def.Name, name)
+			}
+			seen[name] = true
+		}
+	}
+	return nil
+}
+
 func (s *Server) InitializeToken(ctx context.Context) (string, error) {
 	hash, err := s.store.Meta(ctx, "token_hash")
 	if err == nil {
@@ -264,6 +296,10 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/workers/{name}/stop", s.workerStop)
 	m.HandleFunc("POST /api/v1/workers/{name}/restart", s.workerRestart)
 	m.HandleFunc("GET /api/v1/metrics/runs", s.runMetrics)
+	m.HandleFunc("GET /api/v1/metrics/alerts", s.alertMetrics)
+	m.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)
+	m.HandleFunc("POST /api/v1/alert-channels/{name}/test", s.testAlertChannel)
+	m.HandleFunc("GET /api/v1/runs/{id}/alerts", s.runAlerts)
 	m.HandleFunc("GET /api/v1/runs", s.runs)
 	m.HandleFunc("GET /api/v1/runs/{id}", s.run)
 	m.HandleFunc("POST /api/v1/runs/{id}/stop", s.stop)
@@ -352,6 +388,10 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		d.Kind = model.KindJob
 	}
 	if err := config.ValidateDefinition(&d); err != nil {
+		writeError(w, 422, "validation_failed", err.Error())
+		return
+	}
+	if err := s.validateAlerts([]model.Definition{d}); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -521,6 +561,65 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	s.super.Restart(d)
 	writeJSON(w, 202, map[string]bool{"restarting": true})
+}
+
+func (s *Server) listAlertChannels(w http.ResponseWriter, r *http.Request) {
+	items := make([]map[string]string, 0)
+	if s.alertChannels != nil {
+		for _, ch := range s.alertChannels() {
+			items = append(items, map[string]string{"name": ch.Name, "type": ch.Type, "batch_window": ch.BatchWindow})
+		}
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) testAlertChannel(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	found := false
+	if s.alertChannels != nil {
+		for _, channel := range s.alertChannels() {
+			found = found || channel.Name == name
+		}
+	}
+	if !found || s.testAlert == nil {
+		writeError(w, 404, "not_found", "alert channel not found")
+		return
+	}
+	if err := s.testAlert(r.Context(), name); err != nil {
+		writeError(w, 502, "delivery_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"sent": true})
+}
+
+func (s *Server) runAlerts(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.store.Run(r.Context(), r.PathValue("id")); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 404, "not_found", "run not found")
+		} else {
+			internal(w, err)
+		}
+		return
+	}
+	items, err := s.store.RunAlerts(r.Context(), r.PathValue("id"))
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) alertMetrics(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.store.AlertMetrics(r.Context())
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	depth := 0
+	if s.alertQueueDepth != nil {
+		depth = s.alertQueueDepth()
+	}
+	writeJSON(w, 200, map[string]any{"counts": counts, "queue_depth": depth})
 }
 
 func (s *Server) runMetrics(w http.ResponseWriter, r *http.Request) {
@@ -771,6 +870,10 @@ func (s *Server) importPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
+	if err := s.validateAlerts(defs); err != nil {
+		writeError(w, 422, "validation_failed", err.Error())
+		return
+	}
 	sum := sha256.Sum256([]byte(request.Content))
 	writeJSON(w, 200, map[string]any{"content_hash": hex.EncodeToString(sum[:]), "definitions": defs})
 }
@@ -788,6 +891,10 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 	}
 	defs, err := config.ParseImport([]byte(request.Content))
 	if err != nil {
+		writeError(w, 422, "validation_failed", err.Error())
+		return
+	}
+	if err := s.validateAlerts(defs); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}

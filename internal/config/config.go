@@ -51,6 +51,7 @@ type AlertChannel struct {
 	BotToken            string `toml:"bot_token" json:"-"`
 	ChatID              string `toml:"chat_id" json:"chat_id"`
 	DisableNotification bool   `toml:"disable_notification" json:"disable_notification"`
+	BatchWindow         string `toml:"batch_window" json:"batch_window"`
 }
 
 type Logs struct {
@@ -222,7 +223,8 @@ func validateConfig(c *Config) error {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
 	}
 	channels := make(map[string]bool, len(c.AlertChannels))
-	for _, channel := range c.AlertChannels {
+	for i := range c.AlertChannels {
+		channel := &c.AlertChannels[i]
 		if !namePattern.MatchString(channel.Name) {
 			return fmt.Errorf("alert_channel: invalid name %q", channel.Name)
 		}
@@ -232,6 +234,12 @@ func validateConfig(c *Config) error {
 		channels[channel.Name] = true
 		if channel.Type != "telegram" {
 			return fmt.Errorf("alert channel %q: unsupported type %q", channel.Name, channel.Type)
+		}
+		if channel.BatchWindow == "" {
+			channel.BatchWindow = "10s"
+		}
+		if d, err := time.ParseDuration(channel.BatchWindow); err != nil || d < time.Second || d > time.Hour {
+			return fmt.Errorf("alert channel %q: batch_window must be between 1s and 1h", channel.Name)
 		}
 		if channel.ChatID == "" {
 			return fmt.Errorf("alert channel %q: chat_id is required", channel.Name)

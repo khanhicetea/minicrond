@@ -60,6 +60,15 @@ does not normally shrink the database. If physical reclamation is needed,
 stop the daemon, back up the complete directory, and use SQLite `VACUUM` on
 `minicron-logs.db` with sufficient temporary free space before restarting.
 
+## Alert delivery
+
+Monitor `GET /api/v1/metrics/alerts` (`counts.failed`, `counts.dropped`,
+`counts.interrupted`, and `queue_depth`). Inspect a failed run at
+`GET /api/v1/runs/{id}/alerts` for per-channel attempts and the last safe
+error message. These are observations, not a durable delivery queue: after a
+crash, in-flight alerts are marked `interrupted` but not replayed. Test an
+individual channel with `POST /api/v1/alert-channels/{name}/test`.
+
 ## Backup and restore
 
 1. Stop the daemon (`systemctl stop minicrond` or SIGTERM; wait for exit).

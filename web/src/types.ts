@@ -50,6 +50,20 @@ export interface WorkerState {
   failures: number;
 }
 
+export interface AlertChannel {
+  name: string;
+  type: string;
+  batch_window: string;
+}
+
+export interface RunAlert {
+  channel: string;
+  status: string;
+  attempts: number;
+  last_error?: string | null;
+  updated_at?: string | null;
+}
+
 export interface JobDetail {
   definition: Definition;
   hash: string;

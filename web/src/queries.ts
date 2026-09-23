@@ -16,10 +16,12 @@ export const RECENT_RUNS_LIMIT = 200;
 export const keys = {
   daemon: ['daemon'] as const,
   jobs: ['jobs'] as const,
+  alertChannels: ['alert-channels'] as const,
   job: (name: string) => ['job', name] as const,
   runs: (job: string, limit: number) => ['runs', job, limit] as const,
   runMetrics: (range: string, buckets: number) => ['run-metrics', range, buckets] as const,
   run: (id: string) => ['run', id] as const,
+  runAlerts: (id: string) => ['run-alerts', id] as const,
 };
 
 export const daemonQuery = () =>
@@ -27,6 +29,9 @@ export const daemonQuery = () =>
 
 export const jobsQuery = () =>
   queryOptions({ queryKey: keys.jobs, queryFn: api.listJobs, select: data => data.items });
+
+export const alertChannelsQuery = () =>
+  queryOptions({ queryKey: keys.alertChannels, queryFn: api.listAlertChannels, select: data => data.items });
 
 export const jobQuery = (name: string) => queryOptions({ queryKey: keys.job(name), queryFn: () => api.getJob(name) });
 
@@ -51,6 +56,14 @@ export const runQuery = (id: string) =>
     queryKey: keys.run(id),
     queryFn: () => api.getRun(id),
     refetchInterval: query => (query.state.data && isActiveRun(query.state.data) ? 3_000 : false),
+  });
+
+export const runAlertsQuery = (id: string) =>
+  queryOptions({
+    queryKey: keys.runAlerts(id),
+    queryFn: () => api.runAlerts(id),
+    select: data => data.items,
+    refetchInterval: 5_000,
   });
 
 /**

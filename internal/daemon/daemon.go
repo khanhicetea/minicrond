@@ -62,6 +62,9 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	d.store = st
 	d.mu.Unlock()
 	defer st.Close()
+	if err := st.InterruptAlerts(ctx); err != nil {
+		return fmt.Errorf("mark interrupted alerts: %w", err)
+	}
 	logs, err := logstore.New(filepath.Join(d.DataDir, "logs"))
 	if err != nil {
 		return err
@@ -115,6 +118,29 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	sched := scheduler.New(st, execService)
 	super := supervisor.New(st, execService)
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
+	apiServer.SetAlertChannels(func() []config.AlertChannel {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return append([]config.AlertChannel(nil), d.cfg.AlertChannels...)
+	})
+	apiServer.SetAlertTest(func(ctx context.Context, name string) error {
+		d.mu.Lock()
+		dispatcher := d.alerts
+		d.mu.Unlock()
+		if dispatcher == nil {
+			return errors.New("alert dispatcher is not ready")
+		}
+		return dispatcher.Test(ctx, name)
+	})
+	apiServer.SetAlertQueueDepth(func() int {
+		d.mu.Lock()
+		dispatcher := d.alerts
+		d.mu.Unlock()
+		if dispatcher == nil {
+			return 0
+		}
+		return dispatcher.QueueDepth()
+	})
 	d.mu.Lock()
 	d.sched, d.super, d.api = sched, super, apiServer
 	d.mu.Unlock()
@@ -133,7 +159,10 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	dispatcher, err := alerts.New(cfg.AlertChannels)
+	if err := validateAlertReferences(defs, cfg.AlertChannels); err != nil {
+		return err
+	}
+	dispatcher, err := alerts.New(cfg.AlertChannels, st.RecordAlert)
 	if err != nil {
 		return err
 	}
@@ -207,11 +236,33 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if cfg.Scheduler.MaxConcurrentRuns != d.cfg.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != d.cfg.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
 	}
+	defs, err := d.store.Definitions(ctx)
+	if err != nil {
+		return err
+	}
+	if err := validateAlertReferences(defs, cfg.AlertChannels); err != nil {
+		return err
+	}
 	if err := d.alerts.Reload(cfg.AlertChannels); err != nil {
 		return err
 	}
 	d.cfg = cfg
 	return d.reconcileLocked(ctx)
+}
+
+func validateAlertReferences(defs []model.Definition, channels []config.AlertChannel) error {
+	available := make(map[string]bool, len(channels))
+	for _, channel := range channels {
+		available[channel.Name] = true
+	}
+	for _, def := range defs {
+		for _, name := range def.Alerts {
+			if !available[name] {
+				return fmt.Errorf("%s.alerts: unknown channel %q", def.Name, name)
+			}
+		}
+	}
+	return nil
 }
 
 // Reconcile refreshes the scheduler and worker supervisor from the authoritative

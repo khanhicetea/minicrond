@@ -55,6 +55,7 @@ fingerprint.
 |---|---|
 | `GET /api/v1/runs` | Search/filter run history (job, status, time window) |
 | `GET /api/v1/runs/{id}` | Full run record |
+| `GET /api/v1/runs/{id}/alerts` | Per-channel delivery status, attempts, last safe error |
 | `POST /api/v1/runs/{id}/stop` | Operator stop (status `stopped`) |
 | `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag) |
 | `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download) |
@@ -62,6 +63,14 @@ fingerprint.
 
 `GET /api/v1/metrics/runs?range=15m|1h|24h|7d|30d&buckets=N` — run-count
 time series by outcome.
+
+### Alerts
+
+| Method & path | Description |
+|---|---|
+| `GET /api/v1/alert-channels` | Configured channel names, types, batch windows (never secrets) |
+| `POST /api/v1/alert-channels/{name}/test` | Send a synthetic test message immediately |
+| `GET /api/v1/metrics/alerts` | Counts by delivery status and outstanding delivery depth |
 
 ### Config portability
 

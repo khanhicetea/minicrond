@@ -6,7 +6,7 @@ import LogViewer from '../components/LogViewer';
 import StatusBadge from '../components/StatusBadge';
 import { RunsList } from '../components/RunsTable';
 import { api, errorText } from '../api';
-import { jobQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
+import { jobQuery, runAlertsQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
 import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
 import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
@@ -36,6 +36,7 @@ export default function RunDetail() {
   const id = params.id ?? '';
   const [, navigate] = useLocation();
   const run = useQuery(runQuery(id));
+  const alerts = useQuery({ ...runAlertsQuery(id), enabled: Boolean(id) && run.isSuccess });
   const stop = useStopRun();
   const trigger = useTriggerJob();
   const [downloadError, setDownloadError] = useState('');
@@ -256,6 +257,33 @@ export default function RunDetail() {
           Stored log exceeded the size cap and was truncated.
         </div>
       )}
+
+      <section className="panel p-4 sm:p-5" aria-label="Alert deliveries">
+        <h2 className="panel-title mb-3">Alert deliveries</h2>
+        {alerts.isPending ? (
+          <p className="text-sm muted">Loading alert deliveries…</p>
+        ) : alerts.isError ? (
+          <p role="alert" className="text-sm text-red-300">Failed to load alert deliveries: {errorText(alerts.error)}</p>
+        ) : alerts.data.length === 0 ? (
+          <p className="text-sm muted">No alert deliveries for this run.</p>
+        ) : (
+          <ul className="space-y-2">
+            {alerts.data.map(item => (
+              <li key={item.channel} className="rounded-lg border border-base-300 bg-base-200/25 p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="min-w-0 break-all font-mono font-medium">{item.channel}</span>
+                  <span className={`chip ${item.status === 'sent' ? 'chip-success' : ['failed', 'dropped', 'interrupted'].includes(item.status) ? 'chip-error' : 'chip-info'}`}>
+                    {item.status}
+                  </span>
+                  <span className="text-xs muted">{item.attempts} {item.attempts === 1 ? 'attempt' : 'attempts'}</span>
+                  <span className="text-xs muted">Updated {formatTimestamp(item.updated_at)}</span>
+                </div>
+                {item.last_error && <p className="mt-2 break-words text-xs text-red-300">Last error: {item.last_error}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* Sidebar + output */}
       <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">

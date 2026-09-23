@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
@@ -28,13 +29,15 @@ type Channel interface {
 
 // Alert is the transport-neutral payload produced for an unsuccessful run.
 type Alert struct {
-	Run model.Run
+	Run  model.Run   // retained for single-run transports
+	Runs []model.Run // populated for batched delivery
 }
 
 type delivery struct {
 	channel Channel
 	alert   Alert
 	name    string
+	window  time.Duration
 }
 
 // Dispatcher asynchronously delivers alerts. Its channel registry can be
@@ -43,30 +46,46 @@ type delivery struct {
 type Dispatcher struct {
 	mu       sync.RWMutex
 	channels map[string]Channel
+	windows  map[string]time.Duration
 	queue    chan delivery
+	work     chan []delivery
+	record   func(context.Context, string, string, string, int, string) error
 	closed   bool
+	pending  atomic.Int64
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
 }
 
 // New creates a dispatcher and validates/resolves channel credentials.
-func New(channels []config.AlertChannel) (*Dispatcher, error) {
+func New(channels []config.AlertChannel, record func(context.Context, string, string, string, int, string) error) (*Dispatcher, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), ctx: ctx, cancel: cancel}
+	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), work: make(chan []delivery, 256), record: record, ctx: ctx, cancel: cancel}
 	if err := d.Reload(channels); err != nil {
+		cancel()
 		return nil, err
 	}
 	for range 4 {
 		d.wg.Go(d.run)
 	}
+	d.wg.Go(d.batch)
 	return d, nil
 }
 
 // Reload atomically replaces the available delivery channels.
 func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
 	channels := make(map[string]Channel, len(configs))
+	windows := make(map[string]time.Duration, len(configs))
 	for _, cfg := range configs {
+		window := cfg.BatchWindow
+		if window == "" {
+			window = "10s"
+		}
+		duration, err := time.ParseDuration(window)
+		if err != nil || duration < time.Second || duration > time.Hour {
+			return fmt.Errorf("alert channel %q: invalid batch_window", cfg.Name)
+		}
+		windows[cfg.Name] = duration
 		var channel Channel
 		switch cfg.Type {
 		case "telegram":
@@ -86,6 +105,7 @@ func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
 		return errors.New("alert dispatcher is closed")
 	}
 	d.channels = channels
+	d.windows = windows
 	return nil
 }
 
@@ -103,38 +123,151 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	for _, name := range definition.Alerts {
 		channel := d.channels[name]
 		if channel == nil {
-			slog.Error("alert channel is unavailable", "channel", name, "run", run.ID)
+			d.report(run.ID, name, "dropped", 0, "alert channel is unavailable")
 			continue
 		}
+		d.report(run.ID, name, "queued", 0, "")
+		d.pending.Add(1)
 		select {
-		case d.queue <- delivery{channel: channel, alert: Alert{Run: run}, name: name}:
+		case d.queue <- delivery{channel: channel, alert: Alert{Run: run}, name: name, window: d.windows[name]}:
 		default:
-			slog.Error("alert queue is full; dropping delivery", "channel", name, "run", run.ID)
+			d.pending.Add(-1)
+			d.report(run.ID, name, "dropped", 0, "alert queue is full")
+		}
+	}
+}
+
+func (d *Dispatcher) report(runID, name, status string, attempts int, reason string) {
+	if d.record == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.record(ctx, runID, name, status, attempts, reason); err != nil {
+		slog.Error("recording alert delivery failed", "channel", name, "run", runID, "error", err)
+	}
+}
+
+// batch starts a window on the first delivery to each channel. A reload
+// flushes the previous channel instance rather than mixing credentials.
+func (d *Dispatcher) batch() {
+	defer close(d.work)
+	type pending struct {
+		items []delivery
+		until time.Time
+	}
+	batches := make(map[string]pending)
+	flush := func(key string) {
+		p := batches[key]
+		delete(batches, key)
+		var group []delivery
+		length := len("minicrond alerts\n")
+		for _, item := range p.items {
+			n := len(formatTelegram(item.alert.Run)) + 2
+			if len(group) > 0 && length+n > 3500 {
+				d.work <- group
+				group = nil
+				length = len("minicrond alerts\n")
+			}
+			group = append(group, item)
+			length += n
+		}
+		if len(group) > 0 {
+			d.work <- group
+		}
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case item, ok := <-d.queue:
+			if !ok {
+				for key := range batches {
+					flush(key)
+				}
+				return
+			}
+			p := batches[item.name]
+			if len(p.items) > 0 && p.items[0].channel != item.channel {
+				flush(item.name)
+				p = pending{}
+			}
+			if len(p.items) == 0 {
+				p.until = time.Now().Add(item.window)
+			}
+			p.items = append(p.items, item)
+			batches[item.name] = p
+			if len(p.items) >= 256 {
+				flush(item.name)
+			}
+		case <-ticker.C:
+			for key, p := range batches {
+				if !time.Now().Before(p.until) {
+					flush(key)
+				}
+			}
 		}
 	}
 }
 
 func (d *Dispatcher) run() {
-	for item := range d.queue {
+	for batch := range d.work {
+		alert := Alert{Runs: make([]model.Run, 0, len(batch))}
+		for _, item := range batch {
+			alert.Runs = append(alert.Runs, item.alert.Run)
+		}
 		var err error
+		attempts := 0
 		for attempt := range 3 {
+			attempts = attempt + 1
+			for _, item := range batch {
+				d.report(item.alert.Run.ID, item.name, "sending", attempts, "")
+			}
 			ctx, cancel := context.WithTimeout(d.ctx, 15*time.Second)
-			err = item.channel.Send(ctx, item.alert)
+			err = batch[0].channel.Send(ctx, alert)
 			cancel()
 			if err == nil || d.ctx.Err() != nil {
 				break
 			}
-			timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
-			select {
-			case <-d.ctx.Done():
-				timer.Stop()
-			case <-timer.C:
+			if attempt < 2 {
+				timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+				select {
+				case <-d.ctx.Done():
+					timer.Stop()
+				case <-timer.C:
+				}
 			}
 		}
+		status, reason := "sent", ""
 		if err != nil {
-			slog.Error("sending alert failed after retries", "channel", item.name, "run", item.alert.Run.ID, "error", err)
+			status, reason = "failed", err.Error()
+			slog.Error("sending alert failed after retries", "channel", batch[0].name, "runs", len(batch), "error", err)
+		}
+		for _, item := range batch {
+			d.report(item.alert.Run.ID, item.name, status, attempts, reason)
+			d.pending.Add(-1)
 		}
 	}
+}
+
+// QueueDepth includes deliveries waiting for a window, queued for sending, or in flight.
+func (d *Dispatcher) QueueDepth() int { return int(d.pending.Load()) }
+
+// Test sends one synthetic message without creating a run or waiting for a batch.
+func (d *Dispatcher) Test(ctx context.Context, name string) error {
+	d.mu.RLock()
+	channel := d.channels[name]
+	closed := d.closed
+	d.mu.RUnlock()
+	if closed {
+		return errors.New("alert dispatcher is closed")
+	}
+	if channel == nil {
+		return fmt.Errorf("unknown alert channel %q", name)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return channel.Send(ctx, Alert{Run: model.Run{Job: "test", Status: "test", ID: "test"}})
 }
 
 // Close drains queued deliveries. Call it only after alert producers stop.
@@ -198,7 +331,7 @@ func newTelegram(token, chatID string, disableNotification bool, apiBase string,
 func (t *telegram) Send(ctx context.Context, alert Alert) error {
 	form := url.Values{
 		"chat_id":              {t.chatID},
-		"text":                 {formatTelegram(alert.Run)},
+		"text":                 {formatAlert(alert)},
 		"disable_notification": {fmt.Sprint(t.disableNotification)},
 	}
 	endpoint := strings.TrimRight(t.apiBase, "/") + "/bot" + t.token + "/sendMessage"
@@ -230,6 +363,21 @@ func (t *telegram) Send(ctx context.Context, alert Alert) error {
 		}
 	}
 	return nil
+}
+
+func formatAlert(alert Alert) string {
+	if len(alert.Runs) == 0 {
+		return formatTelegram(alert.Run)
+	}
+	var b strings.Builder
+	b.WriteString("minicrond alerts\n")
+	for i, run := range alert.Runs {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(strings.TrimPrefix(formatTelegram(run), "minicrond alert\n"))
+	}
+	return b.String()
 }
 
 func formatTelegram(run model.Run) string {

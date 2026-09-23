@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api, errorText } from '../api';
+import { alertChannelsQuery } from '../queries';
 import { Icon } from './Icon';
 import type { Definition } from '../types';
 import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
@@ -54,6 +57,13 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   const disabled = readOnly;
   const scheduleType = (draft.schedule ?? '').trim().toLowerCase().startsWith('@every') ? 'every' : 'cron';
   const tzOptions = TIMEZONES;
+  const channels = useQuery(alertChannelsQuery());
+  const [testing, setTesting] = useState('');
+  const [testResult, setTestResult] = useState('');
+  const selectedAlerts = draft.alerts ?? [];
+  const configuredChannels = channels.data ?? [];
+  // Keep saved names that are no longer configured available for removal.
+  const channelNames = [...new Set([...configuredChannels.map(channel => channel.name), ...selectedAlerts])];
 
   const setKind = (kind: 'job' | 'worker') => {
     onChange({ ...emptyDefinition(kind), name: draft.name });
@@ -498,26 +508,51 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
 
           <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide muted">Alerts</h3>
-            <div>
-              <label htmlFor={`${formId}-alerts`} className={label}>Alert channels (one per line)</label>
-              <textarea
-                id={`${formId}-alerts`}
-                className="mc-input mono"
-                value={(draft.alerts ?? []).join('\n')}
-                disabled={disabled}
-                onChange={event =>
-                  onChange({
-                    alerts: event.target.value
-                      .split('\n')
-                      .map(channel => channel.trim())
-                      .filter(Boolean),
-                  })
-                }
-                placeholder={'ops\non-call'}
-                spellCheck={false}
-              />
-              <p className="field-help">Failed and timed-out runs notify these configured channels.</p>
-            </div>
+            <fieldset>
+              <legend className={label}>Alert channels</legend>
+              {channelNames.length > 0 ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {channelNames.map(name => {
+                    const configured = configuredChannels.find(channel => channel.name === name);
+                    return (
+                      <div key={name} className="flex items-center gap-2 rounded-lg border border-base-300 px-3 py-2 text-sm">
+                        <input
+                          id={`${formId}-alert-${name}`}
+                          type="checkbox"
+                          checked={selectedAlerts.includes(name)}
+                          disabled={disabled}
+                          onChange={event => onChange({
+                            alerts: event.target.checked
+                              ? [...selectedAlerts, name]
+                              : selectedAlerts.filter(selected => selected !== name),
+                          })}
+                        />
+                        <label htmlFor={`${formId}-alert-${name}`} className="min-w-0 break-all font-mono">{name}</label>
+                        {configured ? <span className="ml-auto text-xs muted">{configured.type} · {configured.batch_window}</span> : channels.isSuccess && (
+                          <span className="ml-auto text-xs text-amber-300">Not configured</span>
+                        )}
+                        {configured && !readOnly && (
+                          <button type="button" className="btn-sub" disabled={Boolean(testing)} onClick={() => {
+                            setTesting(name);
+                            setTestResult('');
+                            void api.testAlertChannel(name)
+                              .then(() => setTestResult(`${name}: test message sent`))
+                              .catch(error => setTestResult(`${name}: ${errorText(error)}`))
+                              .finally(() => setTesting(''));
+                          }}>{testing === name ? 'Sending…' : 'Test'}</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : channels.isSuccess && (
+                <p className="text-sm muted">No channels configured.</p>
+              )}
+              {testResult && <p role="status" className="mt-2 text-xs">{testResult}</p>}
+              {channels.isPending && <p className="mt-2 text-xs muted">Loading channels…</p>}
+              {channels.isError && <p role="alert" className="mt-2 text-xs text-red-300">Failed to load channels: {errorText(channels.error)}</p>}
+              <p className="field-help">Failed and timed-out runs notify selected channels.</p>
+            </fieldset>
           </div>
 
           <div className="rounded-xl border border-base-300 bg-base-200/25 p-3">

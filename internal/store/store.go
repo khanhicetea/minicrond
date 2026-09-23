@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -127,6 +127,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 3: %w", err)
 		}
 	}
+	if version <= 3 {
+		if _, err := s.db.ExecContext(ctx, migration4); err != nil {
+			return fmt.Errorf("migration 4: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -165,7 +170,9 @@ CREATE TABLE schedule_state (
 );
 CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, before TEXT, after TEXT);
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
-PRAGMA user_version=3;
+CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
+CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
+PRAGMA user_version=4;
 COMMIT;`
 
 const migration3 = `
@@ -177,6 +184,13 @@ DELETE FROM runs WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL AND r
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
 PRAGMA user_version=3;
+COMMIT;`
+
+const migration4 = `
+BEGIN;
+CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
+CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
+PRAGMA user_version=4;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
