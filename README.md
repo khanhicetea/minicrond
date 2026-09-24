@@ -39,7 +39,7 @@ go build -o minicrond ./cmd/minicrond
 | API | REST `/api/v1/*` + SSE log stream, OpenAPI 3.1 contract served at `/openapi.json`, `/healthz` + `/readyz` |
 | Web UI | Dashboard, definition editor (schema-validated), run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
 | Alerts | Telegram channels defined in bootstrap config; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
-| CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
+| CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `crontab` (interactive migration), `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
 
 ## Quickstart
 
@@ -93,6 +93,18 @@ Run as a systemd service (root daemon or per-user daemons):
 sudo ./minicrond service install                    # unit minicrond, port 7423
 sudo ./minicrond service install --user alice --port 7424   # unit minicrond@alice
 ```
+
+Migrate existing user cron jobs interactively (preview, Enter to import, then
+comment out the original entries):
+
+```sh
+minicrond crontab   # calling user's crontab -> their local daemon
+sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
+# Alice's crontab -> root service; imported jobs run as Alice
+```
+
+See [the CLI reference](docs/cli.md) for
+limitations and failure recovery.
 
 ## Documentation
 

@@ -124,6 +124,21 @@ The root daemon reads `/etc/minicrond/config.toml` and stores data under
 `/var/lib/minicron`; per-user daemons read `~USER/.minicrond/config.toml`
 and run as that user. See [operations.md](operations.md) for details.
 
+To migrate existing cron jobs, run the interactive import against the desired
+**local Unix socket** (the TCP port does not select the daemon):
+
+```sh
+minicrond crontab  # run as Alice: Alice's crontab -> Alice's user daemon
+sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
+# Alice's crontab -> root service, with every imported job set to run_as=alice
+```
+
+Check the displayed jobs before pressing Enter. They are commented out in the
+source crontab **only after** the daemon imports them. Run `sudo` with
+`--user alice` for Alice's crontab; plain `sudo minicrond crontab` reads
+root's crontab. See [the CLI reference](cli.md)
+for unsupported cron syntax and failure recovery.
+
 ## Next steps
 
 - Full option reference: [configuration.md](configuration.md)

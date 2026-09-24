@@ -62,6 +62,8 @@ func run() error {
 		return exportConfig(args[1:])
 	case "import":
 		return importConfig(args[1:])
+	case "crontab":
+		return crontab(args[1:])
 	case "token":
 		return token(args[1:])
 	case "service":
@@ -340,6 +342,6 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".local", "share", "minicron")
 }
 func usage() {
-	fmt.Println("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import export status token service version")
+	fmt.Println("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import crontab export status token service version")
 	fmt.Println("service: install/uninstall systemd units (root daemon or per-user daemons; run as root)")
 }
