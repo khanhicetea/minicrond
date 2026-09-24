@@ -32,15 +32,15 @@ export function formatDayTime(iso?: string | null): string {
   return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
-/** Log-style timestamp: 14:32:18.123 in the viewer's local time. */
+/** Log-style timestamp: 14:32:18.1 in the viewer's local time. */
 export function formatClock(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   const ss = String(date.getSeconds()).padStart(2, '0');
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  return `${hh}:${mm}:${ss}.${ms}`;
+  const tenths = Math.floor(date.getMilliseconds() / 100);
+  return `${hh}:${mm}:${ss}.${tenths}`;
 }
 
 /** ISO timestamp without timezone noise, e.g. 2025-05-24 14:23:11. */

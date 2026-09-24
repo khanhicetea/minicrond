@@ -300,7 +300,7 @@ export default function LogViewer({ runId, footer }: { runId: string; footer?: R
             >
               <span className="log-num">{String(line.seq).padStart(4, '0')}</span>
               <span className="log-ts">[{formatClock(line.ts)}]</span>
-              <span className={`log-tag ${tag.cls}`}>{tag.label}</span>
+              <span className={`log-kind ${tag.cls}`} role="img" aria-label={tag.label} title={tag.label} />
               <span className="log-text">
                 {line.segments.map((segment, index) =>
                   segment.classes.length ? (

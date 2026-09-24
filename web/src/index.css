@@ -848,6 +848,21 @@ textarea.mc-input {
   color: #93c5fd;
   font-style: italic;
 }
+.log-kind {
+  flex-shrink: 0;
+  width: 2px;
+  align-self: stretch;
+  background: #6b7280;
+}
+.log-kind.stdout {
+  background: #4ade80;
+}
+.log-kind.stderr {
+  background: #f87171;
+}
+.log-kind.system {
+  background: #93c5fd;
+}
 .log-text {
   white-space: pre;
   word-break: normal;
