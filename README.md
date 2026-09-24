@@ -41,41 +41,60 @@ go build -o minicrond ./cmd/minicrond
 | Alerts | Telegram channels defined in bootstrap config; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
 | CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `crontab` (interactive migration), `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
 
-## Quickstart
+## Usage
+
+### 1. Provision a daemon
+
+On Linux, build from source (or use a [release binary](docs/getting-started.md)):
 
 ```sh
 go build -o minicrond ./cmd/minicrond
-./minicrond init
-./minicrond daemon
+./minicrond init       # creates ./minicron.toml (mode 0600)
+./minicrond validate   # check bootstrap settings before starting
+./minicrond daemon     # foreground; leave running in this terminal
 ```
 
-On first boot the daemon writes the initial bearer token once to the
-mode-0600 `initial-token` file in the data directory. Read and remove it,
-then open <http://127.0.0.1:7423>. Local CLI commands use the Unix socket
-without a token:
+This is a **user-mode** instance. Its default data directory is
+`~/.local/share/minicron` (private, mode 0700); config and data paths can be
+changed with `MINICRON_CONFIG` / `MINICRON_DATA`. The bootstrap TOML controls
+the server, scheduler, storage, logs, defaults, and alert channels — **not**
+job definitions. On first boot, read the one-time web/API token from
+`~/.local/share/minicron/initial-token` and remove that file:
 
 ```sh
-./minicrond list
-./minicrond run hello --wait
-./minicrond logs RUN_ID
+cat ~/.local/share/minicron/initial-token
+rm ~/.local/share/minicron/initial-token
 ```
 
-Define jobs in the web UI, via the API, or by importing a TOML bundle:
+Open <http://127.0.0.1:7423> and paste the token. The local CLI uses the
+private Unix socket, so it does not need a token. If the token is lost, use
+`./minicrond token --rotate` locally; this revokes the previous token.
+
+**Production alternative:** install the binary at a permanent path and use
+`sudo minicrond service install` for a root systemd service (config
+`/etc/minicrond/config.toml`, data `/var/lib/minicron`), or
+`sudo minicrond service install --user alice --port 7424` for a daemon running
+as Alice. Installation enables and starts the unit. These are separate
+instances from the foreground user daemon; stop the foreground daemon before
+installing another on the same port, and target the right data directory for
+CLI commands (e.g. `sudo env MINICRON_DATA=/var/lib/minicron minicrond status`
+for the root service). Its first token is in `/var/lib/minicron/initial-token`;
+read and remove it as root. See [service operations](docs/operations.md#systemd-installation).
+
+### 2. Add jobs and workers
+
+Create definitions in the web UI, through the API, or import a TOML **bundle**.
+For example, save this as `bundle.toml` (replace the example program paths
+with programs installed on your host):
 
 ```toml
-[[alert_channel]]
-name = "ops"
-type = "telegram"
-bot_token = "env:MINICRON_TELEGRAM_BOT_TOKEN"   # or file:/absolute/path
-chat_id = "-1001234567890"
-
 [[job]]
 name = "backup"
-command = "./backup.sh"
+argv = ["/usr/local/sbin/backup.sh"]
 schedule = "0 2 * * *"
 timezone = "Europe/Berlin"
-catch_up = "latest"
-alerts = ["ops"]
+catch_up = "latest"       # run the most recent missed fire after downtime
+on_overlap = "skip"       # don't run two backups at once
 
 [[worker]]
 name = "bridge"
@@ -84,27 +103,68 @@ restart = "on-failure"
 ```
 
 ```sh
-./minicrond import bundle.toml
+./minicrond import bundle.toml    # preview/validate, then apply by name
+./minicrond list                  # definitions and next fire times (JSON)
+./minicrond export --format toml  # snapshot portable definitions
 ```
 
-Run as a systemd service (root daemon or per-user daemons):
+Imports explicitly update the SQLite registry; editing `bundle.toml` alone
+does nothing until it is imported again. Jobs run on a schedule or on demand;
+workers are supervised long-running processes (autostart by default). To
+notify on failures, add a channel to **`minicron.toml`** (not the bundle):
 
-```sh
-sudo ./minicrond service install                    # unit minicrond, port 7423
-sudo ./minicrond service install --user alice --port 7424   # unit minicrond@alice
+```toml
+[[alert_channel]]
+name = "ops"
+type = "telegram"
+bot_token = "file:/path/to/telegram-token"  # replace with a daemon-readable absolute path
+chat_id = "-1001234567890"
 ```
 
-Migrate existing user cron jobs interactively (preview, Enter to import, then
-comment out the original entries):
+Set `alerts = ["ops"]` on the desired job or worker in `bundle.toml`, reload
+the bootstrap config with `./minicrond reload`, then re-import the bundle.
+An `env:NAME` token reference is also supported if the variable is set in
+the daemon's environment. Bind changes need a restart. See the
+[configuration reference](docs/configuration.md) for retries, timeouts,
+secrets, retention, and worker restart controls.
+
+### 3. Operate and inspect
+
+In a second terminal, with the same user's data directory (for a root
+service, run these as root with `MINICRON_DATA=/var/lib/minicron`):
 
 ```sh
-minicrond crontab   # calling user's crontab -> their local daemon
+./minicrond status                 # uptime, schema, token fingerprint
+./minicrond run backup --wait      # manual run; prints a JSON result with run ID
+./minicrond logs RUN_ID            # tagged stdout/stderr; ID from the result
+./minicrond logs RUN_ID -f         # follow a live run/worker
+```
+
+Use the web UI for run history, metrics, live logs, enabling/disabling
+schedules, and starting/stopping/restarting workers. For automation, use the
+[HTTP API](docs/http-api.md) with a bearer token. TCP is plaintext and bound
+to loopback by default; keep remote access behind TLS rather than exposing
+the daemon directly.
+
+### 4. Migrate cron and maintain the instance
+
+To migrate a user's crontab, select the **local socket of the destination
+daemon**. The command previews entries, waits for Enter, imports, and only
+then comments out migrated cron lines:
+
+```sh
+minicrond crontab   # current user's crontab -> current user's daemon
 sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
-# Alice's crontab -> root service; imported jobs run as Alice
+# Alice's crontab -> root service; imported jobs get run_as=alice
 ```
 
-See [the CLI reference](docs/cli.md) for
-limitations and failure recovery.
+Use the second command only for a root service; plain `sudo minicrond crontab`
+would read root's crontab. Review unsupported cron syntax and recovery steps
+in the [CLI reference](docs/cli.md#crontab--migrate-your-user-crontab).
+Back up the **whole data directory** with the daemon stopped (both SQLite
+DBs, WAL files, and live `logs/` buffers); check disk space and retention.
+See the [operations runbook](docs/operations.md) for backup/restore, upgrades,
+security, and troubleshooting.
 
 ## Documentation
 
