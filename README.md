@@ -109,9 +109,17 @@ restart = "on-failure"
 ```
 
 Imports explicitly update the SQLite registry; editing `bundle.toml` alone
-does nothing until it is imported again. Jobs run on a schedule or on demand;
-workers are supervised long-running processes (autostart by default). To
-notify on failures, add a channel to **`minicron.toml`** (not the bundle):
+does nothing until it is imported again. Time and size settings are **numbers
+in fixed units**, not quoted duration strings: `timeout`, `grace`,
+`retry_delay`, `restart_delay`, `healthy_after`, and alert `batch_window` are
+seconds; `logs.worker_flush_interval` is minutes; `keep_for`,
+`storage.keep_for_default`, and `logs.db_keep_for` are days; `log_max` is MiB
+and `logs.max_line` is KiB. Schedules such as `"@every 1m"` and daily
+`logs.db_prune_at = "03:30"` are string-valued exceptions.
+
+Jobs run on a schedule or on demand; workers are supervised long-running
+processes (autostart by default). To notify on failures, add a channel to
+**`minicron.toml`** (not the bundle):
 
 ```toml
 [[alert_channel]]

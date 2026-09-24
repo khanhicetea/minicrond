@@ -42,7 +42,7 @@ db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
-retry_delay = 15
+retry_delay = 15                # seconds
 
 [[alert_channel]]
 name = "ops"                   # referenced by definitions' alerts = [...]
@@ -54,6 +54,15 @@ batch_window = 10              # group runs per channel, seconds (1..3600)
 ```
 
 ### Field notes
+
+Numeric durations and sizes use fixed units, not strings such as `"10s"` or
+`"100MiB"`: definition `timeout`, `grace`, job `retry_delay`, worker
+`restart_delay` / `healthy_after`, and alert `batch_window` are seconds;
+`logs.worker_flush_interval` is minutes; retention `keep_for`,
+`storage.keep_for_default`, and `logs.db_keep_for` are days. `log_max` is MiB;
+`logs.max_line` is KiB. Cron schedules and `@every 1m` are strings, as is
+the `logs.db_prune_at` clock time (`"HH:MM"`). Counts such as `keep_runs`
+and `max_concurrent_runs` are unitless.
 
 - `server.bind` — a non-loopback host is rejected at load time unless
   `server.allow_insecure_remote = true`. TCP is plaintext HTTP; use the
@@ -113,7 +122,7 @@ schema below.
 | `stop_signal` | `SIGTERM` | both | INT, HUP, QUIT, USR1, USR2, TERM, or KILL |
 | `success_codes` | `[0]` | both | Exit codes counted as success |
 | `keep_runs` | storage default | both | Per-definition run-history length (0 = use `storage.keep_runs_default`) |
-| `keep_for` | storage default | both | Per-definition run age retention in days (`7`) |
+| `keep_for` | storage default | both | Per-definition run age retention in days (0 uses `storage.keep_for_default`) |
 | `log_max` | `100` | both | Per-run file-buffer budget in MiB (0 = default, 1..1048576); successful archival frees capacity; not an archive quota |
 | `log_on_full` | `drop_old` | both | Hot buffer full: `drop_old` or `drop_new` frames |
 | `labels` | `{}` | both | Free-form metadata map |
@@ -133,7 +142,7 @@ use `@every` schedules or trigger manually; workers use `autostart`.
 
 ```toml
 [defaults]              # optional: values applied to every entry below
-grace = 30
+grace = 30              # seconds
 
 [[job]]
 name = "backup"
