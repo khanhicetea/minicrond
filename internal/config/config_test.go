@@ -23,9 +23,8 @@ func TestLoadSettingsOnly(t *testing.T) {
 
 func TestLoadRejectsDefinitionSources(t *testing.T) {
 	for name, content := range map[string]string{
-		"include":  "[include]\npaths=['jobs/*.toml']\n",
-		"job":      "[[job]]\nname='hello'\ncommand='true'\n",
-		"defaults": "[defaults]\nshell='/bin/sh'\n",
+		"include": "[include]\npaths=['jobs/*.toml']\n",
+		"job":     "[[job]]\nname='hello'\ncommand='true'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "minicron.toml")
@@ -34,6 +33,47 @@ func TestLoadRejectsDefinitionSources(t *testing.T) {
 				t.Fatal("expected settings parser to reject definition source")
 			}
 		})
+	}
+}
+
+func TestLoadJobDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[defaults]\nshell='/bin/bash'\nretries=3\nretry_delay=12\n[defaults.env]\nFOO='bar'\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := model.Definition{Name: "job", Command: "true"}
+	if err := ValidateDefinition(&job, cfg.Defaults); err != nil {
+		t.Fatal(err)
+	}
+	if job.Shell != "/bin/bash" || job.Retries != 3 || job.RetryDelay != 12 || job.Env["FOO"] != "bar" {
+		t.Fatalf("job defaults not applied: %#v", job)
+	}
+	worker := model.Definition{Name: "worker", Kind: model.KindWorker, Command: "true"}
+	if err := ValidateDefinition(&worker, cfg.Defaults); err != nil {
+		t.Fatal(err)
+	}
+	if worker.Shell != "/bin/sh" || worker.Retries != 0 {
+		t.Fatalf("worker got job defaults: %#v", worker)
+	}
+	for _, invalid := range []string{"[defaults]\nretries=-1", "[defaults]\ncommand='true'", "[defaults]\nunknown=1"} {
+		mustWrite(t, path, invalid)
+		if _, err := Load(path); err == nil {
+			t.Errorf("expected invalid defaults: %s", invalid)
+		}
+	}
+}
+
+func TestParseImportGlobalDefaults(t *testing.T) {
+	global := model.Definition{Shell: "/bin/bash", Grace: 40, RetryDelay: 15}
+	content := "[defaults]\nshell='/bin/zsh'\n[[job]]\nname='first'\ncommand='true'\n[[job]]\nname='second'\ncommand='true'\ngrace=3\n[[worker]]\nname='worker'\ncommand='true'\n"
+	defs, err := ParseImport([]byte(content), global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defs[0].Shell != "/bin/zsh" || defs[0].Grace != 40 || defs[0].RetryDelay != 15 || defs[1].Grace != 3 || defs[2].Grace != 10 {
+		t.Fatalf("unexpected merged defaults: %#v", defs)
 	}
 }
 

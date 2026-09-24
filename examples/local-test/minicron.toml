@@ -22,6 +22,13 @@ worker_flush_interval = 15      # worker log checkpoint cadence, minutes
 db_keep_for = 30                # archive retention, days
 db_prune_at = "03:30"           # daily prune time
 
+[defaults]
+# Applied when jobs are imported or saved; explicit job settings win.
+# The slow job overrides both timeout and grace; workers are unaffected.
+timeout = 20                     # maximum job runtime, seconds
+grace = 5                       # wait after stop signal before SIGKILL, seconds
+retry_delay = 10                # delay between retries, seconds
+
 # Telegram alert demo (opt-in): uncomment, set MINICROND_TELEGRAM_TOKEN in
 # .env, and restart. The hello job opts in via alerts = ["ops"]; while the
 # channel is disabled its failed runs only log an "unavailable" error.

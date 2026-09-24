@@ -114,6 +114,11 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	sched := scheduler.New(st, execService)
 	super := supervisor.New(st, execService)
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
+	apiServer.SetJobDefaults(func() model.Definition {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.cfg.Defaults
+	})
 	apiServer.SetAlertChannels(func() []config.AlertChannel {
 		d.mu.Lock()
 		defer d.mu.Unlock()

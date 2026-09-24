@@ -92,6 +92,9 @@
         }
       }
     },
+    "defaults": {
+      "$ref": "#/$defs/job_defaults"
+    },
     "alert_channel": {
       "type": "array",
       "items": {
@@ -100,6 +103,36 @@
     }
   },
   "$defs": {
+    "job_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Defaults applied to jobs when saved or imported; bundle defaults and explicit job values take precedence",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "shell": {"type": "string"},
+        "timezone": {"type": "string"},
+        "catch_up": {"enum": ["none", "latest"]},
+        "on_overlap": {"enum": ["skip", "parallel"]},
+        "retries": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "retry_delay": {"type": "integer", "minimum": 1, "maximum": 86400},
+        "run_as": {"type": "string"},
+        "working_dir": {"type": "string"},
+        "env_base": {"enum": ["clean", "inherit"]},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "secret_env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "env_file": {"type": "string"},
+        "timeout": {"type": "integer", "minimum": 0},
+        "grace": {"type": "integer", "minimum": 1},
+        "stop_signal": {"type": "string"},
+        "success_codes": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+        "keep_runs": {"type": "integer", "minimum": 0},
+        "keep_for": {"type": "integer", "minimum": 0},
+        "log_max": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "log_on_full": {"enum": ["drop_old", "drop_new"]},
+        "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+        "alerts": {"type": "array", "items": {"type": "string"}}
+      }
+    },
     "alert_channel": {
       "type": "object",
       "additionalProperties": false,

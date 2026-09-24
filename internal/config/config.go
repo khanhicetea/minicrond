@@ -23,11 +23,12 @@ import (
 )
 
 type Config struct {
-	Server        Server         `toml:"server" json:"server"`
-	Scheduler     Scheduler      `toml:"scheduler" json:"scheduler"`
-	Storage       Storage        `toml:"storage" json:"storage"`
-	Logs          Logs           `toml:"logs" json:"logs"`
-	AlertChannels []AlertChannel `toml:"alert_channel" json:"alert_channels,omitempty"`
+	Server        Server           `toml:"server" json:"server"`
+	Scheduler     Scheduler        `toml:"scheduler" json:"scheduler"`
+	Storage       Storage          `toml:"storage" json:"storage"`
+	Logs          Logs             `toml:"logs" json:"logs"`
+	Defaults      model.Definition `toml:"defaults" json:"-"`
+	AlertChannels []AlertChannel   `toml:"alert_channel" json:"alert_channels,omitempty"`
 }
 
 type Server struct {
@@ -88,7 +89,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func ParseImport(content []byte) ([]model.Definition, error) {
+func ParseImport(content []byte, jobDefaults ...model.Definition) ([]model.Definition, error) {
 	var part importBundle
 	dec := toml.NewDecoder(strings.NewReader(string(content)))
 	dec.DisallowUnknownFields()
@@ -99,7 +100,12 @@ func ParseImport(content []byte) ([]model.Definition, error) {
 	applyConfigDefaults(&cfg)
 	for i := range part.Jobs {
 		part.Jobs[i].Kind = model.KindJob
-		applyDefinitionDefaults(&part.Jobs[i], part.Defaults)
+		if len(jobDefaults) > 0 {
+			mergeDefinitionDefaults(&part.Jobs[i], part.Defaults)
+			applyDefinitionDefaults(&part.Jobs[i], jobDefaults[0])
+		} else {
+			applyDefinitionDefaults(&part.Jobs[i], part.Defaults)
+		}
 	}
 	for i := range part.Workers {
 		part.Workers[i].Kind = model.KindWorker
@@ -161,33 +167,75 @@ func applyConfigDefaults(c *Config) {
 	}
 }
 func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
-	// Bundle defaults fill omitted definition fields; built-in defaults apply last.
-	d.Shell = cmp.Or(d.Shell, defaults.Shell, "/bin/sh")
-	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
-	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp, "none")
-	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap, "skip")
+	mergeDefinitionDefaults(d, defaults)
+	// Built-in defaults apply last.
+	d.Shell = cmp.Or(d.Shell, "/bin/sh")
+	d.CatchUp = cmp.Or(d.CatchUp, "none")
+	d.OnOverlap = cmp.Or(d.OnOverlap, "skip")
 	if d.Kind == model.KindJob {
-		d.Retries = cmp.Or(d.Retries, defaults.Retries)
-		d.RetryDelay = cmp.Or(d.RetryDelay, defaults.RetryDelay, 5)
+		d.RetryDelay = cmp.Or(d.RetryDelay, 5)
 	}
-	d.EnvBase = cmp.Or(d.EnvBase, defaults.EnvBase, "clean")
-	d.Grace = cmp.Or(d.Grace, defaults.Grace, 10)
-	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
-	d.StopSignal = cmp.Or(d.StopSignal, defaults.StopSignal, "SIGTERM")
-	d.Restart = cmp.Or(d.Restart, defaults.Restart, "always")
-	d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay, 5)
-	d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter, 30)
-	d.LogOnFull = cmp.Or(d.LogOnFull, defaults.LogOnFull, "drop_old")
-	if len(d.Alerts) == 0 {
-		d.Alerts = defaults.Alerts
-	}
-	if len(d.SuccessCodes) == 0 {
-		d.SuccessCodes = defaults.SuccessCodes
-	}
+	d.EnvBase = cmp.Or(d.EnvBase, "clean")
+	d.Grace = cmp.Or(d.Grace, 10)
+	d.StopSignal = cmp.Or(d.StopSignal, "SIGTERM")
+	d.Restart = cmp.Or(d.Restart, "always")
+	d.RestartDelay = cmp.Or(d.RestartDelay, 5)
+	d.HealthyAfter = cmp.Or(d.HealthyAfter, 30)
+	d.LogOnFull = cmp.Or(d.LogOnFull, "drop_old")
 	if len(d.SuccessCodes) == 0 {
 		d.SuccessCodes = []int{0}
 	}
-	d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, defaults.MaxRestartAttempts, 5)
+	d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, 5)
+}
+
+// mergeDefinitionDefaults fills omitted fields without applying built-in values.
+func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition) {
+	d.Shell = cmp.Or(d.Shell, defaults.Shell)
+	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
+	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp)
+	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap)
+	if d.Kind == model.KindJob {
+		d.Retries = cmp.Or(d.Retries, defaults.Retries)
+		d.RetryDelay = cmp.Or(d.RetryDelay, defaults.RetryDelay)
+	}
+	d.RunAs = cmp.Or(d.RunAs, defaults.RunAs)
+	d.WorkingDir = cmp.Or(d.WorkingDir, defaults.WorkingDir)
+	d.EnvBase = cmp.Or(d.EnvBase, defaults.EnvBase)
+	if d.Env == nil {
+		d.Env = defaults.Env
+	}
+	if d.SecretEnv == nil {
+		d.SecretEnv = defaults.SecretEnv
+	}
+	d.EnvFile = cmp.Or(d.EnvFile, defaults.EnvFile)
+	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
+	d.Grace = cmp.Or(d.Grace, defaults.Grace)
+	d.StopSignal = cmp.Or(d.StopSignal, defaults.StopSignal)
+	if d.SuccessCodes == nil {
+		d.SuccessCodes = defaults.SuccessCodes
+	}
+	d.KeepRuns = cmp.Or(d.KeepRuns, defaults.KeepRuns)
+	d.KeepFor = cmp.Or(d.KeepFor, defaults.KeepFor)
+	d.LogMax = cmp.Or(d.LogMax, defaults.LogMax)
+	d.LogOnFull = cmp.Or(d.LogOnFull, defaults.LogOnFull)
+	if d.Labels == nil {
+		d.Labels = defaults.Labels
+	}
+	if d.Alerts == nil {
+		d.Alerts = defaults.Alerts
+	}
+	if d.Enabled == nil {
+		d.Enabled = defaults.Enabled
+	}
+	if d.Kind == model.KindWorker {
+		if d.Autostart == nil {
+			d.Autostart = defaults.Autostart
+		}
+		d.Restart = cmp.Or(d.Restart, defaults.Restart)
+		d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay)
+		d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter)
+		d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, defaults.MaxRestartAttempts)
+	}
 }
 
 func validateConfig(c *Config) error {
@@ -225,6 +273,16 @@ func validateConfig(c *Config) error {
 	}
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
+	}
+	if c.Defaults.Name != "" || c.Defaults.Command != "" || len(c.Defaults.Argv) > 0 || c.Defaults.Schedule != "" ||
+		c.Defaults.Autostart != nil || c.Defaults.Restart != "" || c.Defaults.RestartDelay != 0 ||
+		c.Defaults.HealthyAfter != 0 || c.Defaults.MaxRestartAttempts != 0 {
+		return errors.New("defaults: only common job settings are allowed")
+	}
+	probe := model.Definition{Name: "defaults", Kind: model.KindJob, Command: "true"}
+	applyDefinitionDefaults(&probe, c.Defaults)
+	if err := validateDefinitions([]model.Definition{probe}, c.Scheduler.Timezone); err != nil {
+		return fmt.Errorf("defaults: %w", err)
 	}
 	channels := make(map[string]bool, len(c.AlertChannels))
 	for i := range c.AlertChannels {
@@ -360,13 +418,17 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 	return nil
 }
 
-func ValidateDefinition(d *model.Definition) error {
+func ValidateDefinition(d *model.Definition, jobDefaults ...model.Definition) error {
 	if d.Kind == "" {
 		d.Kind = model.KindJob
 	}
 	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}}
 	applyConfigDefaults(&cfg)
-	applyDefinitionDefaults(d, model.Definition{})
+	defaults := model.Definition{}
+	if d.Kind == model.KindJob && len(jobDefaults) > 0 {
+		defaults = jobDefaults[0]
+	}
+	applyDefinitionDefaults(d, defaults)
 	definitions := []model.Definition{*d}
 	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
 		return err

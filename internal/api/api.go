@@ -53,6 +53,7 @@ type Server struct {
 	tokenMu         sync.Mutex
 	streamSlots     chan struct{}
 	alertChannels   func() []config.AlertChannel
+	jobDefaults     func() model.Definition
 	testAlert       func(context.Context, string) error
 	alertQueueDepth func() int
 }
@@ -126,6 +127,7 @@ func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *super
 }
 
 // SetAlertChannels provides a redacted view of the live channel registry.
+func (s *Server) SetJobDefaults(get func() model.Definition)            { s.jobDefaults = get }
 func (s *Server) SetAlertChannels(list func() []config.AlertChannel)    { s.alertChannels = list }
 func (s *Server) SetAlertTest(test func(context.Context, string) error) { s.testAlert = test }
 func (s *Server) SetAlertQueueDepth(depth func() int)                   { s.alertQueueDepth = depth }
@@ -387,7 +389,11 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 	if d.Kind == "" {
 		d.Kind = model.KindJob
 	}
-	if err := config.ValidateDefinition(&d); err != nil {
+	var defaults model.Definition
+	if s.jobDefaults != nil {
+		defaults = s.jobDefaults()
+	}
+	if err := config.ValidateDefinition(&d, defaults); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -865,7 +871,11 @@ func (s *Server) importPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
-	defs, err := config.ParseImport([]byte(request.Content))
+	var defaults model.Definition
+	if s.jobDefaults != nil {
+		defaults = s.jobDefaults()
+	}
+	defs, err := config.ParseImport([]byte(request.Content), defaults)
 	if err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
@@ -889,7 +899,11 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "content_hash_mismatch", "apply content does not match preview")
 		return
 	}
-	defs, err := config.ParseImport([]byte(request.Content))
+	var defaults model.Definition
+	if s.jobDefaults != nil {
+		defaults = s.jobDefaults()
+	}
+	defs, err := config.ParseImport([]byte(request.Content), defaults)
 	if err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return

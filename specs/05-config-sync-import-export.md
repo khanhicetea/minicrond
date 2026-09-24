@@ -9,11 +9,12 @@ create, edit, enable/disable, and delete operation changes the registry in one
 transaction and records a revision and audit entry. The scheduler and worker
 supervisor always reconcile from the registry.
 
-The daemon TOML file contains daemon settings only: server, scheduler, storage,
-logs, and alert channels. It cannot contain `[[job]]`, `[[worker]]`,
-`[defaults]`, or `[include]`. Startup and SIGHUP reload daemon settings and
-reconcile the runtime from the current registry; they never discover or watch
-job files.
+The daemon TOML file contains server, scheduler, storage, logs, alert channels,
+and optional `[defaults]` for jobs saved through the API or imported from TOML.
+It cannot contain `[[job]]`, `[[worker]]`, or `[include]`. Bootstrap defaults
+are copied into definitions when saved, not applied retroactively to registry
+entries. Startup and SIGHUP reload daemon settings and reconcile the runtime
+from the current registry; they never discover or watch job files.
 
 ## TOML interchange
 

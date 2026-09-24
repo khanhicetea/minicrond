@@ -4,7 +4,7 @@ minicrond has exactly two configuration surfaces:
 
 1. **Bootstrap config** — the strict-TOML file the daemon loads at startup
    (`minicron.toml` by default). It configures the *daemon*: server,
-   scheduler, storage, logs, alert channels. Unknown fields are errors.
+   scheduler, storage, logs, alert channels, and job defaults. Unknown fields are errors.
 2. **Definitions** — jobs and workers. Their **sole source of truth is the
    SQLite registry**. They are created/edited in the web UI or via the API,
    and can be round-tripped through TOML bundles with `minicrond import` /
@@ -40,6 +40,10 @@ worker_flush_interval = 15     # seal+archive cadence for running workers, minut
 db_keep_for = 30               # log-archive age budget, days (rolling)
 db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
 
+[defaults]
+shell = "/bin/bash"           # optional defaults for newly saved jobs
+retry_delay = 15
+
 [[alert_channel]]
 name = "ops"                   # referenced by definitions' alerts = [...]
 type = "telegram"              # only "telegram" in v0.1
@@ -64,6 +68,12 @@ batch_window = 10              # group runs per channel, seconds (1..3600)
   `file:/absolute/path`. The daemon resolves it at startup/reload and fails
   to start if the reference cannot be resolved. Tokens are never stored in
   config or the registry.
+- `[defaults]` fills omitted fields when a job is created/updated through the API
+  or imported. Explicit job values take precedence; bundle `[defaults]` takes
+  precedence over bootstrap `[defaults]`. Values are persisted in the registry;
+  changing bootstrap defaults does not change existing jobs until they are
+  saved or imported again. Worker definitions do not use bootstrap defaults.
+  Zero-valued numeric fields use their defaults (as with bundle defaults).
 - Reload: `SIGHUP` or `minicrond reload` re-reads the bootstrap config
   (server bind changes need a restart). Definitions are not reloaded from
   disk — they live in the registry.
