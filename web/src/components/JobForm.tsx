@@ -14,6 +14,8 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
     enabled: true,
     timezone: 'UTC',
     env_base: 'clean',
+    timeout: 0,
+    grace: 10,
   };
   if (kind === 'job') {
     base.schedule = '0 0 * * *';
@@ -23,8 +25,9 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
   } else {
     base.autostart = true;
     base.restart = 'always';
-    base.restart_delay = '5s';
-    base.max_restart_attempts = 0;
+    base.restart_delay = 5;
+    base.max_restart_attempts = 5;
+    base.healthy_after = 30;
   }
   return base;
 }
@@ -274,26 +277,32 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
 
               <div className="grid gap-4 sm:grid-cols-3">
                 <div>
-                  <label htmlFor={`${formId}-timeout`} className={label}>Timeout</label>
+                  <label htmlFor={`${formId}-timeout`} className={label}>Timeout (seconds)</label>
                   <input
                     id={`${formId}-timeout`}
-                    className={`${field} mono`}
+                    type="number"
+                    min={0}
+                    step={1}
+                    className={field}
                     value={draft.timeout ?? ''}
                     disabled={disabled}
-                    onChange={event => onChange({ timeout: event.target.value || undefined })}
-                    placeholder="20m"
+                    onChange={event => onChange({ timeout: optionalNumber(event.target.value) })}
+                    placeholder="1200"
                   />
-                  <p className="field-help">Max runtime per run</p>
+                  <p className="field-help">Max runtime per run; 0 disables the timeout</p>
                 </div>
                 <div>
-                  <label htmlFor={`${formId}-grace`} className={label}>Grace</label>
+                  <label htmlFor={`${formId}-grace`} className={label}>Grace (seconds)</label>
                   <input
                     id={`${formId}-grace`}
-                    className={`${field} mono`}
+                    type="number"
+                    min={1}
+                    step={1}
+                    className={field}
                     value={draft.grace ?? ''}
                     disabled={disabled}
-                    onChange={event => onChange({ grace: event.target.value || undefined })}
-                    placeholder="5s"
+                    onChange={event => onChange({ grace: optionalNumber(event.target.value) })}
+                    placeholder="10"
                   />
                   <p className="field-help">Before SIGKILL</p>
                 </div>
@@ -330,14 +339,17 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                 </select>
               </div>
               <div>
-                <label htmlFor={`${formId}-rdelay`} className={label}>Restart delay</label>
+                <label htmlFor={`${formId}-rdelay`} className={label}>Restart delay (seconds)</label>
                 <input
                   id={`${formId}-rdelay`}
-                  className={`${field} mono`}
-                  value={draft.restart_delay ?? '5s'}
+                  type="number"
+                  min={1}
+                  step={1}
+                  className={field}
+                  value={draft.restart_delay ?? 5}
                   disabled={disabled}
-                  onChange={event => onChange({ restart_delay: event.target.value || undefined })}
-                  placeholder="5s"
+                  onChange={event => onChange({ restart_delay: optionalNumber(event.target.value) })}
+                  placeholder="5"
                 />
               </div>
               <div>
@@ -353,14 +365,17 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                 />
               </div>
               <div>
-                <label htmlFor={`${formId}-healthy`} className={label}>Healthy after</label>
+                <label htmlFor={`${formId}-healthy`} className={label}>Healthy after (seconds)</label>
                 <input
                   id={`${formId}-healthy`}
-                  className={`${field} mono`}
+                  type="number"
+                  min={1}
+                  step={1}
+                  className={field}
                   value={draft.healthy_after ?? ''}
                   disabled={disabled}
-                  onChange={event => onChange({ healthy_after: event.target.value || undefined })}
-                  placeholder="10s"
+                  onChange={event => onChange({ healthy_after: optionalNumber(event.target.value) })}
+                  placeholder="30"
                 />
               </div>
               <label className="flex items-center gap-2.5 text-sm">
@@ -528,7 +543,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                           })}
                         />
                         <label htmlFor={`${formId}-alert-${name}`} className="min-w-0 break-all font-mono">{name}</label>
-                        {configured ? <span className="ml-auto text-xs muted">{configured.type} · {configured.batch_window}</span> : channels.isSuccess && (
+                        {configured ? <span className="ml-auto text-xs muted">{configured.type} · {configured.batch_window}s</span> : channels.isSuccess && (
                           <span className="ml-auto text-xs text-amber-300">Not configured</span>
                         )}
                         {configured && !readOnly && (
@@ -563,12 +578,13 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                 <input id={`${formId}-keepruns`} type="number" min={0} className={field} value={draft.keep_runs ?? 0} disabled={disabled} onChange={event => onChange({ keep_runs: Number(event.target.value) || 0 })} />
               </div>
               <div>
-                <label htmlFor={`${formId}-keepfor`} className={label}>Keep for</label>
-                <input id={`${formId}-keepfor`} className={`${field} mono`} value={draft.keep_for ?? ''} disabled={disabled} onChange={event => onChange({ keep_for: event.target.value || undefined })} placeholder="720h" />
+                <label htmlFor={`${formId}-keepfor`} className={label}>Keep for (days)</label>
+                <input id={`${formId}-keepfor`} type="number" min={0} step={1} className={field} value={draft.keep_for ?? ''} disabled={disabled} onChange={event => onChange({ keep_for: optionalNumber(event.target.value) })} placeholder="30" />
               </div>
               <div>
-                <label htmlFor={`${formId}-logmax`} className={label}>Log max size</label>
-                <input id={`${formId}-logmax`} className={`${field} mono`} value={draft.log_max ?? ''} disabled={disabled} onChange={event => onChange({ log_max: event.target.value || undefined })} placeholder="10MiB" />
+                <label htmlFor={`${formId}-logmax`} className={label}>Log max size (MiB)</label>
+                <input id={`${formId}-logmax`} type="number" min={0} max={1048576} step={1} className={field} value={draft.log_max ?? ''} disabled={disabled} onChange={event => onChange({ log_max: optionalNumber(event.target.value) })} placeholder="100" />
+                <p className="field-help">0 uses the default of 100 MiB.</p>
               </div>
               <div>
                 <label htmlFor={`${formId}-logfull`} className={label}>When log is full</label>
@@ -584,6 +600,10 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
       </details>
     </form>
   );
+}
+
+function optionalNumber(value: string): number | undefined {
+  return value === '' ? undefined : Number(value);
 }
 
 function parseKeyValue(text: string): Record<string, string> | undefined {

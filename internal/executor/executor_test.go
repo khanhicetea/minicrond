@@ -12,28 +12,13 @@ import (
 )
 
 func TestResolveLogMax(t *testing.T) {
-	const defaultMax int64 = 100 << 20
-	tests := []struct {
-		name    string
-		value   string
-		want    int64
-		wantErr bool
-	}{
-		{name: "unset", want: defaultMax},
-		{name: "zero", value: "0", want: defaultMax},
-		{name: "configured", value: "10MiB", want: 10 << 20},
-		{name: "invalid", value: "invalid", want: defaultMax, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveLogMax(tt.value)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("resolveLogMax(%q) error = %v, wantErr %v", tt.value, err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Errorf("resolveLogMax(%q) = %d, want %d", tt.value, got, tt.want)
-			}
-		})
+	for _, tc := range []struct {
+		value int
+		want  int64
+	}{{0, 100 << 20}, {10, 10 << 20}, {1 << 20, 1 << 40}} {
+		if got := resolveLogMax(tc.value); got != tc.want {
+			t.Errorf("resolveLogMax(%d) = %d, want %d", tc.value, got, tc.want)
+		}
 	}
 }
 
@@ -51,8 +36,11 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 	service := New(st, logs, Options{MaxConcurrentRuns: 2, OnFinished: func(run model.Run, _ model.Definition) {
 		finished <- run
 	}})
-	for _, tc := range []struct{ name, command, timeout, want string }{{"ok", "exit 0", "0", "succeeded"}, {"slow", "sleep 5", "100ms", "timeout"}} {
-		d := model.Definition{Name: tc.name, Kind: model.KindJob, Command: tc.command, Shell: "/bin/sh", Timeout: tc.timeout, Grace: "0", Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
+	for _, tc := range []struct {
+		name, command, want string
+		timeout             int
+	}{{"ok", "exit 0", "succeeded", 0}, {"slow", "sleep 5", "timeout", 1}} {
+		d := model.Definition{Name: tc.name, Kind: model.KindJob, Command: tc.command, Shell: "/bin/sh", Timeout: tc.timeout, Grace: 0, Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
 		if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +96,7 @@ func TestDescendantHoldingPipeIsBoundedAndClean(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(st, logs, Options{MaxConcurrentRuns: 2})
-	d := model.Definition{Name: "spawner", Kind: model.KindJob, Command: "echo parent; sleep 10 & echo done", Shell: "/bin/sh", Timeout: "0", Grace: "0",
+	d := model.Definition{Name: "spawner", Kind: model.KindJob, Command: "echo parent; sleep 10 & echo done", Shell: "/bin/sh", Timeout: 0, Grace: 0,
 		Timezone: "UTC", OnOverlap: "skip", EnvBase: "clean", SuccessCodes: []int{0}}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
@@ -178,7 +166,7 @@ func TestOverlapSkipDeclinesWhileActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := New(st, logs, Options{MaxConcurrentRuns: 4})
-	d := model.Definition{Name: "solo", Kind: model.KindJob, Command: "sleep 2", Shell: "/bin/sh", Timeout: "0", Grace: "0", OnOverlap: "skip",
+	d := model.Definition{Name: "solo", Kind: model.KindJob, Command: "sleep 2", Shell: "/bin/sh", Timeout: 0, Grace: 0, OnOverlap: "skip",
 		Timezone: "UTC", EnvBase: "clean", SuccessCodes: []int{0}}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)

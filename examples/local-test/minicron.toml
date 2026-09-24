@@ -15,11 +15,11 @@ max_concurrent_runs = 8
 
 [storage]
 keep_runs_default = 100
-keep_for_default = "24h"
+keep_for_default = 1
 
 [logs]
-worker_flush_interval = "15m"   # worker log checkpoint cadence                                                         
-db_keep_for = "720h"            # archive retention                                                                     
+worker_flush_interval = 15      # worker log checkpoint cadence, minutes
+db_keep_for = 30                # archive retention, days
 db_prune_at = "03:30"           # daily prune time
 
 # Telegram alert demo (opt-in): uncomment, set MINICROND_TELEGRAM_TOKEN in

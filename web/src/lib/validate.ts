@@ -1,4 +1,4 @@
-import { isValidTimezone, parseDuration, parseSchedule } from './cron';
+import { isValidTimezone, parseSchedule } from './cron';
 import type { Definition } from '../types';
 
 export interface DefinitionIssue {
@@ -57,17 +57,22 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
     add({ field: 'timezone', title: 'Invalid: Timezone', message: `Unknown IANA timezone "${def.timezone}".`, severity: 'error' });
   }
 
-  for (const [field, label] of [
-    ['timeout', 'Timeout'],
-    ['grace', 'Grace'],
-    ['restart_delay', 'Restart delay'],
-    ['healthy_after', 'Healthy after'],
-    ['keep_for', 'Keep for'],
+  for (const [field, label, allowZero] of [
+    ['timeout', 'Timeout', true],
+    ['grace', 'Grace', false],
+    ['restart_delay', 'Restart delay', false],
+    ['healthy_after', 'Healthy after', false],
+    ['keep_for', 'Keep for', true],
+    ['log_max', 'Log max size (MiB)', true],
   ] as const) {
     const value = def[field];
-    if (typeof value === 'string' && value.trim() && parseDuration(value) === null) {
-      add({ field, title: `Invalid: ${label}`, message: `"${value}" is not a duration like 30s, 5m or 1h30m.`, severity: 'error' });
+    if (typeof value === 'number' && (!Number.isInteger(value) || value < 0 || (!allowZero && value === 0))) {
+      add({ field, title: `Invalid: ${label}`, message: `Must be ${allowZero ? 'a non-negative' : 'a positive'} whole number.`, severity: 'error' });
     }
+  }
+
+  if (def.log_max !== undefined && def.log_max > 1048576) {
+    add({ field: 'log_max', title: 'Invalid: Log max size', message: 'Must not exceed 1048576 MiB (1 TiB).', severity: 'error' });
   }
 
   for (const field of ['keep_runs', 'max_restart_attempts', 'priority'] as const) {

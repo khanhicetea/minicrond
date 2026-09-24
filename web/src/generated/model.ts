@@ -26,21 +26,33 @@ export interface Definition {
   env?: { [key: string]: string};
   secret_env?: { [key: string]: string};
   env_file?: string;
-  timeout?: string;
-  grace?: string;
+  /**
+   * Timeout and Grace are measured in seconds.
+   */
+  timeout?: number /* int */;
+  grace?: number /* int */;
   stop_signal?: string;
   success_codes?: number /* int */[];
   keep_runs?: number /* int */;
-  keep_for?: string;
-  log_max?: string;
+  /**
+   * KeepFor is measured in days. Zero uses the storage default.
+   */
+  keep_for?: number /* int */;
+  /**
+   * LogMax is measured in MiB. Zero uses the default 100 MiB.
+   */
+  log_max?: number /* int */;
   log_on_full?: string;
   labels?: { [key: string]: string};
   alerts?: string[];
   autostart?: boolean;
   restart?: string;
-  restart_delay?: string;
+  /**
+   * RestartDelay and HealthyAfter are measured in seconds.
+   */
+  restart_delay?: number /* int */;
   max_restart_attempts?: number /* int */;
-  healthy_after?: string;
+  healthy_after?: number /* int */;
   priority?: number /* int */;
   /**
    * NextFireAt is populated by the scheduler for API responses only.

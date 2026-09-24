@@ -564,10 +564,10 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAlertChannels(w http.ResponseWriter, r *http.Request) {
-	items := make([]map[string]string, 0)
+	items := make([]map[string]any, 0)
 	if s.alertChannels != nil {
 		for _, ch := range s.alertChannels() {
-			items = append(items, map[string]string{"name": ch.Name, "type": ch.Type, "batch_window": ch.BatchWindow})
+			items = append(items, map[string]any{"name": ch.Name, "type": ch.Type, "batch_window": ch.BatchWindow})
 		}
 	}
 	writeJSON(w, 200, map[string]any{"items": items})

@@ -53,7 +53,7 @@ export interface WorkerState {
 export interface AlertChannel {
   name: string;
   type: string;
-  batch_window: string;
+  batch_window: number;
 }
 
 export interface RunAlert {

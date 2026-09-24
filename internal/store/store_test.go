@@ -83,7 +83,7 @@ func TestCrashRecoveryAndRetentionKeepNewest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	d := model.Definition{Name: "job", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	d := model.Definition{Name: "job", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: 0, Grace: 0, OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
 	d, err = s.PutDefinition(t.Context(), d, 0, "test")
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestRunMetricsCountsBeyondRunsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	def := model.Definition{Name: "metric", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	def := model.Definition{Name: "metric", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: 0, Grace: 0, OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
 	if _, err := s.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	def := model.Definition{Name: "ret", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: "0", Grace: "0", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+	def := model.Definition{Name: "ret", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", Timeout: 0, Grace: 0, OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
 	if _, err := s.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}

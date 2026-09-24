@@ -153,10 +153,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 		return r, false, err
 	}
-	maxBytes, err := resolveLogMax(d.LogMax)
-	if err != nil {
-		slog.Error("invalid log_max, falling back to default", "job", d.Name, "log_max", d.LogMax, "error", err)
-	}
+	maxBytes := resolveLogMax(d.LogMax)
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
 		ended := time.Now().UTC()
@@ -176,19 +173,11 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 	go s.execute(runCtx, r, d, writer, a)
 	return r, false, nil
 }
-func resolveLogMax(value string) (int64, error) {
-	const defaultMax = 100 << 20
-	if value == "" {
-		return defaultMax, nil
+func resolveLogMax(value int) int64 {
+	if value == 0 {
+		value = 100
 	}
-	maxBytes, err := logstore.ParseBytes(value)
-	if err != nil {
-		return defaultMax, err
-	}
-	if maxBytes == 0 {
-		return defaultMax, nil
-	}
-	return maxBytes, nil
+	return int64(value) << 20
 }
 
 func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
@@ -293,7 +282,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	go func() { pumps <- w.Pipe(logstore.Stderr, stderrR) }()
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
-	timeout, _ := time.ParseDuration(d.Timeout)
+	timeout := time.Duration(d.Timeout) * time.Second
 	var timer <-chan time.Time
 	if timeout > 0 {
 		t := time.NewTimer(timeout)
@@ -564,7 +553,7 @@ func resolveSecret(ref string) (string, error) {
 	return "", errors.New("invalid secret reference")
 }
 func stopGroup(pgid int, d model.Definition, wait <-chan error) error {
-	grace, _ := time.ParseDuration(d.Grace)
+	grace := time.Duration(d.Grace) * time.Second
 	if grace <= 0 {
 		killGroup(pgid, syscall.SIGKILL)
 		return <-wait

@@ -36,9 +36,9 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
   if (isWorker) {
     if (def.autostart !== undefined) emit('autostart', 'autostart', String(def.autostart));
     if (def.restart) emit('restart', 'restart', literal(def.restart));
-    if (def.restart_delay) emit('restart_delay', 'restart_delay', literal(def.restart_delay));
+    if (def.restart_delay !== undefined) emit('restart_delay', 'restart_delay', String(def.restart_delay));
     if (def.max_restart_attempts) emit('max_restart_attempts', 'max_restart_attempts', String(def.max_restart_attempts));
-    if (def.healthy_after) emit('healthy_after', 'healthy_after', literal(def.healthy_after));
+    if (def.healthy_after !== undefined) emit('healthy_after', 'healthy_after', String(def.healthy_after));
     if (def.priority) emit('priority', 'priority', String(def.priority));
   } else {
     if (def.schedule) emit('schedule', 'schedule', literal(def.schedule));
@@ -50,16 +50,16 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
   if (def.run_as) emit('run_as', 'run_as', literal(def.run_as));
   if (def.working_dir) emit('working_dir', 'working_dir', literal(def.working_dir));
   if (def.env_base && def.env_base !== 'clean') emit('env_base', 'env_base', literal(def.env_base));
-  if (def.timeout) emit('timeout', 'timeout', literal(def.timeout));
-  if (def.grace) emit('grace', 'grace', literal(def.grace));
+  if (def.timeout !== undefined) emit('timeout', 'timeout', String(def.timeout));
+  if (def.grace !== undefined) emit('grace', 'grace', String(def.grace));
   if (def.stop_signal) emit('stop_signal', 'stop_signal', literal(def.stop_signal));
   if (def.success_codes && def.success_codes.length > 0) {
     lineMap.success_codes = lines.length + 1;
     lines.push(`success_codes = [${def.success_codes.join(', ')}]`);
   }
   if (def.keep_runs) emit('keep_runs', 'keep_runs', String(def.keep_runs));
-  if (def.keep_for) emit('keep_for', 'keep_for', literal(def.keep_for));
-  if (def.log_max) emit('log_max', 'log_max', literal(def.log_max));
+  if (def.keep_for) emit('keep_for', 'keep_for', String(def.keep_for));
+  if (def.log_max !== undefined) emit('log_max', 'log_max', String(def.log_max));
   if (def.log_on_full) emit('log_on_full', 'log_on_full', literal(def.log_on_full));
   if (def.alerts && def.alerts.length > 0) {
     lineMap.alerts = lines.length + 1;

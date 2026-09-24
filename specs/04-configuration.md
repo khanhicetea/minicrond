@@ -41,12 +41,12 @@ jitter_gate     = false             # v1.0+: serialize jittered starts
 
 [storage]
 keep_runs_default = 200             # applies when job omits keep_runs
-keep_for_default  = "30d"
+keep_for_default  = 30              # days
 audit_keep        = 5000
 
 [logs]
 backend   = "file"                  # "file" | "s3"         (see spec 09)
-max_line  = "256KiB"                # hard per-line cap (truncated + flagged)
+max_line  = 256                     # hard per-line cap in KiB (truncated + flagged)
 
 # [logs.s3]                          # active only when backend = "s3"
 # endpoint    = ""                   # empty = AWS default; set for MinIO/R2
@@ -73,16 +73,16 @@ run_as      = "postgres"
 working_dir = "~"                   # ~ resolves against run_as user's home
 env         = { PGOPTIONS = "-c statement-timeout=60s" }
 env_file    = "backup.env"          # relative to the INCLUDING file
-timeout     = "2h"
-grace       = "30s"                 # SIGTERM→SIGKILL window
+timeout     = 7200                  # seconds
+grace       = 30                    # seconds; SIGTERM→SIGKILL window
 on_overlap  = "skip"                # parallel | skip | queue | replace
 max_queued  = 5
 retries     = 2
 retry_delay = "1m"
 retry_backoff = "exponential"       # constant | linear | exponential
 keep_runs   = 30
-keep_for    = "90d"
-log_max     = "50MiB"               # per-run log budget (file backend)
+keep_for    = 90                    # days
+log_max     = 50                    # per-run log budget in MiB (file backend)
 notify      = ["on-failure"]
 labels      = { tier = "prod" }
 enabled     = true
@@ -97,10 +97,10 @@ run_as      = "nodeuser"
 instances   = 2
 env         = { NODE_ENV = "production" }
 restart     = "on-failure"          # always (default for workers) | on-failure | never
-restart_delay   = "5s"
+restart_delay   = 5                 # seconds
 restart_backoff = "exponential"
 max_restart_attempts = 5            # consecutive unhealthy starts → fatal
-healthy_after   = "30s"
+healthy_after   = 30                # seconds
 priority    = 10                    # boot order, lower first
 depends_on  = ["db-migrate"]        # boot gating (worker names), reverse-order teardown
 autostart   = true

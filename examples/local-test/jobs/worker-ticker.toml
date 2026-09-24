@@ -7,4 +7,4 @@ env_file = "@EXAMPLE_DIR@/env.local"
 command = 'exec "$EXAMPLE_DIR/scripts/loop-date.sh" 5'
 autostart = true
 restart = "on-failure"
-restart_delay = "2s"
+restart_delay = 2

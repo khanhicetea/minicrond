@@ -145,9 +145,9 @@ max_concurrent_runs = 32
 
 [logs]
 backend = "file"
-worker_flush_interval = "15m"
+worker_flush_interval = 15 # minutes
 db_prune_at = "03:30"
-db_keep_for = "720h"
+db_keep_for = 30 # days
 `, bind)
 }
 func validate(args []string) error {

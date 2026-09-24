@@ -70,10 +70,10 @@ func TestLogArchiveDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Logs.WorkerFlushInterval != "15m" || cfg.Logs.DBKeepFor != "720h" || cfg.Logs.DBPruneAt != "03:30" {
+	if cfg.Logs.WorkerFlushInterval != 15 || cfg.Logs.DBKeepFor != 30 || cfg.Logs.DBPruneAt != "03:30" {
 		t.Fatalf("unexpected log defaults: %#v", cfg.Logs)
 	}
-	for _, logs := range []string{"worker_flush_interval='0s'", "db_keep_for='0s'", "db_prune_at='25:00'"} {
+	for _, logs := range []string{"worker_flush_interval=-1", "worker_flush_interval='15m'", "db_keep_for=-1", "db_keep_for='720h'", "db_prune_at='25:00'"} {
 		mustWrite(t, path, "[logs]\n"+logs+"\n")
 		if _, err := Load(path); err == nil {
 			t.Fatalf("expected invalid logs config for %s", logs)
@@ -88,14 +88,47 @@ func TestTelegramAlertChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" || cfg.AlertChannels[0].BatchWindow != "10s" {
+	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" || cfg.AlertChannels[0].BatchWindow != 10 {
 		t.Fatalf("unexpected channels: %#v", cfg.AlertChannels)
 	}
-	for _, window := range []string{"0s", "500ms", "2h", "invalid"} {
-		mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\nbatch_window='"+window+"'\n")
+	for _, window := range []string{"-1", "3601", "'10s'"} {
+		mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\nbatch_window="+window+"\n")
 		if _, err := Load(path); err == nil {
 			t.Errorf("expected invalid batch_window %q", window)
 		}
+	}
+}
+
+func TestSizeUnits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[logs]\nmax_line=256\n")
+	cfg, err := Load(path)
+	if err != nil || cfg.Logs.MaxLine != 256 {
+		t.Fatalf("logs.max_line = %d, %v", cfg.Logs.MaxLine, err)
+	}
+	for _, value := range []string{"-1", "16385", "'256KiB'"} {
+		mustWrite(t, path, "[logs]\nmax_line="+value+"\n")
+		if _, err := Load(path); err == nil {
+			t.Errorf("expected invalid max_line %s", value)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{
+		{"0", true}, {"1", true}, {"1048576", true}, {"-1", false}, {"1048577", false}, {"'10MiB'", false},
+	} {
+		_, err := ParseImport([]byte("[[job]]\nname='job'\ncommand='true'\nlog_max=" + tc.value + "\n"))
+		if (err == nil) != tc.valid {
+			t.Errorf("log_max=%s: error = %v, valid = %v", tc.value, err, tc.valid)
+		}
+	}
+}
+
+func TestParseImportRejectsDurationStrings(t *testing.T) {
+	_, err := ParseImport([]byte("[[job]]\nname='legacy'\ncommand='true'\ntimeout='10s'\n"))
+	if err == nil {
+		t.Fatal("expected legacy duration string to be rejected")
 	}
 }
 

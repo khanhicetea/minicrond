@@ -38,7 +38,7 @@ func TestWorkerFlushLoopRetriesInactiveBuffers(t *testing.T) {
 		}
 		defer db.Close()
 		logs.AttachDB(db)
-		d := &Daemon{logs: logs, cfg: &config.Config{Logs: config.Logs{WorkerFlushInterval: "1s"}}}
+		d := &Daemon{logs: logs, cfg: &config.Config{Logs: config.Logs{WorkerFlushInterval: 1}}}
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan struct{})
 		go func() {
@@ -47,7 +47,7 @@ func TestWorkerFlushLoopRetriesInactiveBuffers(t *testing.T) {
 		}()
 		defer func() { cancel(); <-done }()
 		synctest.Wait()
-		time.Sleep(time.Second) // advance the fake clock to the maintenance tick
+		time.Sleep(time.Minute) // advance the fake clock to the maintenance tick
 		synctest.Wait()
 		if _, err := os.Stat(filepath.Join(dir, "logs", "run")); !os.IsNotExist(err) {
 			t.Fatalf("maintenance did not archive inactive buffer: %v", err)

@@ -12,41 +12,45 @@ const (
 )
 
 type Definition struct {
-	ID                 int64             `json:"definition_id,omitzero" toml:"-"`
-	Name               string            `json:"name" toml:"name"`
-	Kind               Kind              `json:"kind" toml:"-"`
-	Revision           int64             `json:"revision,omitzero" toml:"-"`
-	Enabled            *bool             `json:"enabled,omitempty" toml:"enabled"`
-	Command            string            `json:"command,omitempty" toml:"command"`
-	Argv               []string          `json:"argv,omitempty" toml:"argv"`
-	Shell              string            `json:"shell,omitempty" toml:"shell"`
-	Schedule           string            `json:"schedule,omitempty" toml:"schedule"`
-	Timezone           string            `json:"timezone,omitempty" toml:"timezone"`
-	CatchUp            string            `json:"catch_up,omitempty" toml:"catch_up"`
-	OnOverlap          string            `json:"on_overlap,omitempty" toml:"on_overlap"`
-	RunOnStart         bool              `json:"run_on_start,omitzero" toml:"run_on_start"`
-	RunAs              string            `json:"run_as,omitempty" toml:"run_as"`
-	WorkingDir         string            `json:"working_dir,omitempty" toml:"working_dir"`
-	EnvBase            string            `json:"env_base,omitempty" toml:"env_base"`
-	Env                map[string]string `json:"env,omitempty" toml:"env"`
-	SecretEnv          map[string]string `json:"secret_env,omitempty" toml:"secret_env"`
-	EnvFile            string            `json:"env_file,omitempty" toml:"env_file"`
-	Timeout            string            `json:"timeout,omitempty" toml:"timeout"`
-	Grace              string            `json:"grace,omitempty" toml:"grace"`
-	StopSignal         string            `json:"stop_signal,omitempty" toml:"stop_signal"`
-	SuccessCodes       []int             `json:"success_codes,omitempty" toml:"success_codes"`
-	KeepRuns           int               `json:"keep_runs,omitzero" toml:"keep_runs"`
-	KeepFor            string            `json:"keep_for,omitempty" toml:"keep_for"`
-	LogMax             string            `json:"log_max,omitempty" toml:"log_max"`
-	LogOnFull          string            `json:"log_on_full,omitempty" toml:"log_on_full"`
-	Labels             map[string]string `json:"labels,omitempty" toml:"labels"`
-	Alerts             []string          `json:"alerts,omitempty" toml:"alerts"`
-	Autostart          *bool             `json:"autostart,omitempty" toml:"autostart"`
-	Restart            string            `json:"restart,omitempty" toml:"restart"`
-	RestartDelay       string            `json:"restart_delay,omitempty" toml:"restart_delay"`
-	MaxRestartAttempts int               `json:"max_restart_attempts,omitzero" toml:"max_restart_attempts"`
-	HealthyAfter       string            `json:"healthy_after,omitempty" toml:"healthy_after"`
-	Priority           int               `json:"priority,omitzero" toml:"priority"`
+	ID         int64             `json:"definition_id,omitzero" toml:"-"`
+	Name       string            `json:"name" toml:"name"`
+	Kind       Kind              `json:"kind" toml:"-"`
+	Revision   int64             `json:"revision,omitzero" toml:"-"`
+	Enabled    *bool             `json:"enabled,omitempty" toml:"enabled"`
+	Command    string            `json:"command,omitempty" toml:"command"`
+	Argv       []string          `json:"argv,omitempty" toml:"argv"`
+	Shell      string            `json:"shell,omitempty" toml:"shell"`
+	Schedule   string            `json:"schedule,omitempty" toml:"schedule"`
+	Timezone   string            `json:"timezone,omitempty" toml:"timezone"`
+	CatchUp    string            `json:"catch_up,omitempty" toml:"catch_up"`
+	OnOverlap  string            `json:"on_overlap,omitempty" toml:"on_overlap"`
+	RunOnStart bool              `json:"run_on_start,omitzero" toml:"run_on_start"`
+	RunAs      string            `json:"run_as,omitempty" toml:"run_as"`
+	WorkingDir string            `json:"working_dir,omitempty" toml:"working_dir"`
+	EnvBase    string            `json:"env_base,omitempty" toml:"env_base"`
+	Env        map[string]string `json:"env,omitempty" toml:"env"`
+	SecretEnv  map[string]string `json:"secret_env,omitempty" toml:"secret_env"`
+	EnvFile    string            `json:"env_file,omitempty" toml:"env_file"`
+	// Timeout and Grace are measured in seconds.
+	Timeout      int    `json:"timeout,omitzero" toml:"timeout"`
+	Grace        int    `json:"grace,omitzero" toml:"grace"`
+	StopSignal   string `json:"stop_signal,omitempty" toml:"stop_signal"`
+	SuccessCodes []int  `json:"success_codes,omitempty" toml:"success_codes"`
+	KeepRuns     int    `json:"keep_runs,omitzero" toml:"keep_runs"`
+	// KeepFor is measured in days. Zero uses the storage default.
+	KeepFor int `json:"keep_for,omitzero" toml:"keep_for"`
+	// LogMax is measured in MiB. Zero uses the default 100 MiB.
+	LogMax    int               `json:"log_max,omitzero" toml:"log_max"`
+	LogOnFull string            `json:"log_on_full,omitempty" toml:"log_on_full"`
+	Labels    map[string]string `json:"labels,omitempty" toml:"labels"`
+	Alerts    []string          `json:"alerts,omitempty" toml:"alerts"`
+	Autostart *bool             `json:"autostart,omitempty" toml:"autostart"`
+	Restart   string            `json:"restart,omitempty" toml:"restart"`
+	// RestartDelay and HealthyAfter are measured in seconds.
+	RestartDelay       int `json:"restart_delay,omitzero" toml:"restart_delay"`
+	MaxRestartAttempts int `json:"max_restart_attempts,omitzero" toml:"max_restart_attempts"`
+	HealthyAfter       int `json:"healthy_after,omitzero" toml:"healthy_after"`
+	Priority           int `json:"priority,omitzero" toml:"priority"`
 	// NextFireAt is populated by the scheduler for API responses only.
 	NextFireAt *time.Time `json:"next_fire_at,omitzero" toml:"-"`
 }

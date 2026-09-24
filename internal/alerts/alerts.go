@@ -78,14 +78,13 @@ func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
 	windows := make(map[string]time.Duration, len(configs))
 	for _, cfg := range configs {
 		window := cfg.BatchWindow
-		if window == "" {
-			window = "10s"
+		if window == 0 {
+			window = 10
 		}
-		duration, err := time.ParseDuration(window)
-		if err != nil || duration < time.Second || duration > time.Hour {
+		if window < 1 || window > 3600 {
 			return fmt.Errorf("alert channel %q: invalid batch_window", cfg.Name)
 		}
-		windows[cfg.Name] = duration
+		windows[cfg.Name] = time.Duration(window) * time.Second
 		var channel Channel
 		switch cfg.Type {
 		case "telegram":

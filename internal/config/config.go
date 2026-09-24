@@ -19,7 +19,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/robfig/cron/v3"
 
-	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
@@ -41,9 +40,10 @@ type Scheduler struct {
 	MaxConcurrentRuns int    `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
 }
 type Storage struct {
-	KeepRunsDefault int    `toml:"keep_runs_default" json:"keep_runs_default"`
-	KeepForDefault  string `toml:"keep_for_default" json:"keep_for_default"`
-	AuditKeep       int    `toml:"audit_keep" json:"audit_keep"`
+	KeepRunsDefault int `toml:"keep_runs_default" json:"keep_runs_default"`
+	// KeepForDefault is measured in days.
+	KeepForDefault int `toml:"keep_for_default" json:"keep_for_default"`
+	AuditKeep      int `toml:"audit_keep" json:"audit_keep"`
 }
 type AlertChannel struct {
 	Name                string `toml:"name" json:"name"`
@@ -51,18 +51,18 @@ type AlertChannel struct {
 	BotToken            string `toml:"bot_token" json:"-"`
 	ChatID              string `toml:"chat_id" json:"chat_id"`
 	DisableNotification bool   `toml:"disable_notification" json:"disable_notification"`
-	BatchWindow         string `toml:"batch_window" json:"batch_window"`
+	// BatchWindow is measured in seconds.
+	BatchWindow int `toml:"batch_window" json:"batch_window"`
 }
 
 type Logs struct {
 	Backend string `toml:"backend" json:"backend"`
-	MaxLine string `toml:"max_line" json:"max_line"`
-	// WorkerFlushInterval is how often logs of still-running runs (workers)
-	// are sealed in the file buffer and copied into the SQLite log archive.
-	WorkerFlushInterval string `toml:"worker_flush_interval" json:"worker_flush_interval"`
-	// DBKeepFor prunes archived logs older than this duration from the log
-	// database during the daily DBPruneAt sweep.
-	DBKeepFor string `toml:"db_keep_for" json:"db_keep_for"`
+	// MaxLine is measured in KiB.
+	MaxLine int `toml:"max_line" json:"max_line"`
+	// WorkerFlushInterval is measured in minutes.
+	WorkerFlushInterval int `toml:"worker_flush_interval" json:"worker_flush_interval"`
+	// DBKeepFor is measured in days.
+	DBKeepFor int `toml:"db_keep_for" json:"db_keep_for"`
 	// DBPruneAt is the daily local time ("HH:MM") the prune sweep runs.
 	DBPruneAt string `toml:"db_prune_at" json:"db_prune_at"`
 }
@@ -141,20 +141,20 @@ func applyConfigDefaults(c *Config) {
 	if c.Storage.AuditKeep == 0 {
 		c.Storage.AuditKeep = 10000
 	}
-	if c.Storage.KeepForDefault == "" {
-		c.Storage.KeepForDefault = "720h"
+	if c.Storage.KeepForDefault == 0 {
+		c.Storage.KeepForDefault = 30
 	}
 	if c.Logs.Backend == "" {
 		c.Logs.Backend = "file"
 	}
-	if c.Logs.MaxLine == "" {
-		c.Logs.MaxLine = "256KiB"
+	if c.Logs.MaxLine == 0 {
+		c.Logs.MaxLine = 256
 	}
-	if c.Logs.WorkerFlushInterval == "" {
-		c.Logs.WorkerFlushInterval = "15m"
+	if c.Logs.WorkerFlushInterval == 0 {
+		c.Logs.WorkerFlushInterval = 15
 	}
-	if c.Logs.DBKeepFor == "" {
-		c.Logs.DBKeepFor = "720h"
+	if c.Logs.DBKeepFor == 0 {
+		c.Logs.DBKeepFor = 30
 	}
 	if c.Logs.DBPruneAt == "" {
 		c.Logs.DBPruneAt = "03:30"
@@ -167,12 +167,12 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp, "none")
 	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap, "skip")
 	d.EnvBase = cmp.Or(d.EnvBase, defaults.EnvBase, "clean")
-	d.Grace = cmp.Or(d.Grace, defaults.Grace, "10s")
-	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout, "0")
+	d.Grace = cmp.Or(d.Grace, defaults.Grace, 10)
+	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
 	d.StopSignal = cmp.Or(d.StopSignal, defaults.StopSignal, "SIGTERM")
 	d.Restart = cmp.Or(d.Restart, defaults.Restart, "always")
-	d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay, "5s")
-	d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter, "30s")
+	d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay, 5)
+	d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter, 30)
 	d.LogOnFull = cmp.Or(d.LogOnFull, defaults.LogOnFull, "drop_old")
 	if len(d.Alerts) == 0 {
 		d.Alerts = defaults.Alerts
@@ -201,8 +201,8 @@ func validateConfig(c *Config) error {
 	if c.Storage.KeepRunsDefault < 1 || c.Storage.AuditKeep < 1 {
 		return errors.New("storage retention counts must be positive")
 	}
-	if d, err := time.ParseDuration(c.Storage.KeepForDefault); err != nil || d <= 0 {
-		return errors.New("storage.keep_for_default: must be a positive duration")
+	if c.Storage.KeepForDefault < 1 {
+		return errors.New("storage.keep_for_default: must be a positive number of days")
 	}
 	if _, err := time.LoadLocation(c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("scheduler.timezone: %w", err)
@@ -210,14 +210,14 @@ func validateConfig(c *Config) error {
 	if c.Logs.Backend != "file" {
 		return errors.New("logs.backend: only file is supported in v0.1")
 	}
-	if n, err := logstore.ParseBytes(c.Logs.MaxLine); err != nil || n < 1 || n > 16<<20 {
-		return errors.New("logs.max_line: must be between 1B and 16MiB")
+	if c.Logs.MaxLine < 1 || c.Logs.MaxLine > 16<<10 {
+		return errors.New("logs.max_line: must be between 1 and 16384 KiB")
 	}
-	if d, err := time.ParseDuration(c.Logs.WorkerFlushInterval); err != nil || d < time.Second {
-		return errors.New("logs.worker_flush_interval: must be a duration of at least 1s")
+	if c.Logs.WorkerFlushInterval < 1 {
+		return errors.New("logs.worker_flush_interval: must be a positive number of minutes")
 	}
-	if d, err := time.ParseDuration(c.Logs.DBKeepFor); err != nil || d <= 0 {
-		return errors.New("logs.db_keep_for: must be a positive duration")
+	if c.Logs.DBKeepFor < 1 {
+		return errors.New("logs.db_keep_for: must be a positive number of days")
 	}
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
@@ -235,11 +235,11 @@ func validateConfig(c *Config) error {
 		if channel.Type != "telegram" {
 			return fmt.Errorf("alert channel %q: unsupported type %q", channel.Name, channel.Type)
 		}
-		if channel.BatchWindow == "" {
-			channel.BatchWindow = "10s"
+		if channel.BatchWindow == 0 {
+			channel.BatchWindow = 10
 		}
-		if d, err := time.ParseDuration(channel.BatchWindow); err != nil || d < time.Second || d > time.Hour {
-			return fmt.Errorf("alert channel %q: batch_window must be between 1s and 1h", channel.Name)
+		if channel.BatchWindow < 1 || channel.BatchWindow > 3600 {
+			return fmt.Errorf("alert channel %q: batch_window must be between 1 and 3600 seconds", channel.Name)
 		}
 		if channel.ChatID == "" {
 			return fmt.Errorf("alert channel %q: chat_id is required", channel.Name)
@@ -269,13 +269,9 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		if (d.Command == "") == (len(d.Argv) == 0) {
 			return fmt.Errorf("%s: exactly one of command or argv is required", d.Name)
 		}
-		for field, value := range map[string]string{"timeout": d.Timeout, "grace": d.Grace, "restart_delay": d.RestartDelay, "healthy_after": d.HealthyAfter} {
-			parsed, err := time.ParseDuration(value)
-			if err != nil {
-				return fmt.Errorf("%s.%s: %w", d.Name, field, err)
-			}
-			if parsed < 0 || (field != "timeout" && parsed == 0) {
-				return fmt.Errorf("%s.%s: must be positive (timeout may be zero)", d.Name, field)
+		for field, value := range map[string]int{"timeout": d.Timeout, "grace": d.Grace, "restart_delay": d.RestartDelay, "healthy_after": d.HealthyAfter} {
+			if value < 0 || (field != "timeout" && value == 0) {
+				return fmt.Errorf("%s.%s: must be positive seconds (timeout may be zero)", d.Name, field)
 			}
 		}
 		if d.EnvBase != "clean" && d.EnvBase != "inherit" {
@@ -324,16 +320,11 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		if !validSignal(d.StopSignal) {
 			return fmt.Errorf("%s.stop_signal must be one of INT, HUP, QUIT, USR1, USR2, TERM, KILL", d.Name)
 		}
-		if d.KeepFor != "" {
-			if keep, err := time.ParseDuration(d.KeepFor); err != nil || keep <= 0 {
-				return fmt.Errorf("%s.keep_for must be a positive duration", d.Name)
-			}
+		if d.KeepFor < 0 {
+			return fmt.Errorf("%s.keep_for must be a nonnegative number of days", d.Name)
 		}
-		if d.LogMax != "" {
-			n, err := logstore.ParseBytes(d.LogMax)
-			if err != nil || n <= 0 || n > 1<<40 {
-				return fmt.Errorf("%s.log_max must be between 1B and 1TiB", d.Name)
-			}
+		if d.LogMax < 0 || d.LogMax > 1<<20 {
+			return fmt.Errorf("%s.log_max must be between 0 and 1048576 MiB (0 uses default)", d.Name)
 		}
 		if d.EnvFile != "" && !filepath.IsAbs(d.EnvFile) {
 			return fmt.Errorf("%s.env_file must be an absolute path", d.Name)

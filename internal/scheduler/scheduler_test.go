@@ -131,7 +131,7 @@ func setup(t *testing.T) (*store.Store, *executor.Service, *Scheduler) {
 
 func worker(name, catchUp string) model.Definition {
 	d := model.Definition{Name: name, Kind: model.KindJob, Schedule: "@every 30m", Timezone: "UTC", CatchUp: catchUp, OnOverlap: "skip",
-		Command: "true", Shell: "/bin/sh", Timeout: "0", Grace: "0", SuccessCodes: []int{0}}
+		Command: "true", Shell: "/bin/sh", Timeout: 0, Grace: 0, SuccessCodes: []int{0}}
 	enabled := true
 	d.Enabled = &enabled
 	return d

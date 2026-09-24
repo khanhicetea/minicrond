@@ -30,14 +30,14 @@ max_concurrent_runs = 32       # global gate across all definitions
 
 [storage]
 keep_runs_default = 200        # default per-definition run history length
-keep_for_default = "720h"      # default per-definition run age retention
+keep_for_default = 30          # default per-definition run age retention, days
 audit_keep = 10000             # audit-log rows kept
 
 [logs]
 backend = "file"               # only "file" in v0.1
-max_line = "256KiB"            # single log line cap (1B..16MiB)
-worker_flush_interval = "15m"  # seal+archive cadence for running workers
-db_keep_for = "720h"           # log-archive age budget (rolling)
+max_line = 256                 # single log line cap in KiB (1..16384)
+worker_flush_interval = 15     # seal+archive cadence for running workers, minutes
+db_keep_for = 30               # log-archive age budget, days (rolling)
 db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
 
 [[alert_channel]]
@@ -46,7 +46,7 @@ type = "telegram"              # only "telegram" in v0.1
 bot_token = "env:TELEGRAM_BOT_TOKEN"  # or file:/absolute/path (never inline)
 chat_id = "-1001234567890"
 disable_notification = false   # true = silent delivery
-batch_window = "10s"         # group runs per channel (1s..1h; default 10s)
+batch_window = 10              # group runs per channel, seconds (1..3600)
 ```
 
 ### Field notes
@@ -96,21 +96,21 @@ schema below.
 | `env` | `{}` | both | Literal environment map |
 | `secret_env` | `{}` | both | Values must be `env:NAME` or `file:/abs/path`, resolved at spawn |
 | `env_file` | — | both | Absolute path to a KEY=VALUE file (≤ 1 MiB) |
-| `timeout` | `0` (none) | both | Kill the run after this duration (status `timeout` even if exit 0) |
-| `grace` | `10s` | both | Wait after `stop_signal` before SIGKILL to the process group |
+| `timeout` | `0` (none) | both | Maximum runtime in seconds; a timeout is reported even if the process then exits 0 |
+| `grace` | `10` | both | Seconds to wait after `stop_signal` before SIGKILL to the process group |
 | `stop_signal` | `SIGTERM` | both | INT, HUP, QUIT, USR1, USR2, TERM, or KILL |
 | `success_codes` | `[0]` | both | Exit codes counted as success |
 | `keep_runs` | storage default | both | Per-definition run-history length (0 = use `storage.keep_runs_default`) |
-| `keep_for` | storage default | both | Per-definition run age retention (`"168h"`) |
-| `log_max` | `"100MiB"` | both | Per-run raw-byte file-buffer budget (`"10MiB"`); successful archival frees capacity; not an archive quota |
+| `keep_for` | storage default | both | Per-definition run age retention in days (`7`) |
+| `log_max` | `100` | both | Per-run file-buffer budget in MiB (0 = default, 1..1048576); successful archival frees capacity; not an archive quota |
 | `log_on_full` | `drop_old` | both | Hot buffer full: `drop_old` or `drop_new` frames |
 | `labels` | `{}` | both | Free-form metadata map |
 | `alerts` | `[]` | both | Alert channel names to notify on `failed`/`timeout` |
 | `autostart` | `true` | worker | Start on daemon boot |
 | `restart` | `always` | worker | `always`, `on-failure` (non-zero exit), or `never` |
-| `restart_delay` | `5s` | worker | Delay between restart attempts |
+| `restart_delay` | `5` | worker | Delay between restart attempts, in seconds |
 | `max_restart_attempts` | `5` | worker | 1..1000; supervisor gives up after this many consecutive failures |
-| `healthy_after` | `30s` | worker | A worker still running this long is considered healthy (restart counter resets) |
+| `healthy_after` | `30` | worker | Seconds a worker must run to be considered healthy (restart counter resets) |
 
 Not supported (validation rejects): `priority`, `run_on_start` for jobs —
 use `@every` schedules or trigger manually; workers use `autostart`.
@@ -119,7 +119,7 @@ use `@every` schedules or trigger manually; workers use `autostart`.
 
 ```toml
 [defaults]              # optional: values applied to every entry below
-grace = "30s"
+grace = 30
 
 [[job]]
 name = "backup"

@@ -24,7 +24,7 @@ func (c *captureChannel) Send(_ context.Context, alert Alert) error {
 
 func TestBatchFlushesOnClose(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: "1h"}}, nil)
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestBatchFlushesOnClose(t *testing.T) {
 
 func TestBatchWindowSendsWithoutClose(t *testing.T) {
 	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: "1s"}}, nil)
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 1}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

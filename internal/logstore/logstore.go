@@ -15,8 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -779,41 +777,4 @@ func (s *Store) Delete(runID string) error {
 		}
 	}
 	return os.RemoveAll(filepath.Join(s.root, runID))
-}
-
-// byteUnits lists byte-size suffixes longest-first. Order matters: a map
-// would make "10KiB" randomly match the bare "B" suffix, silently changing
-// the parsed size from run to run.
-var byteUnits = []struct {
-	suffix string
-	mul    int64
-}{
-	{"GiB", 1 << 30},
-	{"MiB", 1 << 20},
-	{"KiB", 1 << 10},
-	{"B", 1},
-}
-
-func ParseBytes(value string) (int64, error) {
-	value = strings.TrimSpace(value)
-	for _, u := range byteUnits {
-		if n, ok := strings.CutSuffix(value, u.suffix); ok {
-			v, err := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
-			if err != nil {
-				return 0, err
-			}
-			if v < 0 || v > int64(^uint64(0)>>1)/u.mul {
-				return 0, errors.New("byte size must be nonnegative and fit in int64")
-			}
-			return v * u.mul, nil
-		}
-	}
-	v, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	if v < 0 {
-		return 0, errors.New("byte size must be nonnegative")
-	}
-	return v, nil
 }

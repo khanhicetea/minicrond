@@ -49,7 +49,10 @@
           "default": 200
         },
         "keep_for_default": {
-          "type": "string"
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Default run age retention in days"
         },
         "audit_keep": {
           "type": "integer",
@@ -65,15 +68,23 @@
           "const": "file"
         },
         "max_line": {
-          "type": "string"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "default": 256,
+          "description": "Maximum single log line size in KiB"
         },
         "worker_flush_interval": {
-          "type": "string",
-          "default": "15m"
+          "type": "integer",
+          "minimum": 1,
+          "default": 15,
+          "description": "Worker log flush interval in minutes"
         },
         "db_keep_for": {
-          "type": "string",
-          "default": "720h"
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Log archive retention in days"
         },
         "db_prune_at": {
           "type": "string",
@@ -113,9 +124,11 @@
           "default": false
         },
         "batch_window": {
-          "type": "string",
-          "default": "10s",
-          "description": "Batch window from first alert (Go duration, 1s to 1h)"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600,
+          "default": 10,
+          "description": "Batch window from first alert in seconds"
         }
       },
       "required": [

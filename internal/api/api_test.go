@@ -80,10 +80,10 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 func TestAlertChannelsAndValidation(t *testing.T) {
 	s, token, _ := setup(t)
 	s.SetAlertChannels(func() []config.AlertChannel {
-		return []config.AlertChannel{{Name: "ops", Type: "telegram", BatchWindow: "10s", BotToken: "env:SECRET"}}
+		return []config.AlertChannel{{Name: "ops", Type: "telegram", BatchWindow: 10, BotToken: "env:SECRET"}}
 	})
 	list := call(s, false, "GET", "/api/v1/alert-channels", token, "", nil)
-	if list.Code != 200 || strings.Contains(list.Body.String(), "SECRET") || !strings.Contains(list.Body.String(), "batch_window") {
+	if list.Code != 200 || strings.Contains(list.Body.String(), "SECRET") || !strings.Contains(list.Body.String(), `"batch_window":10`) {
 		t.Fatalf("channel list: %d %s", list.Code, list.Body.String())
 	}
 	tested := false
@@ -112,6 +112,22 @@ func TestAlertChannelsAndValidation(t *testing.T) {
 	preview := call(s, false, "POST", "/api/v1/import/preview", token, previewBodyWithHash("[[job]]\nname='example'\ncommand='true'\nalerts=['typo']\n", ""), nil)
 	if preview.Code != 422 {
 		t.Errorf("expected invalid import: %d %s", preview.Code, preview.Body.String())
+	}
+}
+
+func TestLogMaxUnits(t *testing.T) {
+	s, token, _ := setup(t)
+	body := `{"name":"sized","kind":"job","command":"true","log_max":10}`
+	rec := call(s, false, "POST", "/api/v1/jobs", token, body, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"log_max":10`) {
+		t.Fatalf("create sized job: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, size := range []string{`"10MiB"`, `1048577`, `-1`} {
+		body = `{"name":"invalid","kind":"job","command":"true","log_max":` + size + `}`
+		rec = call(s, false, "POST", "/api/v1/jobs", token, body, nil)
+		if rec.Code != 422 {
+			t.Errorf("log_max=%s: %d %s", size, rec.Code, rec.Body.String())
+		}
 	}
 }
 

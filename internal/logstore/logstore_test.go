@@ -363,33 +363,6 @@ func TestRingBufferStillEnforcesMaxBytesWithArchive(t *testing.T) {
 	}
 }
 
-// ParseBytes must resolve suffixes deterministically: "10KiB" used to match
-// the bare "B" suffix whenever map iteration ordered it first, silently
-// discarding the intended size.
-func TestParseBytesIsDeterministic(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want int64
-	}{
-		{"10KiB", 10 << 10},
-		{"10MiB", 10 << 20},
-		{"10GiB", 10 << 30},
-		{"512B", 512},
-		{"512", 512},
-		{" 1MiB ", 1 << 20},
-	} {
-		got, err := ParseBytes(tc.in)
-		if err != nil || got != tc.want {
-			t.Errorf("ParseBytes(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
-		}
-	}
-	for _, invalid := range []string{"10Ki", "xB", ""} {
-		if got, err := ParseBytes(invalid); err == nil || got != 0 {
-			t.Errorf("ParseBytes(%q) = %d, %v; want 0, error", invalid, got, err)
-		}
-	}
-}
-
 // log_on_full = drop_new keeps the retained history and refuses new frames
 // once log_max is reached, instead of evicting old chunks.
 func TestDropNewKeepsHistoryWhenFull(t *testing.T) {

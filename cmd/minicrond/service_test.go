@@ -13,7 +13,7 @@ func TestDefaultConfigTOMLUsesBind(t *testing.T) {
 	if !strings.Contains(got, `bind = "127.0.0.1:7500"`) {
 		t.Fatalf("bind not rendered: %s", got)
 	}
-	for _, want := range []string{"unix_socket = true", "[scheduler]", "[logs]", `db_keep_for = "720h"`} {
+	for _, want := range []string{"unix_socket = true", "[scheduler]", "[logs]", `db_keep_for = 30`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("template missing %q", want)
 		}

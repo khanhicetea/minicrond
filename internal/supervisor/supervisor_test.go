@@ -29,9 +29,9 @@ func setup(t *testing.T) (*store.Store, *Supervisor) {
 	return st, s
 }
 
-func workerDef(name, argv0 string, argv []string, healthyAfter string, attempts int) model.Definition {
-	d := model.Definition{Name: name, Kind: model.KindWorker, Argv: argv, Shell: "/bin/sh", Timeout: "0", Grace: "0", SuccessCodes: []int{0},
-		Restart: "always", RestartDelay: "10ms", HealthyAfter: healthyAfter, MaxRestartAttempts: attempts,
+func workerDef(name, argv0 string, argv []string, healthyAfter int, attempts int) model.Definition {
+	d := model.Definition{Name: name, Kind: model.KindWorker, Argv: argv, Shell: "/bin/sh", Timeout: 0, Grace: 0, SuccessCodes: []int{0},
+		Restart: "always", RestartDelay: 1, HealthyAfter: healthyAfter, MaxRestartAttempts: attempts,
 		Timezone: "UTC", OnOverlap: "skip", CatchUp: "none"}
 	enabled := true
 	d.Enabled = &enabled
@@ -52,7 +52,7 @@ func runCount(t *testing.T, st *store.Store, name string) int {
 // max_restart_attempts consecutive ones the slot goes fatal and stays down.
 func TestWorkerGoesFatalAfterConsecutiveUnhealthyStarts(t *testing.T) {
 	st, sup := setup(t)
-	def := workerDef("flappy", "", []string{"/bin/true"}, "1h", 3)
+	def := workerDef("flappy", "", []string{"/bin/true"}, 3600, 3)
 	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestWorkerGoesFatalAfterConsecutiveUnhealthyStarts(t *testing.T) {
 // it by respawning the worker.
 func TestOperatorHoldPreventsAlwaysRestart(t *testing.T) {
 	st, sup := setup(t)
-	def := workerDef("sleeper", "", []string{"/bin/sleep", "30"}, "0", 5)
+	def := workerDef("sleeper", "", []string{"/bin/sleep", "30"}, 0, 5)
 	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestOperatorHoldPreventsAlwaysRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	sup.Reload(defs)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(6 * time.Second)
 	for runCount(t, st, "sleeper") < 1 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}

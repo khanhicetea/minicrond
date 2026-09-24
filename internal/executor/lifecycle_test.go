@@ -29,7 +29,7 @@ func TestConcurrentTriggersRespectOverlapAndShutdown(t *testing.T) {
 		defer cancel()
 		s.Shutdown(ctx)
 	})
-	d := model.Definition{Name: "solo", Kind: model.KindJob, Command: "sleep 30", Shell: "/bin/sh", Grace: "0", Timezone: "UTC", OnOverlap: "skip", SuccessCodes: []int{0}}
+	d := model.Definition{Name: "solo", Kind: model.KindJob, Command: "sleep 30", Shell: "/bin/sh", Grace: 0, Timezone: "UTC", OnOverlap: "skip", SuccessCodes: []int{0}}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
 	}

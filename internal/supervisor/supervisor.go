@@ -115,7 +115,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		}
 		s.mu.Unlock()
 	}()
-	healthyAfter, _ := time.ParseDuration(d.HealthyAfter)
+	healthyAfter := time.Duration(d.HealthyAfter) * time.Second
 	_, hash, err := config.Canonical(d)
 	if err != nil {
 		slog.Error("supervisor: canonicalizing definition failed", "worker", d.Name, "error", err)
@@ -181,7 +181,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			slog.Warn("worker fatal: restart attempts exhausted", "worker", d.Name, "attempts", failures)
 			return
 		}
-		delay, _ := time.ParseDuration(d.RestartDelay)
+		delay := time.Duration(d.RestartDelay) * time.Second
 		select {
 		case <-ctx.Done():
 			return

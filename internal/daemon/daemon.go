@@ -82,11 +82,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	d.logs = logs
 	d.mu.Unlock()
 	logs.AttachDB(ldb)
-	maxLine, err := logstore.ParseBytes(cfg.Logs.MaxLine)
-	if err != nil || maxLine <= 0 {
-		// Validated at config load; keep a safe fallback for direct callers.
-		maxLine = 256 << 10
-	}
+	maxLine := int64(cfg.Logs.MaxLine) << 10
 	execService := executor.New(st, logs, executor.Options{
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
 		MaxLineBytes:      maxLine,
@@ -325,15 +321,10 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 			keep = storageCfg.KeepRunsDefault
 		}
 		keepFor := def.KeepFor
-		if keepFor == "" {
+		if keepFor == 0 {
 			keepFor = storageCfg.KeepForDefault
 		}
-		duration, err := time.ParseDuration(keepFor)
-		if err != nil {
-			slog.Error("invalid run retention duration", "definition", def.Name, "error", err)
-			continue
-		}
-		ids, err := d.store.RetentionCandidates(ctx, def.ID, keep, time.Now().Add(-duration))
+		ids, err := d.store.RetentionCandidates(ctx, def.ID, keep, time.Now().Add(-time.Duration(keepFor)*24*time.Hour))
 		if err != nil {
 			slog.Error("run retention selection failed", "definition", def.Name, "error", err)
 			continue
@@ -378,8 +369,8 @@ func (d *Daemon) logFlushInterval() time.Duration {
 	d.mu.Lock()
 	value := d.cfg.Logs.WorkerFlushInterval
 	d.mu.Unlock()
-	if parsed, err := time.ParseDuration(value); err == nil && parsed >= time.Second {
-		return parsed
+	if value > 0 {
+		return time.Duration(value) * time.Minute
 	}
 	return 15 * time.Minute
 }
@@ -412,8 +403,8 @@ func (d *Daemon) pruneLogs(ctx context.Context) {
 	d.mu.Lock()
 	keepFor := d.cfg.Logs.DBKeepFor
 	d.mu.Unlock()
-	duration, err := time.ParseDuration(keepFor)
-	if err != nil || duration <= 0 {
+	duration := time.Duration(keepFor) * 24 * time.Hour
+	if duration <= 0 {
 		slog.Error("log prune skipped: invalid logs.db_keep_for", "value", keepFor)
 		return
 	}
