@@ -1,13 +1,17 @@
-import { useEffect, useState } from 'react';
-import { useSearch } from 'wouter';
+import { useState } from 'react';
+import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
-import { PageHeader } from '../components/Layout';
-import RunsTable from '../components/RunsTable';
-import { runsQuery, RECENT_RUNS_LIMIT } from '../queries';
+import LogViewer from '../components/LogViewer';
+import { RunStatusDot } from '../components/RunsTable';
+import { api, errorText } from '../api';
+import { downloadFile } from '../lib/download';
+import { formatBytes, formatDayTime, formatSpan, formatTimestamp, shortRunId } from '../lib/format';
+import { jobPath } from '../lib/routes';
+import { jobsQuery, runQuery, runsQuery, RECENT_RUNS_LIMIT, useStopRun, useTriggerJob } from '../queries';
+import { isActiveRun, type Run } from '../types';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
-
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'failed', label: 'Failed' },
@@ -15,55 +19,169 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'manual', label: 'Manual' },
 ];
 
-/** Full run history with quick filters (design's runs vocabulary). */
-export default function Runs() {
-  const initial = (new URLSearchParams(useSearch()).get('filter') as FilterKey) || 'all';
-  const [filter, setFilter] = useState<FilterKey>(initial);
-  const [query, setQuery] = useState('');
-  useEffect(() => setFilter(initial), [initial]);
+function matchesFilter(run: Run, filter: FilterKey): boolean {
+  if (filter === 'failed') return ['failed', 'timeout', 'interrupted'].includes(run.status);
+  if (filter === 'scheduled') return run.trigger === 'schedule';
+  if (filter === 'manual') return run.trigger === 'manual';
+  return true;
+}
 
-  const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
-  const q = query.trim().toLowerCase();
-  const items = (runs.data ?? []).filter(run => {
-    if (q && !run.job.toLowerCase().includes(q) && !run.run_id.toLowerCase().includes(q)) return false;
-    switch (filter) {
-      case 'failed':
-        return ['failed', 'timeout', 'interrupted'].includes(run.status);
-      case 'scheduled':
-        return run.trigger === 'schedule';
-      case 'manual':
-        return run.trigger === 'manual';
-      default:
-        return true;
-    }
-  });
+/** Job → run history → live output, all within the Runs tab. */
+export default function Runs() {
+  const search = useSearch();
+  const [, navigate] = useLocation();
+  const params = new URLSearchParams(search);
+  const requestedJob = params.get('job');
+  const requestedRun = params.get('run');
+  const filterParam = params.get('filter');
+  const filter: FilterKey = FILTERS.some(item => item.key === filterParam) ? filterParam as FilterKey : 'all';
+  const [jobSearch, setJobSearch] = useState('');
+  const [actionError, setActionError] = useState('');
+  const jobs = useQuery(jobsQuery());
+  const definitions = [...(jobs.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const selectedJob = definitions.find(job => job.name === requestedJob)?.name ?? (requestedJob ? '' : definitions[0]?.name ?? '');
+  const history = useQuery({ ...runsQuery(selectedJob, RECENT_RUNS_LIMIT), enabled: Boolean(selectedJob) });
+  const filtered = (history.data ?? []).filter(run => matchesFilter(run, filter));
+  const runId = requestedRun || filtered[0]?.run_id || '';
+  const detail = useQuery({ ...runQuery(runId), enabled: Boolean(selectedJob && runId) });
+  // A freshly triggered run may not have appeared in the history response yet.
+  const selectedRun = filtered.find(run => run.run_id === runId) ??
+    (detail.data?.job === selectedJob && matchesFilter(detail.data, filter) ? detail.data : undefined);
+  const trigger = useTriggerJob();
+  const stop = useStopRun();
+
+  const go = (job: string, run = '', nextFilter: FilterKey = filter) => {
+    setActionError('');
+    const next = new URLSearchParams();
+    if (job) next.set('job', job);
+    if (run) next.set('run', run);
+    if (nextFilter !== 'all') next.set('filter', nextFilter);
+    void navigate(`/runs${next.size ? `?${next}` : ''}`);
+  };
+
+  const rerun = () => {
+    if (!selectedJob) return;
+    setActionError('');
+    trigger.mutate(selectedJob, {
+      onSuccess: next => go(selectedJob, next.run_id, 'all'),
+      onError: err => setActionError(errorText(err)),
+    });
+  };
 
   return (
-    <div className="space-y-4">
-      <PageHeader title="Runs" subtitle="Run history across all jobs and workers." />
+    <div className="runs-workspace" aria-label="Run history">
+      <aside className="runs-pane" aria-label="Jobs and workers">
+        <div className="runs-pane-header">
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="panel-title">Jobs &amp; workers</h1>
+            <span className="num text-xs faint">{definitions.length}</span>
+          </div>
+          <label className="mt-3 flex items-center gap-2 rounded-lg border border-base-300 bg-base-200 px-2.5 py-1.5">
+            <Icon name="search" size={14} className="faint" />
+            <input className="min-w-0 w-full bg-transparent text-xs outline-none" value={jobSearch} onChange={e => setJobSearch(e.target.value)} placeholder="Find a job…" aria-label="Find a job" />
+          </label>
+        </div>
+        <div className="runs-pane-scroll p-2">
+          {jobs.isPending && <p className="p-3 text-sm muted">Loading jobs…</p>}
+          {jobs.isError && <p role="alert" className="p-3 text-sm text-red-400">{errorText(jobs.error)}</p>}
+          {!jobs.isPending && definitions.length === 0 && <p className="p-3 text-sm muted">No jobs or workers yet.</p>}
+          {definitions.filter(job => job.name.toLowerCase().includes(jobSearch.trim().toLowerCase())).map(job => (
+            <button key={job.name} type="button" className={`runs-job-row ${selectedJob === job.name ? 'selected' : ''}`} onClick={() => go(job.name)} aria-pressed={selectedJob === job.name}>
+              <Icon name={job.kind === 'worker' ? 'terminal' : 'calendar'} size={15} className="shrink-0 muted" />
+              <span className="min-w-0 truncate font-mono text-xs" title={job.name}>{job.name}</span>
+            </button>
+          ))}
+          {definitions.length > 0 && !definitions.some(job => job.name.toLowerCase().includes(jobSearch.trim().toLowerCase())) && <p className="p-3 text-sm muted">No matching jobs.</p>}
+        </div>
+      </aside>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-1.5">
-          {FILTERS.map(f => (
-            <button key={f.key} type="button" className={`pill ${filter === f.key ? 'active' : ''}`} onClick={() => setFilter(f.key)}>
-              {f.key === 'failed' && <span className="dot dot-red" />}
-              {f.label}
+      <section className="runs-pane" aria-label="Runs for selected job">
+        <div className="runs-pane-header">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h2 className="panel-title">Run history</h2>
+              <p className="mt-0.5 truncate font-mono text-xs muted" title={selectedJob}>{selectedJob || 'Select a job'}</p>
+            </div>
+            <span className="num shrink-0 text-xs faint">{history.data?.length ?? 0} runs</span>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1" aria-label="Filter runs">
+            {FILTERS.map(item => (
+              <button key={item.key} type="button" className={`pill !px-2 !py-1 !text-xs ${filter === item.key ? 'active' : ''}`} onClick={() => go(selectedJob, '', item.key)} aria-pressed={filter === item.key}>{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="runs-pane-scroll p-2">
+          {!selectedJob && <p className="p-3 text-sm muted">Select a job to see its runs.</p>}
+          {selectedJob && history.isPending && <p className="p-3 text-sm muted">Loading runs…</p>}
+          {history.isError && <p role="alert" className="p-3 text-sm text-red-400">{errorText(history.error)}</p>}
+          {history.isSuccess && filtered.length === 0 && <p className="p-3 text-sm muted">No runs match this filter.</p>}
+          {filtered.map(run => (
+            <button key={run.run_id} type="button" className={`runs-history-row ${selectedRun?.run_id === run.run_id ? 'selected' : ''}`} onClick={() => go(selectedJob, run.run_id)} aria-pressed={selectedRun?.run_id === run.run_id}>
+              <RunStatusDot status={run.status} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono text-xs font-semibold">{formatDayTime(run.started_at ?? run.queued_at)}</span>
+                  <span className="num shrink-0 text-xs muted">{isActiveRun(run) ? formatSpan(run.started_at ?? run.queued_at) : formatSpan(run.started_at, run.ended_at)}</span>
+                </span>
+                <span className="mt-1 flex items-center justify-between gap-2 text-xs">
+                  <span className="capitalize muted">{run.status} <span className="faint">·</span> {run.trigger}</span>
+                  <span className="font-mono faint">#{shortRunId(run.run_id)}</span>
+                </span>
+              </span>
             </button>
           ))}
         </div>
-        <div className="ml-auto flex min-w-[12rem] items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-1.5 sm:max-w-xs">
-          <Icon name="search" size={14} className="faint shrink-0" />
-          <input
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Filter by job or run id"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-[color-mix(in_srgb,var(--color-base-content)_35%,transparent)]"
-            aria-label="Filter runs"
-          />
-        </div>
-      </div>
+      </section>
 
-      {runs.isPending ? <div className="skeleton h-64 w-full" /> : <RunsTable runs={items} />}
+      <section className="runs-pane runs-output" aria-label="Selected run output">
+        {!selectedRun ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center muted">
+            <Icon name="terminal" size={24} className="faint" />
+            <p>Select a run to view its output.</p>
+          </div>
+        ) : detail.isPending ? (
+          <div className="p-5 text-sm muted">Loading run output…</div>
+        ) : detail.isError ? (
+          <div role="alert" className="p-5 text-sm text-red-400">Failed to load run: {errorText(detail.error)}</div>
+        ) : (
+          <>
+            <div className="runs-output-header">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <RunStatusDot status={detail.data.status} />
+                  <h2 className="truncate text-base font-semibold capitalize">{detail.data.status}</h2>
+                  <span className="num text-sm muted">{isActiveRun(detail.data) ? formatSpan(detail.data.started_at ?? detail.data.queued_at) : formatSpan(detail.data.started_at, detail.data.ended_at)}</span>
+                </div>
+                <p className="mt-1 truncate text-xs muted" title={detail.data.run_id}>
+                  {formatTimestamp(detail.data.started_at ?? detail.data.queued_at)} · {detail.data.trigger} · <span className="font-mono">#{shortRunId(detail.data.run_id)}</span>
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {isActiveRun(detail.data) ? (
+                  <button type="button" className="btn-danger-x" disabled={stop.isPending} onClick={() => { setActionError(''); stop.mutate(detail.data.run_id, { onError: err => setActionError(errorText(err)) }); }}><Icon name="square" size={13} />Stop</button>
+                ) : (
+                  <button type="button" className="btn-sub" disabled={trigger.isPending} onClick={rerun}><Icon name="play" size={13} />Run again</button>
+                )}
+                <button type="button" className="btn-icon" title="Download raw log" aria-label="Download raw log" onClick={() => { setActionError(''); downloadFile(api.rawLogUrl(detail.data.run_id), `${detail.data.run_id}.log`, api.download).catch(err => setActionError(errorText(err))); }}><Icon name="download" size={16} /></button>
+                <Link href={`/runs/${detail.data.run_id}`} className="btn-icon" title="Full run details" aria-label="Full run details"><Icon name="external-link" size={16} /></Link>
+              </div>
+            </div>
+            {actionError && <p role="alert" className="border-b border-base-300 px-4 py-2 text-xs text-red-400">{actionError}</p>}
+            {detail.data.log_truncated && <p role="alert" className="border-b border-base-300 px-4 py-2 text-xs text-amber-400">Stored log exceeded the size cap and was truncated.</p>}
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex items-center justify-between border-b border-base-300 px-4 py-2 text-xs">
+                <span className="flex items-center gap-2 font-semibold"><Icon name="terminal" size={14} />Console output</span>
+                <span className="num faint">{formatBytes(detail.data.log_bytes)}</span>
+              </div>
+              <LogViewer key={detail.data.run_id} runId={detail.data.run_id} />
+            </div>
+            <div className="border-t border-base-300 px-4 py-2 text-xs muted">
+              <Link href={jobPath(selectedJob)} className="text-sky-300 hover:text-sky-200">View job details</Link>
+              {detail.data.exit_code !== undefined && <span className="ml-3">Exit code: {detail.data.exit_code}</span>}
+            </div>
+          </>
+        )}
+      </section>
     </div>
   );
 }

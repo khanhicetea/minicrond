@@ -199,6 +199,70 @@ body {
   }
 }
 
+/* Runs workspace: three independent panes below the sticky application nav. */
+.runs-workspace {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.85fr) minmax(19rem, 1.15fr) minmax(0, 2.7fr);
+  height: calc(100vh - 6.5rem);
+  min-height: 34rem;
+  overflow: hidden;
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
+  background: var(--color-base-100);
+}
+.runs-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--color-base-300);
+}
+.runs-pane:last-child { border-right: 0; }
+.runs-pane-header {
+  flex: none;
+  padding: 1rem;
+  border-bottom: 1px solid var(--color-base-300);
+}
+.runs-pane-scroll { min-height: 0; overflow-y: auto; flex: 1; }
+.runs-job-row, .runs-history-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  padding: 0.7rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+.runs-history-row { align-items: flex-start; }
+.runs-job-row:hover, .runs-history-row:hover { background: var(--color-base-200); }
+.runs-job-row.selected, .runs-history-row.selected {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+.runs-output-header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--color-base-300);
+}
+@media (max-width: 1000px) {
+  .runs-workspace { grid-template-columns: minmax(11rem, 1fr) minmax(17rem, 1.4fr); height: auto; min-height: 0; }
+  .runs-pane { min-height: 18rem; max-height: 28rem; }
+  .runs-output { grid-column: 1 / -1; height: 34rem; max-height: none; border-top: 1px solid var(--color-base-300); }
+}
+@media (max-width: 600px) {
+  .runs-workspace { display: flex; flex-direction: column; }
+  .runs-pane { min-height: 0; max-height: none; border-right: 0; border-bottom: 1px solid var(--color-base-300); }
+  .runs-pane-scroll { max-height: 14rem; }
+  .runs-output { height: 32rem; border-top: 0; border-bottom: 0; }
+}
+
 /* ---------- Panels, chips, controls ---------- */
 
 .panel {
