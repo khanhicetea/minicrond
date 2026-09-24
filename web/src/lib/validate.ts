@@ -61,6 +61,7 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
     ['timeout', 'Timeout', true],
     ['grace', 'Grace', false],
     ['restart_delay', 'Restart delay', false],
+    ['retry_delay', 'Retry delay', true],
     ['healthy_after', 'Healthy after', false],
     ['keep_for', 'Keep for', true],
     ['log_max', 'Log max size (MiB)', true],
@@ -69,6 +70,16 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
     if (typeof value === 'number' && (!Number.isInteger(value) || value < 0 || (!allowZero && value === 0))) {
       add({ field, title: `Invalid: ${label}`, message: `Must be ${allowZero ? 'a non-negative' : 'a positive'} whole number.`, severity: 'error' });
     }
+  }
+
+  if (def.retry_delay !== undefined && def.retry_delay > 86400) {
+    add({ field: 'retry_delay', title: 'Invalid: Retry delay', message: 'Must not exceed 86400 seconds.', severity: 'error' });
+  }
+  if (def.retries !== undefined && (!Number.isInteger(def.retries) || def.retries < 0 || def.retries > 1000)) {
+    add({ field: 'retries', title: 'Invalid: Retries', message: 'Must be between 0 and 1000.', severity: 'error' });
+  }
+  if (isWorker && (def.retries || def.retry_delay !== undefined)) {
+    add({ field: 'retries', title: 'Invalid: Worker retry', message: 'Use restart policy for workers.', severity: 'error' });
   }
 
   if (def.log_max !== undefined && def.log_max > 1048576) {

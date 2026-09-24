@@ -90,6 +90,8 @@ schema below.
 | `timezone` | scheduler's | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions) |
 | `catch_up` | `none` | job | `none`: skip missed fires; `latest`: fire only the most recent miss and mark intermediate ones `missed` |
 | `on_overlap` | `skip` | job | `skip`: a new fire is recorded `skipped` while one runs; `parallel`: allow concurrent runs |
+| `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run |
+| `retry_delay` | `5` | job | Seconds before each retry (1..86400; 0 uses default 5); constant delay; timeouts and stopped runs are not retried |
 | `run_as` | daemon user | both | `user`, `uid`, or `user:group`. **Root daemon only** |
 | `working_dir` | daemon cwd | both | Absolute working directory for the process |
 | `env_base` | `clean` | both | `clean`: minimal fixed env; `inherit`: start from the daemon's env |
@@ -111,6 +113,8 @@ schema below.
 | `restart_delay` | `5` | worker | Delay between restart attempts, in seconds |
 | `max_restart_attempts` | `5` | worker | 1..1000; supervisor gives up after this many consecutive failures |
 | `healthy_after` | `30` | worker | Seconds a worker must run to be considered healthy (restart counter resets) |
+
+Pending retry timers are in memory and are canceled on daemon shutdown; retries do not resume after a daemon crash. A retry uses the current enabled definition and retry budget. If it overlaps a running job under `on_overlap = "skip"`, it is recorded as skipped.
 
 Not supported (validation rejects): `priority`, `run_on_start` for jobs —
 use `@every` schedules or trigger manually; workers use `autostart`.

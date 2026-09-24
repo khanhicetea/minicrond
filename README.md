@@ -31,7 +31,7 @@ go build -o minicrond ./cmd/minicrond
 
 | Area | Highlights |
 |---|---|
-| Scheduling | 5-field cron + descriptors, `@every 1s…`, per-job IANA timezones, DST-safe wall-clock firing, `catch_up = none\|latest`, `on_overlap = skip\|parallel`, global concurrency gate |
+| Scheduling | 5-field cron + descriptors, `@every 1s…`, per-job IANA timezones, DST-safe wall-clock firing, `catch_up = none\|latest`, `on_overlap = skip\|parallel`, `retries` + `retry_delay` for failed jobs, global concurrency gate |
 | Execution | `command` (via shell) or `argv` (direct exec), clean/inherit env, `env`/`secret_env`/`env_file`, `working_dir`, `run_as` (root daemon), `timeout` + `grace` + configurable `stop_signal`, process-group control, `success_codes` |
 | Workers | `autostart`, `restart = always\|on-failure\|never` with `restart_delay`, `max_restart_attempts`, `healthy_after`; start/stop/restart via API/UI/CLI |
 | Logs | stdout/stderr tagged frames, per-run `log_max` budget with `drop_old`/`drop_new`, live SSE streaming, ANSI-aware web viewer, raw download |

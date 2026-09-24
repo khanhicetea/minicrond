@@ -103,9 +103,11 @@ Worker (per instance):
 
 ## Counting rules
 
-- Retries are deferred to v0.2. When added, separate `retry_root_run_id` and
-  `attempt` fields identify chains; v0.1 does not overload `parent_run_id`.
-- Success = exit code ∈ `success_codes` (default `[0]`), after retries.
+- Job retries are separate runs linked by `parent_run_id` with increasing
+  `attempt` values. Pending retry timers are in-memory and do not survive a
+  daemon restart; durable retry scheduling is future work.
+- Each run succeeds when its exit code ∈ `success_codes` (default `[0]`);
+  retries are separate runs, not a change to the failed run's status.
 - Duration includes process runtime only, not queue wait (queue wait is its
   own column).
 

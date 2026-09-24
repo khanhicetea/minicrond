@@ -63,18 +63,18 @@ send stop_signal (default SIGTERM)
 `timeout` is wall-clock from process start (not queue admission). At
 deadline the stop ladder runs and final status is always the distinct terminal
 state `timeout`, regardless of the resulting signal or exit code. Job retries
-are deferred to v0.2 and will not retry timeout by default.
+never retry timeout by default.
 
 ## Retries (jobs)
 
 - `retries = N` additional attempts, each a **new run** linked via
   `parent_run_id`, `attempt = k+1`, `trigger = retry`.
-- Delay: `retry_delay` scaled by `retry_backoff` — `constant` (d),
-  `linear` (d·attempt), `exponential` (d·2^(attempt-1)), capped at 15 min.
-- Runs only when the definition at failure time still allows it (a reload
-  that lowers `retries` stops the chain).
-- The chain's final attempt determines job-level outcome for notifications
-  and "last status".
+- Delay: `retry_delay` seconds between attempts (constant). Other backoff
+  policies are not implemented.
+- Runs only when the current definition still exists, is enabled, and allows
+  the next attempt (lowering `retries` stops the chain).
+- Pending retry timers do not survive daemon restarts. Each failed attempt
+  currently emits its own notification; chain-level alert coalescing is future work.
 
 ## Worker supervision
 

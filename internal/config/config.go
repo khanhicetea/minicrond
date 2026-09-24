@@ -166,6 +166,10 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
 	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp, "none")
 	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap, "skip")
+	if d.Kind == model.KindJob {
+		d.Retries = cmp.Or(d.Retries, defaults.Retries)
+		d.RetryDelay = cmp.Or(d.RetryDelay, defaults.RetryDelay, 5)
+	}
 	d.EnvBase = cmp.Or(d.EnvBase, defaults.EnvBase, "clean")
 	d.Grace = cmp.Or(d.Grace, defaults.Grace, 10)
 	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
@@ -279,6 +283,18 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		}
 		if d.Restart != "always" && d.Restart != "on-failure" && d.Restart != "never" {
 			return fmt.Errorf("%s.restart must be always, on-failure, or never", d.Name)
+		}
+		if d.Retries < 0 || d.Retries > 1000 {
+			return fmt.Errorf("%s.retries must be between 0 and 1000", d.Name)
+		}
+		if d.Kind == model.KindJob && (d.RetryDelay < 1 || d.RetryDelay > 86400) {
+			return fmt.Errorf("%s.retry_delay must be between 1 and 86400 seconds", d.Name)
+		}
+		if d.Kind == model.KindWorker && d.Retries != 0 {
+			return fmt.Errorf("worker %s cannot have retries", d.Name)
+		}
+		if d.Kind == model.KindWorker && d.RetryDelay != 0 {
+			return fmt.Errorf("worker %s cannot have retry_delay", d.Name)
 		}
 		if d.MaxRestartAttempts < 1 || d.MaxRestartAttempts > 1000 {
 			return fmt.Errorf("%s.max_restart_attempts must be between 1 and 1000", d.Name)

@@ -12,18 +12,21 @@ const (
 )
 
 type Definition struct {
-	ID         int64             `json:"definition_id,omitzero" toml:"-"`
-	Name       string            `json:"name" toml:"name"`
-	Kind       Kind              `json:"kind" toml:"-"`
-	Revision   int64             `json:"revision,omitzero" toml:"-"`
-	Enabled    *bool             `json:"enabled,omitempty" toml:"enabled"`
-	Command    string            `json:"command,omitempty" toml:"command"`
-	Argv       []string          `json:"argv,omitempty" toml:"argv"`
-	Shell      string            `json:"shell,omitempty" toml:"shell"`
-	Schedule   string            `json:"schedule,omitempty" toml:"schedule"`
-	Timezone   string            `json:"timezone,omitempty" toml:"timezone"`
-	CatchUp    string            `json:"catch_up,omitempty" toml:"catch_up"`
-	OnOverlap  string            `json:"on_overlap,omitempty" toml:"on_overlap"`
+	ID        int64    `json:"definition_id,omitzero" toml:"-"`
+	Name      string   `json:"name" toml:"name"`
+	Kind      Kind     `json:"kind" toml:"-"`
+	Revision  int64    `json:"revision,omitzero" toml:"-"`
+	Enabled   *bool    `json:"enabled,omitempty" toml:"enabled"`
+	Command   string   `json:"command,omitempty" toml:"command"`
+	Argv      []string `json:"argv,omitempty" toml:"argv"`
+	Shell     string   `json:"shell,omitempty" toml:"shell"`
+	Schedule  string   `json:"schedule,omitempty" toml:"schedule"`
+	Timezone  string   `json:"timezone,omitempty" toml:"timezone"`
+	CatchUp   string   `json:"catch_up,omitempty" toml:"catch_up"`
+	OnOverlap string   `json:"on_overlap,omitempty" toml:"on_overlap"`
+	Retries   int      `json:"retries,omitzero" toml:"retries"`
+	// RetryDelay is measured in seconds.
+	RetryDelay int               `json:"retry_delay,omitzero" toml:"retry_delay"`
 	RunOnStart bool              `json:"run_on_start,omitzero" toml:"run_on_start"`
 	RunAs      string            `json:"run_as,omitempty" toml:"run_as"`
 	WorkingDir string            `json:"working_dir,omitempty" toml:"working_dir"`
@@ -69,6 +72,7 @@ type Run struct {
 	EndReason      string     `json:"end_reason,omitempty"`
 	Trigger        string     `json:"trigger"`
 	Attempt        int        `json:"attempt"`
+	ParentRunID    string     `json:"parent_run_id,omitempty"`
 	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
 	MissedCount    int        `json:"missed_count,omitzero"`
 	BootID         string     `json:"boot_id,omitempty"`

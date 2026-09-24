@@ -52,6 +52,8 @@ type Service struct {
 	mu        sync.Mutex
 	active    map[string]*activeRun
 	byJob     map[string]int
+	retryStop chan struct{}
+	retryWG   sync.WaitGroup
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
@@ -75,7 +77,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 		_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
 		bootID = hex.EncodeToString(b[:])
 	}
-	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int)}
+	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), retryStop: make(chan struct{})}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
 
@@ -96,15 +98,15 @@ type IdempotencyRequest struct {
 }
 
 func (s *Service) Trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time) (model.Run, error) {
-	r, _, err := s.trigger(ctx, d, hash, trigger, scheduled, nil)
+	r, _, err := s.trigger(ctx, d, hash, trigger, scheduled, nil, 1, "")
 	return r, err
 }
 
 func (s *Service) TriggerIdempotent(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem IdempotencyRequest) (model.Run, bool, error) {
-	return s.trigger(ctx, d, hash, trigger, scheduled, &idem)
+	return s.trigger(ctx, d, hash, trigger, scheduled, &idem, 1, "")
 }
 
-func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
+func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest, attempt int, parent string) (model.Run, bool, error) {
 	s.admission.Lock()
 	defer s.admission.Unlock()
 	if s.closing {
@@ -117,13 +119,13 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		return model.Run{}, false, fmt.Errorf("definition %s is disabled", d.Name)
 	}
 	if d.Kind == model.KindJob && d.OnOverlap == "skip" && s.Active(d.Name) > 0 {
-		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem)
+		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
 	}
 	if d.Kind == model.KindJob {
 		select {
 		case s.capacity <- struct{}{}:
 		default:
-			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem)
+			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
 		}
 	}
 	releaseCapacity := func() {
@@ -132,7 +134,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 	}
 	id := uuid.NewV7()
-	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "pending", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: time.Now().UTC(), LogRef: "file:" + id.String()}
+	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "pending", Trigger: trigger, Attempt: attempt, ParentRunID: parent, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: time.Now().UTC(), LogRef: "file:" + id.String()}
 	if idem != nil && idem.Key != "" {
 		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
 		if err != nil {
@@ -160,6 +162,8 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		if finishErr := s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", ended, 0, false); finishErr == nil {
 			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
 			s.notifyFinished(r, d)
+			// trigger holds admission until it returns; schedule outside it.
+			go s.scheduleRetry(r, d)
 		}
 		releaseCapacity()
 		return r, false, err
@@ -180,10 +184,10 @@ func resolveLogMax(value int) int64 {
 	return int64(value) << 20
 }
 
-func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest) (model.Run, bool, error) {
+func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest, attempt int, parent string) (model.Run, bool, error) {
 	id := uuid.NewV7()
 	now := time.Now().UTC()
-	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: "overlap_skip", Trigger: trigger, Attempt: 1, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
+	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: "overlap_skip", Trigger: trigger, Attempt: attempt, ParentRunID: parent, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
 	if idem != nil && idem.Key != "" {
 		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
 		if err != nil {
@@ -350,6 +354,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	}
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = status, reason, code, signal, &ended
 	s.notifyFinished(r, d)
+	s.scheduleRetry(r, d)
 }
 
 func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
@@ -365,6 +370,45 @@ func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.
 	}
 	r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
 	s.notifyFinished(r, d)
+	s.scheduleRetry(r, d)
+}
+
+// scheduleRetry creates the next attempt as a separate run. Pending timers
+// are canceled at shutdown; only failed job runs are retried.
+func (s *Service) scheduleRetry(r model.Run, d model.Definition) {
+	if d.Kind != model.KindJob || r.Status != "failed" || r.Attempt > d.Retries {
+		return
+	}
+	s.admission.Lock()
+	if s.closing {
+		s.admission.Unlock()
+		return
+	}
+	s.retryWG.Add(1)
+	s.admission.Unlock()
+	go func() {
+		defer s.retryWG.Done()
+		delay := d.RetryDelay
+		if delay <= 0 {
+			delay = 5
+		}
+		timer := time.NewTimer(time.Duration(delay) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-s.retryStop:
+			return
+		case <-timer.C:
+		}
+		// Use the current definition: disabled, deleted, or reduced budgets
+		// must not launch a queued retry.
+		current, hash, err := s.store.Definition(context.Background(), d.Name)
+		if err != nil || current.ID != d.ID || current.Kind != model.KindJob || !current.IsEnabled() || r.Attempt > current.Retries {
+			return
+		}
+		if _, _, err := s.trigger(context.Background(), current, hash, "retry", r.ScheduledFor, nil, r.Attempt+1, r.ID); err != nil && !errors.Is(err, ErrShutdown) {
+			slog.Error("job retry trigger failed", "job", d.Name, "run", r.ID, "error", err)
+		}
+	}()
 }
 
 func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool) error {
@@ -705,7 +749,10 @@ func (s *Service) Stop(id string) error {
 }
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.admission.Lock()
-	s.closing = true
+	if !s.closing {
+		s.closing = true
+		close(s.retryStop)
+	}
 	s.mu.Lock()
 	runs := make([]*activeRun, 0, len(s.active))
 	for _, a := range s.active {
@@ -726,5 +773,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	s.retryWG.Wait()
 	return nil
 }

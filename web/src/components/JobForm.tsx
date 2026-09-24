@@ -21,6 +21,8 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
     base.schedule = '0 0 * * *';
     base.catch_up = 'none';
     base.on_overlap = 'skip';
+    base.retries = 0;
+    base.retry_delay = 5;
     base.run_on_start = false;
   } else {
     base.autostart = true;
@@ -69,7 +71,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   const channelNames = [...new Set([...configuredChannels.map(channel => channel.name), ...selectedAlerts])];
 
   const setKind = (kind: 'job' | 'worker') => {
-    onChange({ ...emptyDefinition(kind), name: draft.name });
+    onChange({ ...emptyDefinition(kind), name: draft.name, retries: kind === 'worker' ? undefined : 0, retry_delay: kind === 'worker' ? undefined : 5 });
   };
 
   const cronParts = cronSelectValues(draft.schedule ?? '');
@@ -319,6 +321,21 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                     <option value="parallel">Parallel</option>
                   </select>
                   <p className="field-help">If a run is already active</p>
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor={`${formId}-retries`} className={label}>Retries after failure</label>
+                  <input id={`${formId}-retries`} type="number" min={0} max={1000} step={1} className={field}
+                    value={draft.retries ?? 0} disabled={disabled}
+                    onChange={event => onChange({ retries: optionalNumber(event.target.value) })} />
+                  <p className="field-help">Additional attempts; timeouts and stopped runs are not retried</p>
+                </div>
+                <div>
+                  <label htmlFor={`${formId}-retry-delay`} className={label}>Retry delay (seconds)</label>
+                  <input id={`${formId}-retry-delay`} type="number" min={0} max={86400} step={1} className={field}
+                    value={draft.retry_delay ?? 5} disabled={disabled}
+                    onChange={event => onChange({ retry_delay: optionalNumber(event.target.value) })} />
                 </div>
               </div>
             </>

@@ -19,6 +19,11 @@ export interface Definition {
   timezone?: string;
   catch_up?: string;
   on_overlap?: string;
+  retries?: number /* int */;
+  /**
+   * RetryDelay is measured in seconds.
+   */
+  retry_delay?: number /* int */;
   run_on_start?: boolean;
   run_as?: string;
   working_dir?: string;
@@ -70,6 +75,7 @@ export interface Run {
   end_reason?: string;
   trigger: string;
   attempt: number /* int */;
+  parent_run_id?: string;
   scheduled_for?: string;
   missed_count?: number /* int */;
   boot_id?: string;

@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -132,6 +132,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 4: %w", err)
 		}
 	}
+	if version <= 4 {
+		if _, err := s.db.ExecContext(ctx, migration5); err != nil {
+			return fmt.Errorf("migration 5: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -154,6 +159,7 @@ CREATE TABLE runs (
  run_id TEXT PRIMARY KEY, definition_id INTEGER NOT NULL REFERENCES definitions(definition_id),
  job TEXT NOT NULL, kind TEXT NOT NULL, revision INTEGER NOT NULL, definition_hash TEXT NOT NULL,
  status TEXT NOT NULL, end_reason TEXT, trigger TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1,
+ parent_run_id TEXT,
  scheduled_for_us INTEGER, missed_count INTEGER NOT NULL DEFAULT 0, boot_id TEXT,
  pid INTEGER, pgid INTEGER, process_start_id TEXT, exit_code INTEGER, signal TEXT,
  queued_us INTEGER NOT NULL, started_us INTEGER, ended_us INTEGER, log_ref TEXT,
@@ -172,7 +178,7 @@ CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT N
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=4;
+PRAGMA user_version=5;
 COMMIT;`
 
 const migration3 = `
@@ -191,6 +197,12 @@ BEGIN;
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
 PRAGMA user_version=4;
+COMMIT;`
+
+const migration5 = `
+BEGIN;
+ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
+PRAGMA user_version=5;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
@@ -423,10 +435,10 @@ func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
 	return err
 }
 
-const createRunSQL = `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,end_reason,trigger,attempt,scheduled_for_us,missed_count,boot_id,queued_us,ended_us,log_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+const createRunSQL = `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,end_reason,trigger,attempt,parent_run_id,scheduled_for_us,missed_count,boot_id,queued_us,ended_us,log_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 
 func runArgs(r model.Run) []any {
-	return []any{r.ID, r.DefinitionID, r.Job, r.Kind, r.Revision, r.DefinitionHash, r.Status, nullString(r.EndReason), r.Trigger, r.Attempt, timePtrUS(r.ScheduledFor), r.MissedCount, r.BootID, r.QueuedAt.UnixMicro(), timePtrUS(r.EndedAt), r.LogRef}
+	return []any{r.ID, r.DefinitionID, r.Job, r.Kind, r.Revision, r.DefinitionHash, r.Status, nullString(r.EndReason), r.Trigger, r.Attempt, nullString(r.ParentRunID), timePtrUS(r.ScheduledFor), r.MissedCount, r.BootID, r.QueuedAt.UnixMicro(), timePtrUS(r.EndedAt), r.LogRef}
 }
 
 // AdmitIdempotentRun atomically reserves/reuses a key and creates its pending
@@ -506,7 +518,7 @@ func (s *Store) Recover(ctx context.Context) error {
 }
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {
 	limit = min(max(limit, 1), 500)
-	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs`
+	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs`
 	var args []any
 	if job != "" {
 		q += " WHERE job=?"
@@ -667,12 +679,12 @@ func percentileMS(values []int64, p float64) *int64 {
 }
 
 func (s *Store) Run(ctx context.Context, id string) (model.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
 	return scanRun(row)
 }
 
 func (s *Store) ScheduledRun(ctx context.Context, definitionID int64, scheduled time.Time) (model.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE definition_id=? AND scheduled_for_us=? AND trigger='schedule'`, definitionID, scheduled.UnixMicro())
+	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE definition_id=? AND scheduled_for_us=? AND trigger='schedule'`, definitionID, scheduled.UnixMicro())
 	return scanRun(row)
 }
 
@@ -683,7 +695,7 @@ func scanRun(row scanner) (model.Run, error) {
 	var scheduled, started, ended sql.NullInt64
 	var queued int64
 	var code sql.NullInt64
-	err := row.Scan(&r.ID, &r.DefinitionID, &r.Job, &r.Kind, &r.Revision, &r.DefinitionHash, &r.Status, &r.EndReason, &r.Trigger, &r.Attempt, &scheduled, &r.MissedCount, &r.BootID, &r.PID, &r.PGID, &r.ProcessStartID, &code, &r.Signal, &queued, &started, &ended, &r.LogRef, &r.LogBytes, &r.LogTruncated)
+	err := row.Scan(&r.ID, &r.DefinitionID, &r.Job, &r.Kind, &r.Revision, &r.DefinitionHash, &r.Status, &r.EndReason, &r.Trigger, &r.Attempt, &r.ParentRunID, &scheduled, &r.MissedCount, &r.BootID, &r.PID, &r.PGID, &r.ProcessStartID, &code, &r.Signal, &queued, &started, &ended, &r.LogRef, &r.LogBytes, &r.LogTruncated)
 	if err != nil {
 		return r, err
 	}
