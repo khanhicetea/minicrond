@@ -2,7 +2,7 @@
 
 A small, trustworthy local job scheduler and process supervisor in a
 single binary: durable cron jobs, supervised workers, compressed tagged
-logs, a REST + SSE API, and an embedded web UI. Linux, user mode, v0.1.
+logs, a REST + SSE API, and an embedded web UI. Linux, v0.2.
 
 ```
 go build -o minicrond ./cmd/minicrond
@@ -24,7 +24,7 @@ go build -o minicrond ./cmd/minicrond
   registry; TOML bundles import/export explicitly (previewed and
   hash-checked). No config-file drift.
 - **Real auth model.** Bearer-token TCP API, mode-0600 token-free Unix
-  socket for the local CLI, loopback-only by default, secrets referenced
+  socket for the local CLI, loopback-only by default, optional Unix-only mode, secrets referenced
   as `env:`/`file:` — never inline.
 
 ## Features
@@ -69,6 +69,12 @@ rm ~/.local/share/minicron/initial-token
 Open <http://127.0.0.1:7423> and paste the token. The local CLI uses the
 private Unix socket, so it does not need a token. If the token is lost, use
 `./minicrond token --rotate` locally; this revokes the previous token.
+
+For a socket-only service, set `server.tcp_enabled = false` in `minicron.toml`
+and restart. The CLI, full API, and UI remain available on the private Unix
+socket; no TCP port or initial bearer token is created. See
+[proxy and Unix-only operations](docs/operations.md#unix-only-and-proxied-operation)
+before publishing the UI through a reverse proxy.
 
 **Production alternative:** install the binary at a permanent path and use
 `sudo minicrond service install` for a root systemd service (config

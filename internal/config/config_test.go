@@ -21,6 +21,26 @@ func TestLoadSettingsOnly(t *testing.T) {
 	}
 }
 
+func TestUnixOnlyConfigRequiresSocketAndIgnoresUnusedBind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[server]\ntcp_enabled=false\nbind='not a TCP address'\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.TCPOn() || !cfg.Server.UnixOn() {
+		t.Fatalf("unexpected listeners: %+v", cfg.Server)
+	}
+	mustWrite(t, path, "[server]\ntcp_enabled=false\nunix_socket=false\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cannot both be false") {
+		t.Fatalf("expected no-listener error, got %v", err)
+	}
+	mustWrite(t, path, "[server]\ntcp_enabled=true\nbind='not a TCP address'\n")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "server.bind") {
+		t.Fatalf("expected bind error, got %v", err)
+	}
+}
+
 func TestLoadRejectsDefinitionSources(t *testing.T) {
 	for name, content := range map[string]string{
 		"include": "[include]\npaths=['jobs/*.toml']\n",

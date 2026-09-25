@@ -6,6 +6,7 @@ import LogViewer from '../components/LogViewer';
 import StatusBadge from '../components/StatusBadge';
 import { RunsList } from '../components/RunsTable';
 import { api, errorText } from '../api';
+import { useAuthState } from '../auth';
 import { jobQuery, runAlertsQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
 import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
@@ -32,6 +33,7 @@ const FILTERS: { key: FilterKey; label: string }[] = [
  *   hint with "copy last errors" (no repeated status/exit code)
  */
 export default function RunDetail() {
+  const { mode } = useAuthState();
   const params = useParams();
   const id = params.id ?? '';
   const [, navigate] = useLocation();
@@ -161,14 +163,14 @@ export default function RunDetail() {
                 {trigger.isPending ? 'Starting…' : 'Run again'}
               </button>
             )}
-            <button
+            {mode === 'token' && <button
               type="button"
               className="btn-sub"
               onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" http://127.0.0.1:7423/api/v1/runs/${data.run_id}`)}
             >
               <Icon name="copy" size={14} />
               Copy as curl
-            </button>
+            </button>}
             <button
               type="button"
               className="btn-sub"

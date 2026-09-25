@@ -81,23 +81,52 @@ individual channel with `POST /api/v1/alert-channels/{name}/test`.
 
 ## Tokens
 
-- First boot writes `initial-token` (mode 0600) exactly once — read and
+- With TCP enabled, first boot writes `initial-token` (mode 0600) exactly once — read and
   remove it after provisioning.
 - Lost token: rotate locally with `minicrond token --rotate` (uses the
   Unix socket, no token needed). The old token is revoked immediately.
 - The daemon status exposes a token fingerprint only — tokens are never
   stored in the registry or logs.
+- Unix-only mode creates no new token and disables rotation. A pre-existing
+  token hash is retained for a later return to TCP mode; rotate after that
+  return if the old token is unknown.
+
+## Unix-only and proxied operation
+
+Set `server.tcp_enabled = false` and keep `server.unix_socket = true`, then
+restart the daemon. This is a general local service option: the CLI and all
+HTTP routes use `MINICRON_DATA/minicron.sock`, while no TCP port is opened.
+Keep the data directory mode 0700 and socket mode 0600. The socket accepts
+the daemon UID and root; a proxy therefore needs a same-UID relay or process
+identity, with access granted only to trusted operators.
+
+If an HTTP reverse proxy serves the UI, use Unix-only mode. The proxy must
+authenticate and authorize every request to the app origin, including SPA
+assets, API mutations, downloads, and SSE. Deny `/api/v1/token/rotate`,
+enforce CSRF/Origin checks on writes, prevent credential forwarding to other
+origins, and give each daemon its own browser origin. API access permits
+arbitrary job commands as the daemon UID, so treat it as full operator access.
+Direct daemon responses deny framing; an embedding proxy may replace
+`X-Frame-Options: DENY` and set a narrow CSP `frame-ancestors` policy.
+Never grant access by trusting a caller-supplied identity header.
+
+For an unprivileged numeric UID without a passwd entry, set an absolute
+`MINICRON_DATA` and a usable `HOME` for the daemon process. Set each job's
+`working_dir` and, if needed, `env.HOME` explicitly. Jobs inherit the actual
+daemon UID/GID; they do not inherit an ambient `HOME`, `USER`, or `LOGNAME`
+when that UID has no passwd entry. Set `env.PATH` for shell commands and
+use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`.
 
 ## Security model
 
-- TCP is plaintext HTTP and defaults to loopback. A non-loopback bind is
+- TCP is plaintext HTTP, enabled by default, and defaults to loopback. A non-loopback bind is
   rejected at load unless `server.allow_insecure_remote = true`; use that
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
 - Every `/api/` endpoint requires the bearer token over TCP;
   `/healthz`, `/readyz`, `/openapi.json`, and UI shell assets are public
   and disclose nothing.
-- The Unix socket is mode 0600 in a 0700 data directory; local access is
-  authorized by peer credentials.
+- The Unix socket is mode 0600 in a 0700 data directory; daemon-UID and root
+  peers are authorized by kernel credentials.
 - Secrets (`secret_env`, alert `bot_token`) are `env:NAME` or
   `file:/absolute/path` references resolved at spawn/startup — never
   inline values in config or the registry.

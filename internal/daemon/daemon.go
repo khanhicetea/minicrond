@@ -114,6 +114,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	sched := scheduler.New(st, execService)
 	super := supervisor.New(st, execService)
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
+	apiServer.SetTCPEnabled(cfg.Server.TCPOn())
 	apiServer.SetJobDefaults(func() model.Definition {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -196,7 +197,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	}
 	super.Reload(defs)
 	socket := ""
-	if cfg.Server.UnixSocket == nil || *cfg.Server.UnixSocket {
+	if cfg.Server.UnixOn() {
 		socket = filepath.Join(d.DataDir, "minicron.sock")
 	}
 	if err = apiServer.Start(cfg.Server.Bind, socket); err != nil {
@@ -217,7 +218,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		stopMaintenance()
 		maintenance.Wait()
 	}()
-	slog.Info("minicron ready", "bind", cfg.Server.Bind, "socket", socket)
+	slog.Info("minicron ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
 	<-ctx.Done()
 	return nil
 }
@@ -231,8 +232,8 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Server.Bind != d.cfg.Server.Bind || !boolPtrEqual(cfg.Server.UnixSocket, d.cfg.Server.UnixSocket) {
-		return errors.New("server.bind and server.unix_socket require daemon restart")
+	if cfg.Server.Bind != d.cfg.Server.Bind || cfg.Server.UnixOn() != d.cfg.Server.UnixOn() || cfg.Server.TCPOn() != d.cfg.Server.TCPOn() {
+		return errors.New("server.bind, server.tcp_enabled, and server.unix_socket require daemon restart")
 	}
 	if cfg.Scheduler.MaxConcurrentRuns != d.cfg.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != d.cfg.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
@@ -445,13 +446,6 @@ func nextDaily(now time.Time, clock, tzName string) time.Time {
 		candidate = time.Date(local.Year(), local.Month(), local.Day()+1, hour, minute, 0, 0, tz)
 	}
 	return candidate
-}
-
-func boolPtrEqual(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }
 
 func (d *Daemon) acquireLock() error {

@@ -33,9 +33,15 @@ type Config struct {
 
 type Server struct {
 	Bind                string `toml:"bind" json:"bind"`
+	TCPEnabled          *bool  `toml:"tcp_enabled" json:"tcp_enabled,omitempty"`
 	UnixSocket          *bool  `toml:"unix_socket" json:"unix_socket,omitempty"`
 	AllowInsecureRemote bool   `toml:"allow_insecure_remote" json:"allow_insecure_remote,omitempty"`
 }
+
+func (s Server) TCPOn() bool { return s.TCPEnabled == nil || *s.TCPEnabled }
+
+func (s Server) UnixOn() bool { return s.UnixSocket == nil || *s.UnixSocket }
+
 type Scheduler struct {
 	Timezone          string `toml:"timezone" json:"timezone"`
 	MaxConcurrentRuns int    `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
@@ -239,13 +245,18 @@ func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 }
 
 func validateConfig(c *Config) error {
-	host, _, err := net.SplitHostPort(c.Server.Bind)
-	if err != nil {
-		return fmt.Errorf("server.bind: %w", err)
+	if !c.Server.TCPOn() && !c.Server.UnixOn() {
+		return errors.New("server: tcp_enabled and unix_socket cannot both be false")
 	}
-	ip := net.ParseIP(host)
-	if !c.Server.AllowInsecureRemote && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return errors.New("server.bind: non-loopback plaintext HTTP requires allow_insecure_remote=true")
+	if c.Server.TCPOn() {
+		host, _, err := net.SplitHostPort(c.Server.Bind)
+		if err != nil {
+			return fmt.Errorf("server.bind: %w", err)
+		}
+		ip := net.ParseIP(host)
+		if !c.Server.AllowInsecureRemote && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return errors.New("server.bind: non-loopback plaintext HTTP requires allow_insecure_remote=true")
+		}
 	}
 	if c.Scheduler.MaxConcurrentRuns < 1 || c.Scheduler.MaxConcurrentRuns > 1024 {
 		return errors.New("scheduler.max_concurrent_runs: must be between 1 and 1024")

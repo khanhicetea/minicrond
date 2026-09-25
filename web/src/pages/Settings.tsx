@@ -4,7 +4,7 @@ import { Link, useSearch } from 'wouter';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { api, errorText } from '../api';
-import { auth } from '../auth';
+import { auth, useAuthState } from '../auth';
 import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useReloadDaemon } from '../queries';
 import { downloadFile } from '../lib/download';
 import { formatDayTime, formatSpan, formatUptime, shortId, shortRunId } from '../lib/format';
@@ -37,6 +37,7 @@ function useDiagnostics() {
 
 /** Settings & diagnostics + Export / Import tabs. */
 export default function Settings() {
+  const { mode } = useAuthState();
   const initialTab = new URLSearchParams(useSearch()).get('tab') === 'import' ? 'import' : 'main';
   const [tab, setTab] = useState<'main' | 'import'>(initialTab);
   useEffect(() => setTab(initialTab), [initialTab]);
@@ -84,10 +85,10 @@ export default function Settings() {
                 <span className="label">up</span>
                 <span className="val">{daemon.data ? formatUptime(daemon.data.uptime_s) : '—'}</span>
               </span>
-              <span className="health-stat" title={daemon.data ? `Token fingerprint ${daemon.data.token_fingerprint}` : 'Token fingerprint'}>
+              {mode === 'token' && <span className="health-stat" title={daemon.data?.token_fingerprint ? `Token fingerprint ${daemon.data.token_fingerprint}` : 'Token fingerprint'}>
                 <span className="label">fp</span>
-                <span className="val">{daemon.data ? shortId(daemon.data.token_fingerprint, 10) : '—'}</span>
-              </span>
+                <span className="val">{daemon.data?.token_fingerprint ? shortId(daemon.data.token_fingerprint, 10) : '—'}</span>
+              </span>}
             </div>
 
             {/* Summary badges. */}
@@ -185,6 +186,7 @@ function StorageRow({
 }
 
 function MainTab() {
+  const { mode } = useAuthState();
   const { daemon, runs, definitions, checks } = useDiagnostics();
   const reload = useReloadDaemon();
   const client = useQueryClient();
@@ -239,7 +241,7 @@ function MainTab() {
         </Panel>
 
         {/* Security */}
-        <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>bearer</span>}>
+        {mode === 'token' ? <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>bearer</span>}>
           <label className="field-label" htmlFor="admin-token">Admin token</label>
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -263,7 +265,7 @@ function MainTab() {
             </div>
           </div>
           <p className="field-help">Use this token for the REST API and CLI. It is held in this tab only — the daemon cannot show it again.</p>
-          {daemon.data && (
+          {daemon.data?.token_fingerprint && (
             <p className="num mt-2 text-xs muted">fingerprint {daemon.data.token_fingerprint}</p>
           )}
           <div className="mt-3 flex flex-wrap gap-2">
@@ -279,7 +281,9 @@ function MainTab() {
           {rotateError && (
             <p role="alert" className="mt-2 text-xs text-amber-400">{rotateError}</p>
           )}
-        </Panel>
+        </Panel> : <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>proxy</span>}>
+          <p className="text-sm muted">Access to this daemon is managed by the authenticated proxy. No bearer token is stored in this browser.</p>
+        </Panel>}
 
         {/* Diagnostics */}
         <Panel
@@ -312,14 +316,14 @@ function MainTab() {
               <Icon name="wrench" size={14} />
               Run doctor
             </button>
-            <button
+            {mode === 'token' && <button
               type="button"
               className="btn-sub"
               onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" http://127.0.0.1:7423/api/v1/daemon`)}
             >
               <Icon name="terminal" size={14} />
               Copy as curl
-            </button>
+            </button>}
           </div>
         </Panel>
       </div>

@@ -10,7 +10,8 @@ export interface DaemonInfo {
   schema_version: number;
   uptime_s: number;
   capabilities: string[];
-  token_fingerprint: string;
+  tcp_enabled: boolean;
+  token_fingerprint?: string;
 }
 
 export interface RunMetricBucket {

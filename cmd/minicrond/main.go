@@ -24,7 +24,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/daemon"
 )
 
-var version = "0.1.0-dev"
+var version = "0.2.0-dev"
 var commit = "unknown"
 
 //go:embed minicron.schema.json
@@ -139,6 +139,7 @@ func initConfig(args []string) error {
 func defaultConfigTOML(bind string) string {
 	return fmt.Sprintf(`[server]
 bind = %q
+tcp_enabled = true
 unix_socket = true
 
 [scheduler]

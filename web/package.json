@@ -6,7 +6,8 @@
     "generate-types": "cd .. && go tool tygo generate --config tygo.yaml",
     "prebuild": "npm run generate-types",
     "build": "vite build",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@tanstack/charts": "^0.16.0",

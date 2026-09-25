@@ -2,7 +2,7 @@
 
 This guide takes you from a source checkout (or release binary) to a running
 daemon with a scheduled job, logs, and the web UI. Linux is the supported
-platform in v0.1.
+platform.
 
 ## 1. Build (or download)
 

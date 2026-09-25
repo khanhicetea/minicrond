@@ -1,6 +1,7 @@
 # HTTP API
 
-Base URL: the daemon's `server.bind` (default `http://127.0.0.1:7423`).
+Base URL: the daemon's `server.bind` (default `http://127.0.0.1:7423`)
+when TCP is enabled. The same routes are served on the private Unix socket.
 The full OpenAPI 3.1 contract is checked in at
 [`cmd/minicrond/openapi.json`](../cmd/minicrond/openapi.json) and served
 live at `GET /openapi.json`.
@@ -9,18 +10,36 @@ live at `GET /openapi.json`.
 
 | Transport | Auth |
 |---|---|
-| TCP (`server.bind`) | `Authorization: Bearer <token>` required for **every** `/api/` path |
-| Unix socket (`minicron.sock`) | Token-free; the peer's local credentials authorize the request |
+| TCP (`server.bind`, enabled by default) | `Authorization: Bearer <token>` required for every `/api/` path and `/openapi.json` |
+| Unix socket (`minicron.sock`) | Token-free; the daemon UID or root is authorized by peer credentials |
 
-Public without a token: `GET /healthz`, `GET /readyz` (no detail
-disclosed), `GET /openapi.json`, and the web UI shell + bundled assets.
+Public without a token over TCP: `GET /healthz`, `GET /readyz` (no detail
+disclosed), and the web UI shell + bundled assets.
 Everything else under `/api/` rejects unauthenticated requests.
 
 The initial token is written once to `initial-token` in the data directory
 (mode 0600) on first boot. Rotate with `POST /api/v1/token/rotate` or
 `minicrond token --rotate`; the response contains the new token, and the
 old one stops working immediately. The daemon status exposes only a token
-fingerprint.
+fingerprint. In Unix-only mode no new token is created, rotation returns
+404, and the daemon status omits the fingerprint. A hash from an earlier
+TCP-enabled period is retained and becomes usable if TCP is re-enabled;
+rotate it from the local CLI after re-enabling if the old token is unknown.
+
+The embedded UI probes `GET /api/v1/daemon` without a bearer token before
+showing login. A successful probe permits token-free UI requests only when
+`tcp_enabled` is false. A 401 keeps the normal TCP token login; later 401s
+clear browser data and end the session. The UI never sends a stored token
+while probing or using proxy access.
+
+An HTTP reverse proxy to the Unix socket must authenticate and authorize
+**every** request, including the SPA, API, assets, downloads, and SSE. It must
+protect state-changing requests against cross-site requests, isolate each
+daemon on its own origin, and deny `/api/v1/token/rotate`. Proxy access is
+full operator access: it can create commands that run as the daemon UID.
+Use `tcp_enabled = false` for browser proxy deployments. The daemon denies
+direct framing with `X-Frame-Options: DENY`; a trusted embedding proxy may
+replace that header and set a narrow CSP `frame-ancestors` policy.
 
 ## Endpoints
 
@@ -30,7 +49,7 @@ fingerprint.
 |---|---|
 | `GET /healthz` | Liveness — always `ok` |
 | `GET /readyz` | Readiness — fails while shutting down |
-| `GET /api/v1/daemon` | Version, schema, uptime, token fingerprint, capabilities |
+| `GET /api/v1/daemon` | Version, schema, uptime, `tcp_enabled`, capabilities, token fingerprint when TCP is enabled |
 | `POST /api/v1/daemon/reload` | Hot-reload the bootstrap config |
 
 ### Definitions
@@ -48,6 +67,12 @@ fingerprint.
 | `POST /api/v1/workers/{name}/start` | Start a worker |
 | `POST /api/v1/workers/{name}/stop` | Stop a worker (graceful, then kill) |
 | `POST /api/v1/workers/{name}/restart` | Restart a worker |
+
+`POST /api/v1/jobs` and `PUT /api/v1/jobs/{name}` accept
+`If-None-Match: *` for an atomic create-only operation. An existing or
+previously deleted name returns 412 without replacing it. Updates may use
+the existing `If-Match: <revision>` precondition; the two headers cannot
+be combined.
 
 ### Runs
 

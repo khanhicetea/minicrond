@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -63,5 +64,38 @@ func TestPeerUID(t *testing.T) {
 	}
 	if uid != uint32(os.Geteuid()) {
 		t.Fatalf("got UID %d, want %d", uid, os.Geteuid())
+	}
+}
+
+func TestPeerListenerRejectsWrongUID(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root is intentionally allowed to access every local socket")
+	}
+	path := filepath.Join(t.TempDir(), "minicron.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	finished := make(chan error, 1)
+	go func() {
+		_, err := (peerListener{Listener: ln, uid: uint32(os.Geteuid() + 1)}).Accept()
+		finished <- err
+	}()
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var one [1]byte
+	if _, err := conn.Read(one[:]); err != io.EOF {
+		t.Fatalf("wrong-UID peer should be disconnected, got %v", err)
+	}
+	_ = ln.Close()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("peer listener did not stop")
 	}
 }

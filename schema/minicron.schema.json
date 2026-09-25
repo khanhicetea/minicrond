@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://minicron.dev/schema/v0.1/config.json",
+  "$id": "https://minicron.dev/schema/v0.2/config.json",
   "title": "minicron configuration",
   "type": "object",
   "additionalProperties": false,
@@ -12,6 +12,10 @@
         "bind": {
           "type": "string",
           "default": "127.0.0.1:7423"
+        },
+        "tcp_enabled": {
+          "type": "boolean",
+          "default": true
         },
         "unix_socket": {
           "type": "boolean",

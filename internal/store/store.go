@@ -357,6 +357,16 @@ func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error
 }
 
 func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected int64, actor string) (model.Definition, error) {
+	return s.putDefinition(ctx, d, expected, actor, false)
+}
+
+// CreateDefinition claims a name only if it has never been used, including by
+// a deleted definition. It gives automation an atomic collision check.
+func (s *Store) CreateDefinition(ctx context.Context, d model.Definition, actor string) (model.Definition, error) {
+	return s.putDefinition(ctx, d, 0, actor, true)
+}
+
+func (s *Store) putDefinition(ctx context.Context, d model.Definition, expected int64, actor string, createOnly bool) (model.Definition, error) {
 	b, hash, err := config.Canonical(d)
 	if err != nil {
 		return d, err
@@ -381,6 +391,9 @@ func (s *Store) PutDefinition(ctx context.Context, d model.Definition, expected 
 	} else if err != nil {
 		return d, err
 	} else {
+		if createOnly {
+			return d, fmt.Errorf("%w: definition name %q already exists", ErrRevisionConflict, d.Name)
+		}
 		if !deleted.Valid && expected != 0 && expected != rev {
 			return d, fmt.Errorf("%w: expected %d, current %d", ErrRevisionConflict, expected, rev)
 		}

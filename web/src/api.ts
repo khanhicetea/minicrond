@@ -24,6 +24,7 @@ interface RequestOptions {
   token?: string;
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  revokeOn401?: boolean;
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -38,6 +39,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     signal: options.signal,
   });
   if (!response.ok) {
+    if (response.status === 401 && options.revokeOn401 !== false) auth.revoke();
     let code = 'request_failed';
     let message = response.statusText || 'request failed';
     try {
@@ -56,6 +58,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
+  /** Probe without a browser token, including one retained from an old tab session. */
+  probeTransport: () => request<DaemonInfo>('/api/v1/daemon', { token: '', revokeOn401: false }),
   daemon: (signal?: AbortSignal) => request<DaemonInfo>('/api/v1/daemon', { signal }),
 
   reload: () => request<{ reloaded: boolean }>('/api/v1/daemon/reload', { method: 'POST' }),
@@ -145,7 +149,7 @@ export const api = {
 
 
   /** Validate a candidate token without mutating the stored session token. */
-  validateToken: (token: string) => request<DaemonInfo>('/api/v1/daemon', { token }),
+  validateToken: (token: string) => request<DaemonInfo>('/api/v1/daemon', { token, revokeOn401: false }),
 
   /** Authenticated binary download of an export bundle or raw log. */
   download: async (url: string): Promise<Blob> => {
@@ -153,7 +157,7 @@ export const api = {
     if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
     const response = await fetch(url, { headers });
     if (!response.ok) {
-      if (response.status === 401 && auth.token) auth.logout();
+      if (response.status === 401) auth.revoke();
       throw new ApiError(response.status, 'download_failed', 'download failed');
     }
     return response.blob();
@@ -184,7 +188,7 @@ export async function streamRunLogs(
     signal,
   });
   if (!response.ok || !response.body) {
-    if (response.status === 401 && auth.token) auth.logout();
+    if (response.status === 401) auth.revoke();
     let message = response.statusText || 'log stream failed';
     try {
       const envelope = (await response.json()) as { error?: { message?: string } };

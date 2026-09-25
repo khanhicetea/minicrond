@@ -247,6 +247,23 @@ func TestTCPRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestCreateOnlyDefinitionDoesNotReplaceExistingName(t *testing.T) {
+	s, _, st := setup(t)
+	headers := map[string]string{"If-None-Match": "*"}
+	first := `{"name":"reserved","kind":"job","command":"echo first"}`
+	second := `{"name":"reserved","kind":"job","command":"echo second"}`
+	if rec := call(s, true, "POST", "/api/v1/jobs", "", first, headers); rec.Code != 200 {
+		t.Fatalf("create-only request: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(s, true, "POST", "/api/v1/jobs", "", second, headers); rec.Code != 412 {
+		t.Fatalf("name collision must fail: %d %s", rec.Code, rec.Body.String())
+	}
+	got, _, err := st.Definition(t.Context(), "reserved")
+	if err != nil || got.Command != "echo first" {
+		t.Fatalf("existing definition was replaced: %+v, %v", got, err)
+	}
+}
+
 func TestDaemonRunAsCapabilityReflectsPrivileges(t *testing.T) {
 	s, token, _ := setup(t)
 	rec := call(s, false, "GET", "/api/v1/daemon", token, "", nil)

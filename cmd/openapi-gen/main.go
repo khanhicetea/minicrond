@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	if _, err := os.Stdout.Write(append(api.OpenAPIContract("0.1.0"), '\n')); err != nil {
+	if _, err := os.Stdout.Write(append(api.OpenAPIContract("0.2.0"), '\n')); err != nil {
 		panic(err)
 	}
 }

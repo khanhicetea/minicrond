@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from './Icon';
-import { auth } from '../auth';
+import { auth, useAuthState } from '../auth';
 import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT } from '../queries';
 import { RANGE_LABEL, useRange, type RangeKey } from '../lib/range';
 import { shortRunId } from '../lib/format';
@@ -196,6 +196,7 @@ function RangeSelect() {
 }
 
 export default function Layout({ children }: { children: ReactNode }) {
+  const { mode } = useAuthState();
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -211,7 +212,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <LivePill />
           <RangeSelect />
           <ThemeToggle />
-          <button
+          {mode === 'token' && <button
             type="button"
             className="btn-icon"
             onClick={() => auth.logout()}
@@ -219,7 +220,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             title="Sign out (clears the token from this tab)"
           >
             <Icon name="log-out" size={16} />
-          </button>
+          </button>}
         </div>
       </header>
       <main className="page">{children}</main>

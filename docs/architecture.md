@@ -82,7 +82,10 @@ A React 19 SPA (React Compiler, wouter, daisyUI 5, TanStack Query) built
 ahead of time and embedded into the binary — deploying the UI means
 deploying the daemon. TypeScript model types are generated from the Go
 model with Tygo (`make generate-types`). The UI shell is public; every
-`/api/` call carries the bearer token.
+`/api/` call uses a bearer token over TCP. A Unix-only deployment may
+serve the same UI through an authenticated reverse proxy to the private
+socket; the UI then makes token-free requests, and the proxy owns browser
+authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
 
 ## Design records
 
@@ -90,6 +93,7 @@ model with Tygo (`make generate-types`). The UI shell is public; every
   authority, run vocabulary, process guarantees
 - [ADR-6: hybrid log storage](adr/0006-hybrid-log-storage.md) — file
   buffer + separate SQLite archive
+- [ADR-7: Unix-only and proxy UI](adr/0007-unix-only-and-proxy-ui.md) — optional local transport and browser authentication
 - [`specs/`](../specs/) — pre-implementation design drafts and the decision
   log (drafts yield to ADRs and these docs where they conflict)
 - [`releases/`](releases/) — release notes with the v0.1 acceptance tables

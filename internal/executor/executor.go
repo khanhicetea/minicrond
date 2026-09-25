@@ -63,6 +63,7 @@ type activeRun struct {
 
 var ErrStopped = errors.New("operator stop")
 var ErrShutdown = errors.New("daemon shutdown")
+var lookupCurrentUser = user.Current
 
 func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	if opt.MaxConcurrentRuns <= 0 {
@@ -452,12 +453,30 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	}
 	cmd := exec.Command(program, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: cred}
+	// A numeric UID without a passwd entry has no known home. Use only an
+	// explicit job HOME for home-relative paths, never the daemon's ambient HOME.
+	if home == "" {
+		for _, entry := range env {
+			if value, ok := strings.CutPrefix(entry, "HOME="); ok {
+				home = value
+			}
+		}
+		if home != "" && !filepath.IsAbs(home) {
+			return nil, "", errors.New("env.HOME must be an absolute path when the daemon UID has no passwd home")
+		}
+	}
 	dir := d.WorkingDir
 	if dir == "" || dir == "~" {
 		dir = home
 	}
 	if after, ok := strings.CutPrefix(dir, "~/"); ok {
+		if home == "" {
+			return nil, "", errors.New("working_dir uses ~ but HOME is unavailable; set env.HOME or an absolute working_dir")
+		}
 		dir = filepath.Join(home, after)
+	}
+	if d.WorkingDir == "~" && home == "" {
+		return nil, "", errors.New("working_dir uses ~ but HOME is unavailable; set env.HOME or an absolute working_dir")
 	}
 	cmd.Dir = dir
 	cmd.Env = env
@@ -485,11 +504,14 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 	if runAs != "" && os.Geteuid() != 0 {
 		return nil, "", "", errors.New("run_as requires a root daemon")
 	}
-	current, err := user.Current()
-	if err != nil {
-		return nil, "", "", err
+	if runAs == "" {
+		current, lookupErr := lookupCurrentUser()
+		if lookupErr == nil {
+			return nil, current.HomeDir, current.Username, nil
+		}
+		return nil, "", strconv.Itoa(os.Geteuid()), nil
 	}
-	u := current
+	var u *user.User
 	groupName := ""
 	if runAs != "" {
 		name, g, _ := strings.Cut(runAs, ":")
@@ -519,9 +541,15 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 	return cred, u.HomeDir, u.Username, nil
 }
 func environment(d model.Definition, home string, r model.Run) ([]string, error) {
-	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TZ=" + d.Timezone}
+	env := []string{"PATH=/usr/bin:/bin", "TZ=" + d.Timezone}
+	if home != "" {
+		env = append(env, "HOME="+home)
+	}
 	if d.EnvBase == "inherit" {
-		env = slices.DeleteFunc(os.Environ(), func(v string) bool { return strings.HasPrefix(v, "MINICRON_") })
+		env = slices.DeleteFunc(os.Environ(), func(v string) bool {
+			return strings.HasPrefix(v, "MINICRON_") || (home == "" && (strings.HasPrefix(v, "HOME=") || strings.HasPrefix(v, "USER=") || strings.HasPrefix(v, "LOGNAME=")))
+		})
+		env = append(env, "TZ="+d.Timezone)
 	}
 	fileEnv, err := readEnvFile(d.EnvFile)
 	if err != nil {

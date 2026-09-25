@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { errorText } from '../api';
+import { useAuthState } from '../auth';
 import { jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerStates } from '../queries';
 import { humanizeSchedule } from '../lib/cron';
 import { definitionToToml } from '../lib/toml';
@@ -15,6 +16,7 @@ type FilterKey = 'all' | 'jobs' | 'workers' | 'enabled' | 'attention' | 'disable
 type SortKey = 'name' | 'schedule' | 'next' | 'last';
 
 export default function Jobs() {
+  const { mode } = useAuthState();
   const [, navigate] = useLocation();
   const params = new URLSearchParams(useSearch());
   const initialFilter = (params.get('filter') as FilterKey) || 'all';
@@ -277,12 +279,12 @@ export default function Jobs() {
       <div className="panel flex flex-wrap items-center gap-3 px-4 py-3">
         <Icon name="info" size={16} className="faint shrink-0" />
         <p className="min-w-0 flex-1 text-sm muted">
-          All actions in this list (trigger, edit, export, delete) can be copied as curl commands.
+          {mode === 'token' ? 'All actions in this list (trigger, edit, export, delete) can be copied as curl commands.' : 'Use the local minicrond CLI to automate these actions.'}
         </p>
-        <button type="button" className="btn-sub" onClick={() => void copyCurl()}>
+        {mode === 'token' && <button type="button" className="btn-sub" onClick={() => void copyCurl()}>
           <Icon name="terminal" size={14} />
           {copied ? 'Copied!' : 'Copy as curl'}
-        </button>
+        </button>}
       </div>
     </div>
   );

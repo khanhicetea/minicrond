@@ -2,7 +2,7 @@ import { MutationCache, QueryCache, QueryClient, QueryClientProvider } from '@ta
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Router } from 'wouter';
-import { ApiError } from './api';
+import { api, ApiError } from './api';
 import { auth } from './auth';
 import App from './App';
 import './index.css';
@@ -17,17 +17,16 @@ document.documentElement.dataset.theme =
       ? 'light'
       : 'dark';
 
-// Keep cached API data scoped to the current bearer token.
+// Keep cached API data scoped to the active browser session.
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: error => {
-      // An expired/rotated token signs the session out everywhere.
-      if (error instanceof ApiError && error.status === 401 && auth.token) auth.logout();
+      if (error instanceof ApiError && error.status === 401) auth.revoke();
     },
   }),
   mutationCache: new MutationCache({
     onError: error => {
-      if (error instanceof ApiError && error.status === 401 && auth.token) auth.logout();
+      if (error instanceof ApiError && error.status === 401) auth.revoke();
     },
   }),
   defaultOptions: {
@@ -41,6 +40,17 @@ const queryClient = new QueryClient({
 });
 
 auth.subscribe(() => queryClient.clear());
+
+void api.probeTransport().then(
+  daemon => {
+    if (daemon.tcp_enabled !== false) auth.proxyUnsupported();
+    else auth.useProxy();
+  },
+  error => {
+    if (error instanceof ApiError && error.status === 401) auth.requireToken();
+    else auth.probeFailed();
+  },
+);
 
 createRoot(document.getElementById('app-root')!).render(
   <StrictMode>

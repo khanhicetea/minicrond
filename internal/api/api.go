@@ -53,6 +53,7 @@ type Server struct {
 	unix            *http.Server
 	idemMu          sync.Mutex
 	tokenMu         sync.Mutex
+	tcpEnabled      bool
 	streamSlots     chan struct{}
 	alertChannels   func() []config.AlertChannel
 	jobDefaults     func() model.Definition
@@ -145,8 +146,11 @@ type apiError struct {
 }
 
 func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload, reconcile func(context.Context) error, version string) *Server {
-	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version, streamSlots: make(chan struct{}, 64)}
+	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version, streamSlots: make(chan struct{}, 64), tcpEnabled: true}
 }
+
+// SetTCPEnabled must be called before InitializeToken or Start.
+func (s *Server) SetTCPEnabled(enabled bool) { s.tcpEnabled = enabled }
 
 // SetAlertChannels provides a redacted view of the live channel registry.
 func (s *Server) SetJobDefaults(get func() model.Definition)            { s.jobDefaults = get }
@@ -178,6 +182,9 @@ func (s *Server) validateAlerts(defs []model.Definition) error {
 }
 
 func (s *Server) InitializeToken(ctx context.Context) (string, error) {
+	if !s.tcpEnabled {
+		return "", nil
+	}
 	hash, err := s.store.Meta(ctx, "token_hash")
 	if err == nil {
 		s.setTokenHash(hash)
@@ -189,6 +196,9 @@ func (s *Server) InitializeToken(ctx context.Context) (string, error) {
 	return s.RotateToken(ctx)
 }
 func (s *Server) RotateToken(ctx context.Context) (string, error) {
+	if !s.tcpEnabled {
+		return "", errors.New("bearer tokens are disabled while TCP is disabled")
+	}
 	s.tokenMu.Lock()
 	defer s.tokenMu.Unlock()
 	var raw [32]byte
@@ -206,27 +216,40 @@ func (s *Server) RotateToken(ctx context.Context) (string, error) {
 }
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
 func (s *Server) Start(bind, socket string) error {
+	if !s.tcpEnabled && socket == "" {
+		return errors.New("no HTTP listener enabled")
+	}
 	mux := s.routes()
-	s.tcp = &http.Server{Addr: bind, Handler: s.middleware(mux, false), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-	ln, err := net.Listen("tcp", bind)
-	if err != nil {
-		return err
+	var ln net.Listener
+	if s.tcpEnabled {
+		s.tcp = &http.Server{Addr: bind, Handler: s.middleware(mux, false), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+		var err error
+		ln, err = net.Listen("tcp", bind)
+		if err != nil {
+			return err
+		}
 	}
 	// Acquire all listeners before serving, so a partial startup cannot leave
 	// an HTTP server running against resources the caller has already closed.
 	if socket != "" {
 		if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = ln.Close()
+			if ln != nil {
+				_ = ln.Close()
+			}
 			return fmt.Errorf("remove stale Unix socket: %w", err)
 		}
 		unixListener, err := net.Listen("unix", socket)
 		if err != nil {
-			_ = ln.Close()
+			if ln != nil {
+				_ = ln.Close()
+			}
 			return fmt.Errorf("listen on Unix socket: %w", err)
 		}
 		if err = os.Chmod(socket, 0o600); err != nil {
 			_ = unixListener.Close()
-			_ = ln.Close()
+			if ln != nil {
+				_ = ln.Close()
+			}
 			return fmt.Errorf("set Unix socket permissions: %w", err)
 		}
 		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
@@ -237,12 +260,14 @@ func (s *Server) Start(bind, socket string) error {
 			}
 		}()
 	}
-	go func() {
-		if err := s.tcp.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("TCP HTTP server stopped", "error", err)
-			s.ready.Store(false)
-		}
-	}()
+	if ln != nil {
+		go func() {
+			if err := s.tcp.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("TCP HTTP server stopped", "error", err)
+				s.ready.Store(false)
+			}
+		}()
+	}
 	return nil
 }
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -348,7 +373,11 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	if os.Geteuid() == 0 {
 		capabilities = append(capabilities, "run-as")
 	}
-	writeJSON(w, 200, map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": capabilities, "token_fingerprint": fingerprint(s.currentTokenHash())})
+	info := map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": capabilities, "tcp_enabled": s.tcpEnabled}
+	if s.tcpEnabled {
+		info["token_fingerprint"] = fingerprint(s.currentTokenHash())
+	}
+	writeJSON(w, 200, info)
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.reload(r.Context()); err != nil {
@@ -439,6 +468,15 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var expected int64
+	createOnly := r.Header.Get("If-None-Match") != ""
+	if createOnly && r.Header.Get("If-None-Match") != "*" {
+		writeError(w, 400, "invalid_precondition", "If-None-Match must be *")
+		return
+	}
+	if createOnly && r.Header.Get("If-Match") != "" {
+		writeError(w, 400, "invalid_precondition", "If-Match and If-None-Match cannot be combined")
+		return
+	}
 	if raw := r.Header.Get("If-Match"); raw != "" {
 		var err error
 		expected, err = strconv.ParseInt(strings.Trim(raw, `"`), 10, 64)
@@ -447,7 +485,13 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	saved, err := s.store.PutDefinition(r.Context(), d, expected, "api")
+	var saved model.Definition
+	var err error
+	if createOnly {
+		saved, err = s.store.CreateDefinition(r.Context(), d, "api")
+	} else {
+		saved, err = s.store.PutDefinition(r.Context(), d, expected, "api")
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrRevisionConflict):
@@ -870,6 +914,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
+	if !s.tcpEnabled {
+		writeError(w, 404, "not_available", "bearer tokens are disabled while TCP is disabled")
+		return
+	}
 	if local, _ := r.Context().Value(localKey{}).(bool); !local {
 		writeError(w, 403, "local_only", "token rotation requires the Unix socket")
 		return

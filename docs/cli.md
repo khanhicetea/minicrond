@@ -151,7 +151,7 @@ minicrond token --rotate
 ```
 
 The current token cannot be recovered or displayed; rotation prints the
-new one.
+new one. Rotation is unavailable while `server.tcp_enabled = false`.
 
 ### `service` — install/uninstall systemd units (root)
 

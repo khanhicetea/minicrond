@@ -1,6 +1,6 @@
 import { Component, lazy, Suspense, type ReactNode } from 'react';
 import { Route, Switch, useLocation } from 'wouter';
-import { useAuthToken } from './auth';
+import { useAuthState } from './auth';
 import { RangeProvider } from './lib/range';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -43,9 +43,19 @@ function NotFound() {
 }
 
 export default function App() {
-  const token = useAuthToken();
+  const { mode } = useAuthState();
   const [location] = useLocation();
-  if (!token) return <Login />;
+  if (mode === 'checking') return <div className="skeleton h-64" aria-label="Checking daemon access" />;
+  if (mode === 'login') return <Login />;
+  if (mode === 'revoked' || mode === 'error' || mode === 'unsupported') {
+    return (
+      <div role="alert" className="panel mx-auto mt-20 max-w-md px-8 py-10">
+        <h1 className="text-xl font-semibold">{mode === 'revoked' ? 'Access ended' : mode === 'unsupported' ? 'Proxy setup needs Unix-only mode' : 'Cannot check daemon access'}</h1>
+        <p className="mt-2 text-sm muted">{mode === 'revoked' ? 'Your proxy session no longer has access to this daemon.' : mode === 'unsupported' ? 'Set server.tcp_enabled = false before serving this UI through a proxy.' : 'The daemon or its proxy is unavailable.'}</p>
+        <button type="button" className="btn-primary-x mt-5" onClick={() => window.location.reload()}>Retry</button>
+      </div>
+    );
+  }
   return (
     <RangeProvider>
       <Layout>

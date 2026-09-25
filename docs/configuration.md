@@ -21,6 +21,7 @@ API paths) are retained compatibility names.
 ```toml
 [server]
 bind = "127.0.0.1:7423"        # host:port; loopback enforced unless opted out
+tcp_enabled = true             # false: serve only the private Unix socket
 unix_socket = true             # mode-0600 local socket, token-free CLI access
 allow_insecure_remote = false  # required true for a non-loopback bind
 
@@ -64,7 +65,10 @@ Numeric durations and sizes use fixed units, not strings such as `"10s"` or
 the `logs.db_prune_at` clock time (`"HH:MM"`). Counts such as `keep_runs`
 and `max_concurrent_runs` are unitless.
 
-- `server.bind` — a non-loopback host is rejected at load time unless
+- `server.tcp_enabled` — defaults to `true`. Set `false` for a Unix-only
+  daemon; `unix_socket` must then remain enabled. `bind` is unused in that
+  mode. Changing either listener setting requires a daemon restart.
+- `server.bind` — when TCP is enabled, a non-loopback host is rejected at load time unless
   `server.allow_insecure_remote = true`. TCP is plaintext HTTP; use the
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
 - `scheduler.max_concurrent_runs` — 1..1024. When the cap is reached,
@@ -167,11 +171,23 @@ restart = "on-failure"
 
 ### Runtime environment of a process
 
-With `env_base = "clean"` (default) the process gets a minimal environment
-plus: `PATH`, `HOME` (resolved for `run_as`), everything from `env`,
-`env_file`, and resolved `secret_env`, plus the metadata variables
+With `env_base = "clean"` (default) the process gets a minimal environment:
+`PATH=/usr/bin:/bin`, the definition's `TZ`, a passwd-resolved `HOME` when
+available, everything from `env`, `env_file`, and resolved `secret_env`, plus the metadata variables
 `MINICRON_JOB`, `MINICRON_RUN_ID`, `MINICRON_TRIGGER` (`schedule`,
 `manual`, `worker`), and `MINICRON_ATTEMPT`.
+
+If the daemon UID has no passwd entry, jobs and workers still run as its
+actual UID/GID. Set an absolute `HOME` in a definition's `env` or `env_file`
+when a home directory is needed, and set `working_dir` independently when
+the process needs a particular directory. Without either, the process uses
+the daemon's working directory and no `HOME` is supplied. `~/...` in
+`working_dir` requires a known or explicitly supplied `HOME`. In this case,
+`env_base = "inherit"` does not carry the daemon's `HOME`, `USER`, or
+`LOGNAME`, which could describe a different user. Its `TZ` is set from the
+definition. Set `PATH` in `env` to include `/usr/local/bin` for shell commands;
+bare `argv` executables are resolved only in `/usr/bin` and `/bin`, so use
+an absolute `argv[0]` for executables elsewhere.
 
 ### Alerts
 
