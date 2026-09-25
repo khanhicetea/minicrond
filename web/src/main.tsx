@@ -5,6 +5,7 @@ import { Router } from 'wouter';
 import { api, ApiError } from './api';
 import { auth } from './auth';
 import App from './App';
+import { basePath } from './lib/base';
 import './index.css';
 
 // Apply the stored theme before first paint to avoid a wrong-theme flash.
@@ -57,7 +58,7 @@ createRoot(document.getElementById('app-root')!).render(
     <QueryClientProvider client={queryClient}>
       {/* Path-based routing: the Go daemon serves the SPA shell for every UI
           route, so the browser history API works (shareable /jobs, /runs/x). */}
-      <Router>
+      <Router base={basePath || '/'}>
         <App />
       </Router>
     </QueryClientProvider>

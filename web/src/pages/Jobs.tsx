@@ -10,6 +10,7 @@ import { humanizeSchedule } from '../lib/cron';
 import { definitionToToml } from '../lib/toml';
 import { formatCountdown, formatDayTime, formatSpan } from '../lib/format';
 import { jobPath } from '../lib/routes';
+import { publicURL } from '../lib/base';
 import type { Definition, Run } from '../types';
 
 type FilterKey = 'all' | 'jobs' | 'workers' | 'enabled' | 'attention' | 'disabled';
@@ -113,7 +114,7 @@ export default function Jobs() {
     const sample = filtered[0];
     const lines = [
       '# minicron REST API — replace $MINICRON_TOKEN (rotate locally if lost)',
-      'BASE=http://127.0.0.1:7423/api/v1',
+      `BASE=${publicURL('/api/v1')}`,
       '',
       '# List definitions',
       'curl -s -H "Authorization: Bearer $MINICRON_TOKEN" $BASE/jobs',

@@ -87,6 +87,14 @@ and `max_concurrent_runs` are unitless.
 - `server.bind` — when TCP is enabled, a non-loopback host is rejected at load time unless
   `server.allow_insecure_remote = true`. TCP is plaintext HTTP; use the
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
+- `BASE_PATH` — optional daemon environment variable for serving the API and
+  web UI below a URL prefix, such as `/tools/minicron`. It must start with `/`
+  and contain URL path segments made of letters, digits, `-`, `_`, `.`, or `~`.
+  A trailing slash is accepted. The prefix applies to both TCP and Unix
+  socket routes, including `/healthz`, `/readyz`, and `/openapi.json`.
+  Set the same variable for local Unix-socket CLI commands, or include the
+  prefix in `MINICRON_URL` for HTTP CLI commands. Restart the daemon after
+  changing it.
 - `scheduler.max_concurrent_runs` — 1..1024. When the cap is reached,
   scheduled fires wait; see `catch_up` below for how missed fires are
   handled.

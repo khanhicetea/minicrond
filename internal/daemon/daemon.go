@@ -120,6 +120,9 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	sched := scheduler.New(st, execService)
 	super := supervisor.New(st, execService)
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
+	if err := apiServer.SetBasePath(os.Getenv("BASE_PATH")); err != nil {
+		return err
+	}
 	apiServer.SetTCPEnabled(cfg.Server.TCPOn())
 	apiServer.SetJobDefaults(func() model.Definition {
 		d.mu.Lock()

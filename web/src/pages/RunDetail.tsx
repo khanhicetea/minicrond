@@ -12,6 +12,7 @@ import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
 import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
+import { publicURL } from '../lib/base';
 import { isActiveRun } from '../types';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
@@ -166,7 +167,7 @@ export default function RunDetail() {
             {mode === 'token' && <button
               type="button"
               className="btn-sub"
-              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" http://127.0.0.1:7423/api/v1/runs/${data.run_id}`)}
+              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" ${publicURL(`/api/v1/runs/${data.run_id}`)}`)}
             >
               <Icon name="copy" size={14} />
               Copy as curl

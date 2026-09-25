@@ -258,7 +258,7 @@ func exportConfig(args []string) error {
 			format = args[i+1]
 		}
 	}
-	base := strings.TrimSuffix(env("MINICRON_URL", "http://minicron"), "/")
+	base := apiBaseURL()
 	req, err := http.NewRequest("GET", base+"/api/v1/export?format="+format, nil)
 	if err != nil {
 		return err
@@ -299,8 +299,8 @@ func requestJSON(method, path string, body, out any) error {
 		}
 		reader = bytes.NewReader(b)
 	}
-	base := env("MINICRON_URL", "http://minicron")
-	req, err := http.NewRequest(method, strings.TrimSuffix(base, "/")+path, reader)
+	base := apiBaseURL()
+	req, err := http.NewRequest(method, base+path, reader)
 	if err != nil {
 		return err
 	}
@@ -331,6 +331,12 @@ func client() *http.Client {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
 	return &http.Client{Transport: tr, Timeout: 5 * time.Minute}
+}
+func apiBaseURL() string {
+	if url := os.Getenv("MINICRON_URL"); url != "" {
+		return strings.TrimSuffix(url, "/")
+	}
+	return "http://minicron" + strings.TrimSuffix(os.Getenv("BASE_PATH"), "/")
 }
 func env(k, fallback string) string {
 	if v := os.Getenv(k); v != "" {

@@ -54,6 +54,7 @@ type Server struct {
 	idemMu          sync.Mutex
 	tokenMu         sync.Mutex
 	tcpEnabled      bool
+	basePath        string
 	streamSlots     chan struct{}
 	alertChannels   func() []config.AlertChannel
 	jobDefaults     func() model.Definition
@@ -151,6 +152,30 @@ func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *super
 
 // SetTCPEnabled must be called before InitializeToken or Start.
 func (s *Server) SetTCPEnabled(enabled bool) { s.tcpEnabled = enabled }
+
+// SetBasePath configures the public URL prefix before the HTTP listeners start.
+func (s *Server) SetBasePath(value string) error {
+	value = strings.TrimSuffix(value, "/")
+	if value == "" {
+		s.basePath = ""
+		return nil
+	}
+	if !strings.HasPrefix(value, "/") || strings.Contains(value, "//") {
+		return fmt.Errorf("BASE_PATH must be an absolute URL path")
+	}
+	for _, segment := range strings.Split(value[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return fmt.Errorf("BASE_PATH must not contain dot segments")
+		}
+		for _, char := range segment {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("-._~", char)) {
+				return fmt.Errorf("BASE_PATH contains an invalid URL path character %q", char)
+			}
+		}
+	}
+	s.basePath = value
+	return nil
+}
 
 // SetAlertChannels provides a redacted view of the live channel registry.
 func (s *Server) SetJobDefaults(get func() model.Definition)            { s.jobDefaults = get }
@@ -293,6 +318,23 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		if len(r.URL.RequestURI()) > 2048 {
 			writeError(w, 414, "request_too_large", "URL exceeds 2 KiB")
 			return
+		}
+		if s.basePath != "" {
+			if r.URL.Path == s.basePath {
+				target := s.basePath + "/"
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+				return
+			}
+			if !strings.HasPrefix(r.URL.Path, s.basePath+"/") {
+				http.NotFound(w, r)
+				return
+			}
+			r = r.Clone(r.Context())
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, s.basePath)
+			r.URL.RawPath = ""
 		}
 		if local {
 			r = r.WithContext(context.WithValue(r.Context(), localKey{}, true))
@@ -1137,7 +1179,14 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Always revalidate the SPA shell so it picks up new asset bundles.
 	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(asset.body)
+	if s.basePath == "" {
+		_, _ = w.Write(asset.body)
+		return
+	}
+	base := s.basePath + "/"
+	page := strings.Replace(string(asset.body), `<base href="/" />`, `<base href="`+base+`" />`, 1)
+	page = strings.ReplaceAll(page, `"/assets/`, `"`+s.basePath+`/assets/`)
+	_, _ = io.WriteString(w, page)
 }
 func (s *Server) requireRun(w http.ResponseWriter, r *http.Request, id string) bool {
 	parsed, err := uuid.Parse(id)

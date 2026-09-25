@@ -4,7 +4,9 @@ Base URL: the daemon's `server.bind` (default `http://127.0.0.1:7423`)
 when TCP is enabled. The same routes are served on the private Unix socket.
 The full OpenAPI 3.1 contract is checked in at
 [`cmd/minicrond/openapi.json`](../cmd/minicrond/openapi.json) and served
-live at `GET /openapi.json`.
+live at `GET /openapi.json`. If `BASE_PATH=/tools/minicron` is set on the
+daemon, prepend `/tools/minicron` to every route in this document and open the
+web UI at `/tools/minicron/`.
 
 ## Authentication
 

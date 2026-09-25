@@ -79,6 +79,60 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	return out
 }
 
+func TestBasePath(t *testing.T) {
+	s, token, _ := setup(t)
+	for _, invalid := range []string{"minicron", "/bad//path", "/bad//", "/../bad", "/bad?query"} {
+		if err := s.SetBasePath(invalid); err == nil {
+			t.Errorf("accepted invalid BASE_PATH %q", invalid)
+		}
+	}
+	if err := s.SetBasePath("/tools/minicron/"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/", "/api/v1/daemon", "/tools/minicrons/api/v1/daemon"} {
+		if rec := call(s, false, "GET", path, token, "", nil); rec.Code != 404 {
+			t.Errorf("unprefixed path %q: %d", path, rec.Code)
+		}
+	}
+	if rec := call(s, false, "GET", "/tools/minicron", "", "", nil); rec.Code != 301 || rec.Header().Get("Location") != "/tools/minicron/" {
+		t.Errorf("base redirect: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	for _, path := range []string{"/tools/minicron/", "/tools/minicron/jobs", "/tools/minicron/runs/example"} {
+		rec := call(s, false, "GET", path, "", "", nil)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/tools/minicron/" />`) || !strings.Contains(rec.Body.String(), `"/tools/minicron/assets/`) {
+			t.Errorf("UI path %q: %d %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/tools/minicron/api/v1/daemon", "/tools/minicron/openapi.json"} {
+		if rec := call(s, false, "GET", path, "", "", nil); rec.Code != 401 {
+			t.Errorf("unauthed API path %q: %d", path, rec.Code)
+		}
+		if rec := call(s, false, "GET", path, token, "", nil); rec.Code != 200 {
+			t.Errorf("authed API path %q: %d", path, rec.Code)
+		}
+	}
+	if rec := call(s, false, "POST", "/tools/minicron/api/v1/jobs", token, `{"name":"prefixed","command":"true"}`, nil); rec.Code != 200 {
+		t.Errorf("prefixed API mutation: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(s, false, "GET", "/tools/minicron/api/v1/jobs/prefixed", token, "", nil); rec.Code != 200 {
+		t.Errorf("prefixed path parameter: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call(s, false, "GET", "/tools/minicron/healthz", "", "", nil); rec.Code != 200 {
+		t.Errorf("prefixed health probe: %d", rec.Code)
+	}
+	if rec := call(s, false, "GET", "/tools/minicron/api/v1/missing", token, "", nil); rec.Code != 404 || !strings.Contains(rec.Body.String(), "not_found") {
+		t.Errorf("unknown API: %d %s", rec.Code, rec.Body.String())
+	}
+	for name := range cachedAssets() {
+		if strings.HasSuffix(name, ".js") {
+			if rec := call(s, false, "GET", "/tools/minicron/assets/"+name, "", "", nil); rec.Code != 200 {
+				t.Errorf("asset: %d", rec.Code)
+			}
+			break
+		}
+	}
+}
+
 func TestAlertChannelsAndValidation(t *testing.T) {
 	s, token, _ := setup(t)
 	s.SetAlertChannels(func() []config.AlertChannel {

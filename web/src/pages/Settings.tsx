@@ -9,6 +9,7 @@ import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useReloadDaemon }
 import { downloadFile } from '../lib/download';
 import { formatDayTime, formatSpan, formatUptime, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
+import { publicURL } from '../lib/base';
 import type { Definition } from '../types';
 
 /** Tight badge sizing shared across settings panels (overview style). */
@@ -319,7 +320,7 @@ function MainTab() {
             {mode === 'token' && <button
               type="button"
               className="btn-sub"
-              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" http://127.0.0.1:7423/api/v1/daemon`)}
+              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" ${publicURL('/api/v1/daemon')}`)}
             >
               <Icon name="terminal" size={14} />
               Copy as curl

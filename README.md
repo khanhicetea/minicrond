@@ -59,7 +59,9 @@ This is a **user-mode** instance. Its default data directory is
 `~/.local/share/minicron` (private, mode 0700); config and data paths can be
 changed with `MINICRON_CONFIG` / `MINICRON_DATA`. The bootstrap TOML controls
 the server, scheduler, storage, logs, defaults, and alert channels — **not**
-job definitions. On first boot, read the one-time web/API token from
+job definitions. Set `BASE_PATH=/tools/minicron` to serve the web UI and API
+under that URL prefix (including health and OpenAPI routes). On first boot,
+read the one-time web/API token from
 `~/.local/share/minicron/initial-token` and remove that file:
 
 ```sh
