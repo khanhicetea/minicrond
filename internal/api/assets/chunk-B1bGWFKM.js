@@ -1,0 +1,1 @@
+async function e(e,t,n){let r=await n(e),i=document.createElement(`a`);i.href=URL.createObjectURL(r),i.download=t,i.click(),URL.revokeObjectURL(i.href)}export{e as t};

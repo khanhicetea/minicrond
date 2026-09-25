@@ -21,13 +21,10 @@ export default defineConfig({
     outDir: resolve(import.meta.dirname, '../internal/api/assets'),
     emptyOutDir: true,
     rollupOptions: {
-      // The Go asset handler serves exactly app.js and style.css, so ship a
-      // single JS chunk with no code splitting and no extra asset files.
       output: {
-        codeSplitting: false,
-        entryFileNames: 'app.js',
+        entryFileNames: 'app-[hash].js',
         chunkFileNames: 'chunk-[hash].js',
-        assetFileNames: asset => asset.name?.endsWith('.css') ? 'style.css' : 'asset-[hash][extname]',
+        assetFileNames: asset => asset.name?.endsWith('.css') ? 'style-[hash].css' : 'asset-[hash][extname]',
       },
     },
   },

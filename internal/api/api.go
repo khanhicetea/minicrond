@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -71,17 +73,37 @@ var webAssets embed.FS
 
 type cachedAsset struct {
 	body []byte
+	gzip []byte
 	etag string
 }
 
 var cachedAssets = sync.OnceValue(func() map[string]cachedAsset {
 	out := make(map[string]cachedAsset)
-	for _, name := range []string{"app.js", "style.css", "index.html"} {
+	entries, err := webAssets.ReadDir("assets")
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || (name != "index.html" && !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css")) {
+			continue
+		}
 		body, err := webAssets.ReadFile("assets/" + name)
 		if err != nil {
 			continue
 		}
-		out[name] = cachedAsset{body: body, etag: `"` + hex.EncodeToString(sha256Sum(body))[:16] + `"`}
+		asset := cachedAsset{body: body, etag: `"` + hex.EncodeToString(sha256Sum(body))[:16] + `"`}
+		if name != "index.html" {
+			var compressed bytes.Buffer
+			writer := gzip.NewWriter(&compressed)
+			if _, err := writer.Write(body); err == nil {
+				err = writer.Close()
+			}
+			if err == nil {
+				asset.gzip = compressed.Bytes()
+			}
+		}
+		out[name] = asset
 	}
 	return out
 })
@@ -294,6 +316,7 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/jobs/{name}/trigger", s.trigger)
 	m.HandleFunc("POST /api/v1/jobs/{name}/enable", s.enable)
 	m.HandleFunc("POST /api/v1/jobs/{name}/disable", s.enable)
+	m.HandleFunc("GET /api/v1/workers/states", s.workerStates)
 	m.HandleFunc("POST /api/v1/workers/{name}/start", s.workerStart)
 	m.HandleFunc("POST /api/v1/workers/{name}/stop", s.workerStop)
 	m.HandleFunc("POST /api/v1/workers/{name}/restart", s.workerRestart)
@@ -354,6 +377,20 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		items = append(items, item)
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+func (s *Server) workerStates(w http.ResponseWriter, r *http.Request) {
+	defs, err := s.store.Definitions(r.Context())
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		if d.Kind == model.KindWorker {
+			names = append(names, d.Name)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"items": s.super.States(names)})
 }
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	d, hash, err := s.store.Definition(r.Context(), r.PathValue("name"))
@@ -658,12 +695,29 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	if limit == 0 {
 		limit = 50
 	}
-	runs, err := s.store.Runs(r.Context(), r.URL.Query().Get("job"), limit)
+	limit = min(max(limit, 1), 500)
+	filter := r.URL.Query().Get("filter")
+	switch filter {
+	case "", "failed", "scheduled", "manual", "active":
+	default:
+		writeError(w, 400, "invalid_filter", "unknown run filter")
+		return
+	}
+	runs, err := s.store.RunsPage(r.Context(), r.URL.Query().Get("job"), limit+1, r.URL.Query().Get("before"), filter)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, 404, "not_found", "run cursor not found")
+		return
+	}
 	if err != nil {
 		internal(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": runs})
+	nextBefore := ""
+	if len(runs) > limit {
+		runs = runs[:limit]
+		nextBefore = runs[len(runs)-1].ID
+	}
+	writeJSON(w, 200, map[string]any{"items": runs, "next_before": nextBefore})
 }
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.Run(r.Context(), r.PathValue("id"))
@@ -925,7 +979,7 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if name != "app.js" && name != "style.css" {
+	if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".css") {
 		http.NotFound(w, r)
 		return
 	}
@@ -934,24 +988,45 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body := asset.body
 	if strings.HasSuffix(name, ".js") {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	} else {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	}
-	// Assets ship under fixed filenames, so freshness must be revalidated on
-	// every load: max-age would let the browser keep serving a stale bundle
-	// for up to an hour after the daemon is rebuilt. no-cache + content-hash
-	// ETag gives cheap 304 revalidation and instant pickup of new builds.
+	// Vite emits content-hashed filenames; once fetched they remain valid.
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Vary", "Accept-Encoding")
+	body := asset.body
 	etag := asset.etag
+	if len(asset.gzip) > 0 && acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body = asset.gzip
+		etag = strings.TrimSuffix(etag, `"`) + `-gzip"`
+		w.Header().Set("Content-Encoding", "gzip")
+	}
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "no-cache")
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	_, _ = w.Write(body)
+}
+
+func acceptsGzip(header string) bool {
+	for _, encoding := range strings.Split(header, ",") {
+		parts := strings.Split(strings.TrimSpace(encoding), ";")
+		if strings.TrimSpace(parts[0]) != "gzip" {
+			continue
+		}
+		for _, parameter := range parts[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if ok && key == "q" {
+				quality, err := strconv.ParseFloat(value, 64)
+				return err == nil && quality > 0
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func sha256Sum(body []byte) []byte {

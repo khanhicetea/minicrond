@@ -1,5 +1,5 @@
 import { auth } from './auth';
-import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics } from './types';
+import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -56,11 +56,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 }
 
 export const api = {
-  daemon: () => request<DaemonInfo>('/api/v1/daemon'),
+  daemon: (signal?: AbortSignal) => request<DaemonInfo>('/api/v1/daemon', { signal }),
 
   reload: () => request<{ reloaded: boolean }>('/api/v1/daemon/reload', { method: 'POST' }),
 
-  listJobs: () => request<{ items: Definition[] }>('/api/v1/jobs'),
+  listJobs: (signal?: AbortSignal) => request<{ items: Definition[] }>('/api/v1/jobs', { signal }),
+
+  workerStates: (signal?: AbortSignal) =>
+    request<{ items: Record<string, WorkerState> }>('/api/v1/workers/states', { signal }),
 
   listAlertChannels: () => request<{ items: AlertChannel[] }>('/api/v1/alert-channels'),
 
@@ -94,13 +97,21 @@ export const api = {
   workerAction: (name: string, action: 'start' | 'stop' | 'restart') =>
     request<Record<string, boolean>>(`/api/v1/workers/${encodeURIComponent(name)}/${action}`, { method: 'POST' }),
 
-  runMetrics: (range = '1h', buckets = 48) =>
-    request<RunMetrics>(`/api/v1/metrics/runs?range=${encodeURIComponent(range)}&buckets=${buckets}`),
+  runMetrics: (range = '1h', buckets = 48, signal?: AbortSignal) =>
+    request<RunMetrics>(`/api/v1/metrics/runs?range=${encodeURIComponent(range)}&buckets=${buckets}`, { signal }),
 
-  listRuns: (job = '', limit = 50) => {
+  listRuns: (job = '', limit = 50, signal?: AbortSignal) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (job) query.set('job', job);
-    return request<{ items: Run[] }>(`/api/v1/runs?${query.toString()}`);
+    return request<{ items: Run[] }>(`/api/v1/runs?${query.toString()}`, { signal });
+  },
+
+  listRunsPage: (job: string, limit: number, before = '', filter = '', signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (job) query.set('job', job);
+    if (before) query.set('before', before);
+    if (filter) query.set('filter', filter);
+    return request<{ items: Run[]; next_before: string }>(`/api/v1/runs?${query.toString()}`, { signal });
   },
 
   getRun: (id: string) => request<Run>(`/api/v1/runs/${encodeURIComponent(id)}`),
@@ -113,8 +124,8 @@ export const api = {
   rawLogUrl: (id: string) => `/api/v1/runs/${encodeURIComponent(id)}/log/raw`,
 
   /** Windowed backlog read of stored log frames. */
-  logFrames: (id: string, after = 0, limit = 5000) =>
-    request<{ items: Frame[] }>(`/api/v1/runs/${encodeURIComponent(id)}/log?after=${after}&limit=${limit}`),
+  logFrames: (id: string, after = 0, limit = 5000, signal?: AbortSignal) =>
+    request<{ items: Frame[] }>(`/api/v1/runs/${encodeURIComponent(id)}/log?after=${after}&limit=${limit}`, { signal }),
 
   /** Rotation is local-only in the daemon; TCP callers get 403. */
   rotateToken: () =>
@@ -141,7 +152,10 @@ export const api = {
     const headers: Record<string, string> = {};
     if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
     const response = await fetch(url, { headers });
-    if (!response.ok) throw new ApiError(response.status, 'download_failed', 'download failed');
+    if (!response.ok) {
+      if (response.status === 401 && auth.token) auth.logout();
+      throw new ApiError(response.status, 'download_failed', 'download failed');
+    }
     return response.blob();
   },
 };
@@ -170,6 +184,7 @@ export async function streamRunLogs(
     signal,
   });
   if (!response.ok || !response.body) {
+    if (response.status === 401 && auth.token) auth.logout();
     let message = response.statusText || 'log stream failed';
     try {
       const envelope = (await response.json()) as { error?: { message?: string } };
@@ -183,22 +198,30 @@ export async function streamRunLogs(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  // The daemon accepts log payloads up to 16 MiB; base64 expands those frames.
+  const MAX_EVENT_BYTES = 32 * 1024 * 1024;
 
   function handleBlock(block: string) {
     let event = '';
+    const data: string[] = [];
     for (const line of block.split('\n')) {
       if (line.startsWith(':')) continue; // heartbeat comment
       if (line.startsWith('event:')) event = line.slice(6).trim();
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
     }
     switch (event) {
       case 'line': {
-        const dataLine = block.split('\n').find(l => l.startsWith('data:'));
-        if (!dataLine) return;
+        if (data.length === 0) return;
+        let frame: Frame;
         try {
-          onEvent({ type: 'line', frame: JSON.parse(dataLine.slice(5).trim()) as Frame });
+          frame = JSON.parse(data.join('\n')) as Frame;
         } catch {
           // Ignore malformed frames; sequence accounting stays server-driven.
+          return;
         }
+        if (!frame || !Number.isSafeInteger(frame.sequence) || typeof frame.timestamp !== 'string' ||
+            typeof frame.stream !== 'number' || typeof frame.payload !== 'string') return;
+        onEvent({ type: 'line', frame });
         return;
       }
       case 'backlog_done':
@@ -213,14 +236,21 @@ export async function streamRunLogs(
     }
   }
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true }).replace(/\r/g, '');
-    let split: number;
-    while ((split = buffer.indexOf('\n\n')) >= 0) {
-      handleBlock(buffer.slice(0, split));
-      buffer = buffer.slice(split + 2);
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r/g, '');
+      let split: number;
+      while ((split = buffer.indexOf('\n\n')) >= 0) {
+        if (split > MAX_EVENT_BYTES) throw new Error('Log stream event is too large');
+        handleBlock(buffer.slice(0, split));
+        buffer = buffer.slice(split + 2);
+      }
+      if (buffer.length > MAX_EVENT_BYTES) throw new Error('Log stream event is too large');
     }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }

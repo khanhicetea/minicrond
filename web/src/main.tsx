@@ -17,7 +17,7 @@ document.documentElement.dataset.theme =
       ? 'light'
       : 'dark';
 
-// The Go server serves the SPA only at "/", so routing is hash-based.
+// Keep cached API data scoped to the current bearer token.
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
     onError: error => {
@@ -39,6 +39,8 @@ const queryClient = new QueryClient({
     mutations: { retry: false },
   },
 });
+
+auth.subscribe(() => queryClient.clear());
 
 createRoot(document.getElementById('app-root')!).render(
   <StrictMode>

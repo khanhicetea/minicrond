@@ -35,8 +35,8 @@ export default function Jobs() {
 
   // Refresh the server-owned schedule/run state so the countdown never
   // drifts from the scheduler when a fire occurs.
-  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 1000 });
-  const runs = useQuery({ ...runsQuery('', RECENT_RUNS_LIMIT), refetchInterval: 1000 });
+  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 15_000, refetchIntervalInBackground: false });
+  const runs = useQuery({ ...runsQuery('', RECENT_RUNS_LIMIT), refetchInterval: 5_000, refetchIntervalInBackground: false });
   const trigger = useTriggerJob();
   const setEnabled = useSetJobEnabled();
   const remove = useDeleteJob();
@@ -203,10 +203,20 @@ export default function Jobs() {
         </div>
       )}
 
+      {(jobs.isError || runs.isError) && (
+        <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+          {jobs.isError ? `Definitions could not be loaded: ${errorText(jobs.error)}.` : `Recent run status could not be loaded: ${errorText(runs.error)}.`}
+          {jobs.data || runs.data ? ' Displayed data may be stale.' : ''}
+          <button type="button" className="ml-3 underline" onClick={() => { void jobs.refetch(); void runs.refetch(); }}>Retry</button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="panel overflow-x-auto">
         {jobs.isPending ? (
           <div className="skeleton m-4 h-64" />
+        ) : jobs.isError && !jobs.data ? (
+          <p className="px-6 py-14 text-center text-sm muted">Definitions are unavailable. Retry the request above.</p>
         ) : filtered.length === 0 ? (
           <div className="px-6 py-14 text-center">
             <Icon name="inbox" size={24} className="mx-auto faint" />

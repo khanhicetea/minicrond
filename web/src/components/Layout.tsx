@@ -158,15 +158,16 @@ function GlobalSearch() {
 
 function LivePill() {
   const daemon = useQuery(daemonQuery());
-  const ok = !daemon.isError;
+  const ok = daemon.isSuccess;
+  const connecting = daemon.isPending;
   const version = daemon.data ? ` · v${daemon.data.version}` : '';
   return (
     <span
-      className="chip chip-success"
-      title={ok ? `Daemon healthy${version} · lists auto-refresh (SSE)` : 'Cannot reach the daemon API'}
+      className={`chip ${ok ? 'chip-success' : connecting ? 'chip-neutral' : 'chip-error'}`}
+      title={ok ? `Daemon healthy${version}` : connecting ? 'Checking daemon connection' : 'Cannot reach the daemon API'}
     >
-      <span className={`dot ${ok ? 'dot-green dot-pulse' : 'dot-red'}`} />
-      {ok ? 'Live' : 'Offline'}
+      <span className={`dot ${ok ? 'dot-green dot-pulse' : connecting ? 'dot-gray' : 'dot-red'}`} />
+      {ok ? 'Live' : connecting ? 'Connecting' : 'Offline'}
     </span>
   );
 }

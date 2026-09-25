@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
 import LogViewer from '../components/LogViewer';
 import { RunStatusDot } from '../components/RunsTable';
@@ -8,18 +8,20 @@ import { api, errorText } from '../api';
 import { downloadFile } from '../lib/download';
 import { formatBytes, formatDayTime, formatSpan, formatTimestamp, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
-import { jobsQuery, runQuery, runsQuery, RECENT_RUNS_LIMIT, useStopRun, useTriggerJob } from '../queries';
+import { jobsQuery, runQuery, useStopRun, useTriggerJob } from '../queries';
 import { isActiveRun, type Run } from '../types';
 
-type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
+type FilterKey = 'all' | 'active' | 'failed' | 'scheduled' | 'manual';
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'all', label: 'All' },
+  { key: 'active', label: 'Active' },
   { key: 'failed', label: 'Failed' },
   { key: 'scheduled', label: 'Scheduled' },
   { key: 'manual', label: 'Manual' },
 ];
 
 function matchesFilter(run: Run, filter: FilterKey): boolean {
+  if (filter === 'active') return isActiveRun(run);
   if (filter === 'failed') return ['failed', 'timeout', 'interrupted'].includes(run.status);
   if (filter === 'scheduled') return run.trigger === 'schedule';
   if (filter === 'manual') return run.trigger === 'manual';
@@ -40,8 +42,17 @@ export default function Runs() {
   const jobs = useQuery(jobsQuery());
   const definitions = [...(jobs.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   const selectedJob = definitions.find(job => job.name === requestedJob)?.name ?? (requestedJob ? '' : definitions[0]?.name ?? '');
-  const history = useQuery({ ...runsQuery(selectedJob, RECENT_RUNS_LIMIT), enabled: Boolean(selectedJob) });
-  const filtered = (history.data ?? []).filter(run => matchesFilter(run, filter));
+  const history = useInfiniteQuery({
+    queryKey: ['run-pages', selectedJob, filter],
+    queryFn: ({ pageParam, signal }) => api.listRunsPage(selectedJob, 100, pageParam, filter === 'all' ? '' : filter, signal),
+    initialPageParam: '',
+    getNextPageParam: page => page.next_before || undefined,
+    enabled: Boolean(selectedJob),
+    // Refresh even when no run is active so scheduled and externally triggered
+    // runs appear without navigating away. React Query stops on unmount.
+    refetchInterval: 2_000,
+  });
+  const filtered = history.data?.pages.flatMap(page => page.items ?? []) ?? [];
   const runId = requestedRun || filtered[0]?.run_id || '';
   const detail = useQuery({ ...runQuery(runId), enabled: Boolean(selectedJob && runId) });
   // A freshly triggered run may not have appeared in the history response yet.
@@ -102,7 +113,7 @@ export default function Runs() {
               <h2 className="panel-title">Run history</h2>
               <p className="mt-0.5 truncate font-mono text-xs muted" title={selectedJob}>{selectedJob || 'Select a job'}</p>
             </div>
-            <span className="num shrink-0 text-xs faint">{history.data?.length ?? 0} runs</span>
+            <span className="num shrink-0 text-xs faint">{filtered.length} loaded</span>
           </div>
           <div className="mt-3 flex flex-wrap gap-1" aria-label="Filter runs">
             {FILTERS.map(item => (
@@ -130,6 +141,11 @@ export default function Runs() {
               </span>
             </button>
           ))}
+          {history.hasNextPage && (
+            <button type="button" className="btn-sub mx-2 my-3" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>
+              {history.isFetchingNextPage ? 'Loading…' : 'Load older runs'}
+            </button>
+          )}
         </div>
       </section>
 

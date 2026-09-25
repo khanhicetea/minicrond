@@ -276,3 +276,15 @@ func (s *Supervisor) State(name string) State {
 	_, active := s.active[name]
 	return State{Held: s.holds[name], Active: active, Failures: s.failures[name]}
 }
+
+// States takes a consistent snapshot of the requested workers under one lock.
+func (s *Supervisor) States(names []string) map[string]State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	states := make(map[string]State, len(names))
+	for _, name := range names {
+		_, active := s.active[name]
+		states[name] = State{Held: s.holds[name], Active: active, Failures: s.failures[name]}
+	}
+	return states
+}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -517,21 +518,49 @@ func (s *Store) Recover(ctx context.Context) error {
 	return err
 }
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {
-	limit = min(max(limit, 1), 500)
+	return s.RunsPage(ctx, job, min(max(limit, 1), 500), "", "")
+}
+
+// RunsPage returns runs in a stable newest-first order. before is the run ID
+// at the end of the previous page, so new runs cannot shift later pages.
+func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, filter string) ([]model.Run, error) {
+	limit = min(max(limit, 1), 501)
 	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs`
 	var args []any
+	var conditions []string
 	if job != "" {
-		q += " WHERE job=?"
+		conditions = append(conditions, "job=?")
 		args = append(args, job)
 	}
-	q += " ORDER BY queued_us DESC LIMIT ?"
+	switch filter {
+	case "failed":
+		conditions = append(conditions, "status IN ('failed','timeout','interrupted')")
+	case "scheduled":
+		conditions = append(conditions, "trigger='schedule'")
+	case "manual":
+		conditions = append(conditions, "trigger='manual'")
+	case "active":
+		conditions = append(conditions, "status IN ('pending','running')")
+	}
+	if before != "" {
+		var queued int64
+		if err := s.db.QueryRowContext(ctx, "SELECT queued_us FROM runs WHERE run_id=?", before).Scan(&queued); err != nil {
+			return nil, err
+		}
+		conditions = append(conditions, "(queued_us < ? OR (queued_us = ? AND run_id < ?))")
+		args = append(args, queued, queued, before)
+	}
+	if len(conditions) > 0 {
+		q += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	q += " ORDER BY queued_us DESC, run_id DESC LIMIT ?"
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.Run
+	out := make([]model.Run, 0)
 	for rows.Next() {
 		r, err := scanRun(rows)
 		if err != nil {

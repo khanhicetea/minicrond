@@ -182,6 +182,45 @@ func TestRunMetricsCountsBeyondRunsLimit(t *testing.T) {
 	}
 }
 
+func TestRunsPageKeepsStableOrderWhenNewRunArrives(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	def := model.Definition{Name: "pages", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", SuccessCodes: []int{0}}
+	if _, err := s.PutDefinition(t.Context(), def, 0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := s.Definition(t.Context(), def.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-time.Minute)
+	add := func(id, status, trigger string, at time.Time) {
+		t.Helper()
+		if err := s.CreateRun(t.Context(), model.Run{ID: id, DefinitionID: stored.ID, Job: def.Name, Kind: model.KindJob, Revision: 1, Status: status, Trigger: trigger, QueuedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("run-a", "failed", "manual", base)
+	add("run-b", "succeeded", "schedule", base)
+	add("run-c", "running", "manual", base.Add(time.Second))
+	first, err := s.RunsPage(t.Context(), def.Name, 2, "", "")
+	if err != nil || len(first) != 2 || first[0].ID != "run-c" || first[1].ID != "run-b" {
+		t.Fatalf("first page = %+v, %v", first, err)
+	}
+	add("run-new", "running", "manual", base.Add(2*time.Second))
+	second, err := s.RunsPage(t.Context(), def.Name, 2, first[1].ID, "")
+	if err != nil || len(second) != 1 || second[0].ID != "run-a" {
+		t.Fatalf("second page = %+v, %v", second, err)
+	}
+	failed, err := s.RunsPage(t.Context(), def.Name, 10, "", "failed")
+	if err != nil || len(failed) != 1 || failed[0].ID != "run-a" {
+		t.Fatalf("failed filter = %+v, %v", failed, err)
+	}
+}
+
 func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {

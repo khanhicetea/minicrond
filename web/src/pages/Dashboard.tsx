@@ -3,15 +3,14 @@ import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
+import { api, errorText } from '../api';
 import RunsTable, { COMPACT_LIMIT } from '../components/RunsTable';
-import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useWorkerStates } from '../queries';
+import { daemonQuery, jobsQuery, runMetricsQuery, runsQuery, RECENT_RUNS_LIMIT, useWorkerStates } from '../queries';
 import { humanizeSchedule } from '../lib/cron';
 import { formatClock, formatCountdown, formatDayTime, formatSpan, formatUptime } from '../lib/format';
 import { useRange } from '../lib/range';
 import { jobPath } from '../lib/routes';
 import type { Definition, Run } from '../types';
-
-const NEEDS_ATTENTION = new Set(['failed', 'timeout', 'interrupted']);
 
 /** Trigger badge metadata (daemon emits "schedule" | "manual"). */
 const TRIGGER_META: Record<string, { icon: IconName; cls: string }> = {
@@ -25,11 +24,18 @@ const BADGE = '!gap-1 !px-1.5 !py-0 !text-[0.68rem] font-medium';
 /** Overview — operational health and active work at a glance. */
 export default function Dashboard() {
   const [, navigate] = useLocation();
-  const { ms } = useRange();
+  const { range } = useRange();
   const daemon = useQuery(daemonQuery());
   // Keep scheduler-owned next-fire times current as jobs roll over.
-  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 1000 });
+  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 15_000, refetchIntervalInBackground: false });
   const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
+  const metrics = useQuery(runMetricsQuery(range, 48));
+  const active = useQuery({
+    queryKey: ['active-runs'],
+    queryFn: ({ signal }) => api.listRunsPage('', 100, '', 'active', signal),
+    select: data => data.items,
+    refetchInterval: 5_000,
+  });
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -40,10 +46,8 @@ export default function Dashboard() {
   const recentRuns: Run[] = runs.data ?? [];
   const shownRuns = Math.min(recentRuns.length, COMPACT_LIMIT);
   const shownAll = recentRuns.length <= COMPACT_LIMIT;
-  const rangeStart = now - ms;
-  const inRange = recentRuns.filter(run => new Date(run.queued_at).getTime() >= rangeStart);
-  const failedCount = inRange.filter(run => NEEDS_ATTENTION.has(run.status)).length;
-  const activeRuns = recentRuns.filter(run => run.status === 'running' || run.status === 'pending');
+  const failedCount = metrics.data?.failed ?? 0;
+  const activeRuns = active.data ?? [];
   const disabledCount = definitions.filter(definition => definition.enabled === false).length;
 
   const workerNames = definitions.filter(d => d.kind === 'worker').map(d => d.name);
@@ -69,6 +73,12 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5">
+      {(jobs.isError || runs.isError || metrics.isError || active.isError || daemon.isError) && (
+        <div role="alert" className="panel border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+          Some overview data could not be refreshed: {errorText(jobs.error ?? runs.error ?? metrics.error ?? active.error ?? daemon.error)}. Displayed values may be stale.
+          <button type="button" className="ml-3 underline" onClick={() => { void jobs.refetch(); void runs.refetch(); void metrics.refetch(); void active.refetch(); void daemon.refetch(); }}>Retry</button>
+        </div>
+      )}
       <PageHeader
         title="Overview"
         subtitle="Operational health and active work at a glance."
@@ -102,7 +112,7 @@ export default function Dashboard() {
               <span className="health-stat" title="Config state">
                 <span className="label">cfg</span>
                 <span className={`val ${configDegraded ? 'text-amber-400' : 'text-green-400'}`}>
-                  {configDegraded ? 'Degraded' : 'Current'}
+                  {configDegraded ? 'Degraded' : jobs.isPending ? 'Loading' : 'Current'}
                 </span>
               </span>
             </div>
@@ -115,7 +125,7 @@ export default function Dashboard() {
               onClick={() => navigate('/runs?filter=failed')}
             >
               <Icon name="alert-circle" size={11} />
-              {failedCount} failed
+              {metrics.isPending || metrics.isError ? '—' : failedCount} failed
             </button>
             <button
               type="button"
@@ -124,7 +134,7 @@ export default function Dashboard() {
               onClick={() => navigate('/jobs?filter=attention')}
             >
               <Icon name="octagon-alert" size={11} />
-              {fatalWorkers} fatal
+              {jobs.isPending || jobs.isError ? '—' : fatalWorkers} fatal
             </button>
             <button
               type="button"
@@ -133,7 +143,7 @@ export default function Dashboard() {
               onClick={() => navigate('/jobs?filter=disabled')}
             >
               <Icon name="pause" size={11} />
-              {disabledCount} paused
+              {jobs.isPending || jobs.isError ? '—' : disabledCount} paused
             </button>
           </div>
         }
@@ -142,8 +152,8 @@ export default function Dashboard() {
       {/* 4/8 split: activity rail on the left, recent runs on the right. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <div className="flex min-w-0 flex-col gap-4 lg:col-span-4">
-          <ActiveRunsPanel runs={activeRuns} pending={runs.isPending} now={now} />
-          <UpNextPanel entries={upNext} now={now} />
+          <ActiveRunsPanel runs={activeRuns} total={metrics.data ? metrics.data.active + metrics.data.queued : undefined} pending={active.isPending} failed={active.isError} now={now} />
+          <UpNextPanel entries={upNext} pending={jobs.isPending} failed={jobs.isError} now={now} />
         </div>
 
         <section className="panel flex min-w-0 flex-col self-start lg:col-span-8">
@@ -165,6 +175,8 @@ export default function Dashboard() {
           </div>
           {runs.isPending ? (
             <div className="skeleton m-4 h-48" />
+          ) : runs.isError && !runs.data ? (
+            <p className="px-4 py-8 text-sm muted">Recent runs are unavailable.</p>
           ) : (
             <RunsTable runs={recentRuns} compact bare />
           )}
@@ -176,22 +188,24 @@ export default function Dashboard() {
 
 /* ---------- Active runs (compact) ---------- */
 
-function ActiveRunsPanel({ runs, pending, now }: { runs: Run[]; pending: boolean; now: number }) {
+function ActiveRunsPanel({ runs, total, pending, failed, now }: { runs: Run[]; total?: number; pending: boolean; failed: boolean; now: number }) {
   return (
     <section className="panel flex flex-col p-4">
       <div className="mb-1 flex items-center justify-between">
         <h2 className="panel-title flex items-center gap-2">
           Active Runs
-          {runs.length > 0 && (
-            <span className="chip chip-info !px-1.5 !py-0 font-mono !text-[0.68rem]">{runs.length}</span>
+          {(total ?? runs.length) > 0 && (
+            <span className="chip chip-info !px-1.5 !py-0 font-mono !text-[0.68rem]">{total ?? runs.length}</span>
           )}
         </h2>
-        <Link href="/runs" className="text-xs font-medium text-sky-300 hover:text-sky-200">
+        <Link href="/runs?filter=active" className="text-xs font-medium text-sky-300 hover:text-sky-200">
           View all
         </Link>
       </div>
       {pending ? (
         <div className="skeleton h-24 w-full" />
+      ) : failed && runs.length === 0 ? (
+        <p className="py-7 text-center text-sm muted">Active runs are unavailable.</p>
       ) : runs.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center py-7 text-center">
           <Icon name="zap" size={18} className="faint" />
@@ -255,7 +269,7 @@ function ActiveRunRow({ run, now }: { run: Run; now: number }) {
 
 /* ---------- Up next ---------- */
 
-function UpNextPanel({ entries, now }: { entries: { definition: Definition; fire: number }[]; now: number }) {
+function UpNextPanel({ entries, pending, failed, now }: { entries: { definition: Definition; fire: number }[]; pending: boolean; failed: boolean; now: number }) {
   return (
     <section className="panel flex flex-col p-4">
       <div className="mb-1 flex items-center justify-between">
@@ -264,7 +278,11 @@ function UpNextPanel({ entries, now }: { entries: { definition: Definition; fire
           View all
         </Link>
       </div>
-      {entries.length === 0 ? (
+      {pending ? (
+        <div className="skeleton h-24 w-full" />
+      ) : failed && entries.length === 0 ? (
+        <p className="py-7 text-center text-sm muted">Schedule data is unavailable.</p>
+      ) : entries.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-7 text-center">
           <Icon name="clock" size={18} className="faint" />
           <p className="mt-1.5 text-sm muted">No scheduled firings ahead.</p>

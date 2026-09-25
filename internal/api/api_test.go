@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/logstore"
+	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
 	"github.com/khanhicetea/minicrond/internal/supervisor"
 )
@@ -197,6 +199,31 @@ func TestJobsExposeSchedulerNextFire(t *testing.T) {
 	}
 }
 
+func TestWorkerStatesOnlyIncludesWorkerDefinitions(t *testing.T) {
+	s, token, _ := setup(t)
+	worker := `{"name":"worker-one","kind":"worker","command":"true","shell":"/bin/sh"}`
+	job := `{"name":"job-one","kind":"job","command":"true","shell":"/bin/sh"}`
+	for _, definition := range []struct{ name, body string }{{"worker-one", worker}, {"job-one", job}} {
+		rec := call(s, true, "PUT", "/api/v1/jobs/"+definition.name, "", definition.body, nil)
+		if rec.Code != 200 {
+			t.Fatalf("create %s: %d %s", definition.name, rec.Code, rec.Body.String())
+		}
+	}
+	rec := call(s, false, "GET", "/api/v1/workers/states", token, "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("worker states: %d %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Items map[string]supervisor.State `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items["worker-one"] != (supervisor.State{}) {
+		t.Fatalf("unexpected worker states: %+v", response.Items)
+	}
+}
+
 func TestTCPRequiresBearerToken(t *testing.T) {
 	s, token, _ := setup(t)
 	rec := call(s, false, "GET", "/api/v1/daemon", "", "", nil)
@@ -259,6 +286,89 @@ func TestSecurityHeadersAndURLCap(t *testing.T) {
 	}
 	if rec := call(s, false, "GET", "/api/v1/runs?pad="+strings.Repeat("x", 3000), token, "", nil); rec.Code != 414 {
 		t.Fatalf("oversized URL: %d", rec.Code)
+	}
+}
+
+func TestHashedAssetCompressionAndCaching(t *testing.T) {
+	s, _, _ := setup(t)
+	var name string
+	for candidate := range cachedAssets() {
+		if strings.HasPrefix(candidate, "app-") && strings.HasSuffix(candidate, ".js") {
+			name = candidate
+			break
+		}
+	}
+	if name == "" {
+		t.Fatal("missing hashed app asset")
+	}
+	rec := call(s, false, "GET", "/assets/"+name, "", "", map[string]string{"Accept-Encoding": "gzip"})
+	if rec.Code != 200 || rec.Header().Get("Content-Encoding") != "gzip" || !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("asset headers: %d %+v", rec.Code, rec.Header())
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, cachedAssets()[name].body) {
+		t.Fatal("compressed asset did not match embedded file")
+	}
+	cache := call(s, false, "GET", "/assets/"+name, "", "", map[string]string{"Accept-Encoding": "gzip", "If-None-Match": rec.Header().Get("ETag")})
+	if cache.Code != 304 {
+		t.Fatalf("conditional asset request: %d", cache.Code)
+	}
+	identity := call(s, false, "GET", "/assets/"+name, "", "", map[string]string{"Accept-Encoding": "gzip;q=0"})
+	if identity.Code != 200 || identity.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("gzip;q=0 must receive identity bytes: %d %+v", identity.Code, identity.Header())
+	}
+}
+
+func TestRunsPaginationAndFilter(t *testing.T) {
+	s, token, st := setup(t)
+	empty := call(s, false, "GET", "/api/v1/runs?job=pages&limit=2", token, "", nil)
+	if empty.Code != 200 {
+		t.Fatalf("empty page: %d %s", empty.Code, empty.Body.String())
+	}
+	items, ok := decode(t, empty)["items"].([]any)
+	if !ok || len(items) != 0 {
+		t.Fatalf("empty run list must be an array: %s", empty.Body.String())
+	}
+	mustCreate(t, s, "pages", "true")
+	def, _, err := st.Definition(t.Context(), "pages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-time.Minute)
+	for i, status := range []string{"failed", "succeeded", "running"} {
+		run := model.Run{ID: fmt.Sprintf("page-%d", i), DefinitionID: def.ID, Job: "pages", Kind: model.KindJob, Revision: 1, Status: status, Trigger: "manual", QueuedAt: base.Add(time.Duration(i) * time.Second)}
+		if err := st.CreateRun(t.Context(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := call(s, false, "GET", "/api/v1/runs?job=pages&limit=2", token, "", nil)
+	if first.Code != 200 {
+		t.Fatalf("first page: %d %s", first.Code, first.Body.String())
+	}
+	var page struct {
+		Items      []model.Run `json:"items"`
+		NextBefore string      `json:"next_before"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.NextBefore != page.Items[1].ID {
+		t.Fatalf("first page = %+v", page)
+	}
+	second := call(s, false, "GET", "/api/v1/runs?job=pages&limit=2&before="+page.NextBefore, token, "", nil)
+	if second.Code != 200 || !strings.Contains(second.Body.String(), `"run_id":"page-0"`) {
+		t.Fatalf("second page: %d %s", second.Code, second.Body.String())
+	}
+	filtered := call(s, false, "GET", "/api/v1/runs?job=pages&filter=active", token, "", nil)
+	if filtered.Code != 200 || !strings.Contains(filtered.Body.String(), `"run_id":"page-2"`) || strings.Contains(filtered.Body.String(), `"run_id":"page-1"`) {
+		t.Fatalf("active filter: %d %s", filtered.Code, filtered.Body.String())
 	}
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
@@ -24,6 +24,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   const copyFrom = new URLSearchParams(useSearch()).get('from') ?? undefined;
   const [, navigate] = useLocation();
   const creating = !existingName;
+  const editorKey = creating ? `new:${copyFrom ?? ''}` : `edit:${existingName}`;
 
   const detail = useQuery({ ...jobQuery(existingName ?? ''), enabled: Boolean(existingName) });
   const source = useQuery({ ...jobQuery(copyFrom ?? ''), enabled: Boolean(copyFrom) });
@@ -33,26 +34,57 @@ export default function JobEditor({ params }: JobEditorProps) {
   const remove = useDeleteJob();
 
   const [draft, setDraft] = useState<Definition>(() => emptyDefinition('job'));
-  const [loaded, setLoaded] = useState(false);
+  const [loadedKey, setLoadedKey] = useState('');
+  const initializedKey = useRef('');
+  const [dirty, setDirty] = useState(false);
   const [tab, setTab] = useState<'form' | 'toml'>('toml');
   const [serverError, setServerError] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
-  // Initialize the draft once definition data arrives.
+  // Query data can change after focus or invalidation. Never replace an open draft.
   useEffect(() => {
+    if (initializedKey.current === editorKey) return;
     if (creating && copyFrom && source.data) {
       const { definition } = source.data;
       setDraft({ ...definition, name: `${definition.name}-copy`, revision: undefined, definition_id: undefined });
-      setLoaded(true);
     } else if (!creating && detail.data) {
       setDraft({ ...detail.data.definition });
-      setLoaded(true);
     } else if (creating && !copyFrom) {
-      setLoaded(true);
-    }
-  }, [creating, copyFrom, source.data, detail.data]);
+      setDraft(emptyDefinition('job'));
+    } else return;
+    initializedKey.current = editorKey;
+    setDirty(false);
+    setLoadedKey(editorKey);
+  }, [creating, copyFrom, source.data, detail.data, editorKey]);
 
-  const patch = (changes: Partial<Definition>) => setDraft(previous => ({ ...previous, ...changes }));
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    const onLinkClick = (event: MouseEvent) => {
+      const anchor = (event.target as Element).closest('a[href]');
+      if (!anchor || anchor.getAttribute('target') || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const destination = new URL(anchor.getAttribute('href')!, window.location.href);
+      if (destination.origin !== window.location.origin || destination.href === window.location.href) return;
+      if (!window.confirm('Discard unsaved definition changes?')) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('click', onLinkClick, true);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('click', onLinkClick, true);
+    };
+  }, [dirty]);
+
+  const patch = (changes: Partial<Definition>) => {
+    setDraft(previous => ({ ...previous, ...changes }));
+    setDirty(true);
+  };
 
   const { text: tomlText, lineOf } = definitionToToml(draft);
   const issues = validateDefinition(draft, lineOf);
@@ -74,8 +106,10 @@ export default function JobEditor({ params }: JobEditorProps) {
       creating ? { definition: payload } : { name: existingName, definition: payload, revision: draft.revision },
       {
         onSuccess: saved => {
+          setDirty(false);
           if (creating) void navigate(jobPath(saved.name));
           else {
+            setDraft(saved);
             setSavedFlash(true);
             setTimeout(() => setSavedFlash(false), 2500);
           }
@@ -88,14 +122,17 @@ export default function JobEditor({ params }: JobEditorProps) {
   if (!creating && detail.isPending) {
     return <div className="skeleton h-64 w-full" />;
   }
-  if (!creating && detail.isError) {
+  if (!creating && detail.isError && !detail.data) {
     return (
       <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
         Failed to load {existingName}: {errorText(detail.error)}
       </div>
     );
   }
-  if (!loaded) return <div className="skeleton h-64 w-full" />;
+  if (creating && copyFrom && source.isError && !source.data) {
+    return <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">Failed to load {copyFrom} for duplication: {errorText(source.error)} <button type="button" className="ml-2 underline" onClick={() => void source.refetch()}>Retry</button></div>;
+  }
+  if (loadedKey !== editorKey) return <div className="skeleton h-64 w-full" />;
 
   const isWorker = draft.kind === 'worker';
   const runAsEnabled = daemon.data?.capabilities.includes('run-as') ?? false;
@@ -133,6 +170,11 @@ export default function JobEditor({ params }: JobEditorProps) {
           {serverError}
         </div>
       )}
+      {(detail.isError || source.isError) && (
+        <div role="alert" className="panel border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+          The latest definition could not be refreshed. Your draft is preserved; saving may require reloading if the server revision changed.
+        </div>
+      )}
       {errors.length > 0 && (
         <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-2.5 text-sm text-red-300">
           Fix {errors.length} validation {errors.length === 1 ? 'issue' : 'issues'} before saving — see the panel on the right.
@@ -146,7 +188,7 @@ export default function JobEditor({ params }: JobEditorProps) {
             showKindTabs={creating && !copyFrom}
             nameLocked={!creating}
             draft={draft}
-            readOnly={false}
+            readOnly={save.isPending}
             runAsEnabled={runAsEnabled}
             onChange={patch}
             formId={FORM_ID}

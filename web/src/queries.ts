@@ -1,4 +1,4 @@
-import { queryOptions, useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
 import type { Definition, WorkerState } from './types';
 import { isActiveRun } from './types';
@@ -6,7 +6,7 @@ import { isActiveRun } from './types';
 /**
  * Shared limit for the global recent-runs list.
  *
- * Overview, Jobs, Runs, and Settings all want the same "latest N runs" feed;
+ * Overview, Jobs, and Settings share the same "latest N runs" feed;
  * fetching it through one identical query (same key, same limit) lets
  * react-query reuse a single request/cache entry across those pages instead
  * of pulling overlapping ?limit=… payloads per page.
@@ -22,13 +22,14 @@ export const keys = {
   runMetrics: (range: string, buckets: number) => ['run-metrics', range, buckets] as const,
   run: (id: string) => ['run', id] as const,
   runAlerts: (id: string) => ['run-alerts', id] as const,
+  workerStates: ['worker-states'] as const,
 };
 
 export const daemonQuery = () =>
-  queryOptions({ queryKey: keys.daemon, queryFn: api.daemon, staleTime: 15_000, refetchInterval: 30_000 });
+  queryOptions({ queryKey: keys.daemon, queryFn: ({ signal }) => api.daemon(signal), staleTime: 15_000, refetchInterval: 30_000 });
 
 export const jobsQuery = () =>
-  queryOptions({ queryKey: keys.jobs, queryFn: api.listJobs, select: data => data.items });
+  queryOptions({ queryKey: keys.jobs, queryFn: ({ signal }) => api.listJobs(signal), select: data => data.items });
 
 export const alertChannelsQuery = () =>
   queryOptions({ queryKey: keys.alertChannels, queryFn: api.listAlertChannels, select: data => data.items });
@@ -38,14 +39,14 @@ export const jobQuery = (name: string) => queryOptions({ queryKey: keys.job(name
 export const runMetricsQuery = (range = '1h', buckets = 48) =>
   queryOptions({
     queryKey: keys.runMetrics(range, buckets),
-    queryFn: () => api.runMetrics(range, buckets),
-    refetchInterval: 4_000,
+    queryFn: ({ signal }) => api.runMetrics(range, buckets, signal),
+    refetchInterval: range === '15m' || range === '1h' ? 10_000 : range === '24h' ? 30_000 : 60_000,
   });
 
 export const runsQuery = (job = '', limit = 50) =>
   queryOptions({
     queryKey: keys.runs(job, limit),
-    queryFn: () => api.listRuns(job, limit),
+    queryFn: ({ signal }) => api.listRuns(job, limit, signal),
     select: data => data.items,
     refetchInterval: query => (query.state.data?.items?.some(isActiveRun) ? 4_000 : false),
   });
@@ -67,28 +68,28 @@ export const runAlertsQuery = (id: string) =>
   });
 
 /**
- * Fetch worker runtime state (active/held/failures) for each worker name.
+ * Fetch worker runtime state (active/held/failures) in a single request.
  * Used by the jobs list, overview, and metrics pages.
  */
 export function useWorkerStates(names: string[]): Record<string, WorkerState | undefined> {
-  const queries = useQueries({
-    queries: names.map(name => ({
-      queryKey: keys.job(name),
-      queryFn: () => api.getJob(name),
-      staleTime: 10_000,
-      refetchInterval: 15_000,
-    })),
+  const query = useQuery({
+    queryKey: keys.workerStates,
+    queryFn: ({ signal }) => api.workerStates(signal),
+    enabled: names.length > 0,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
   });
   const states: Record<string, WorkerState | undefined> = {};
-  queries.forEach((query, index) => {
-    if (query.data) states[names[index]] = query.data.worker_state;
-  });
+  for (const name of names) states[name] = query.data?.items[name];
   return states;
 }
 
 function invalidateRuns(client: ReturnType<typeof useQueryClient>) {
   void client.invalidateQueries({ queryKey: ['runs'] });
+  void client.invalidateQueries({ queryKey: ['run-pages'] });
   void client.invalidateQueries({ queryKey: ['run'] });
+  void client.invalidateQueries({ queryKey: ['active-runs'] });
+  void client.invalidateQueries({ queryKey: ['run-metrics'] });
 }
 
 export const useReloadDaemon = () => {
@@ -114,6 +115,7 @@ export const useSetJobEnabled = () => {
     onSuccess: (_data, variables) => {
       void client.invalidateQueries({ queryKey: ['jobs'] });
       void client.invalidateQueries({ queryKey: keys.job(variables.name) });
+      void client.invalidateQueries({ queryKey: keys.workerStates });
     },
   });
 };
@@ -126,6 +128,7 @@ export const useSaveJob = () => {
     onSuccess: saved => {
       void client.invalidateQueries({ queryKey: ['jobs'] });
       void client.invalidateQueries({ queryKey: keys.job(saved.name) });
+      void client.invalidateQueries({ queryKey: keys.workerStates });
     },
   });
 };
@@ -136,6 +139,7 @@ export const useDeleteJob = () => {
     mutationFn: (name: string) => api.deleteJob(name),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['jobs'] });
+      void client.invalidateQueries({ queryKey: keys.workerStates });
       invalidateRuns(client);
     },
   });
@@ -148,6 +152,7 @@ export const useWorkerAction = () => {
       api.workerAction(name, action),
     onSuccess: (_data, variables) => {
       void client.invalidateQueries({ queryKey: keys.job(variables.name) });
+      void client.invalidateQueries({ queryKey: keys.workerStates });
       invalidateRuns(client);
     },
   });

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
+import { errorText } from '../api';
 import { LegendDot, LineChart, StackedBars, StepChart } from '../components/charts';
 import { daemonQuery, jobsQuery, runMetricsQuery, useWorkerStates } from '../queries';
 import { formatDurationMs, formatUptime } from '../lib/format';
@@ -89,13 +90,34 @@ export default function Metrics() {
   const rangeKeys: RangeKey[] = ['15m', '1h', '24h', '7d', '30d'];
   const activeRange = range;
 
+  if (metrics.isPending) {
+    return <div className="space-y-4"><PageHeader title="Metrics" /><div className="skeleton h-48 w-full" /></div>;
+  }
+  if (metrics.isError && !metrics.data) {
+    return (
+      <div className="space-y-4">
+        <PageHeader title="Metrics" />
+        <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+          Metrics are unavailable: {errorText(metrics.error)}.
+          <button type="button" className="ml-3 underline" onClick={() => void metrics.refetch()}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
+      {(metrics.isError || jobs.isError || daemon.isError) && (
+        <div role="alert" className="panel border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+          {metrics.isError ? 'Metrics' : jobs.isError ? 'Definitions' : 'Daemon status'} could not be refreshed. Displayed values may be stale.
+          <button type="button" className="ml-3 underline" onClick={() => { void metrics.refetch(); void jobs.refetch(); void daemon.refetch(); }}>Retry</button>
+        </div>
+      )}
       <PageHeader
         title="Metrics"
         subtitle={
           <span className="inline-flex items-center gap-1.5">
-            Computed by backend run metrics · updated live <span className="dot dot-green dot-pulse" />
+            Computed by backend run metrics · {metrics.isError ? 'refresh failed' : 'updated live'} <span className={`dot ${metrics.isError ? 'dot-amber' : 'dot-green dot-pulse'}`} />
           </span>
         }
         actions={
@@ -124,7 +146,7 @@ export default function Metrics() {
           }
         />
         <StatCard icon="users" label="Active runs" value={String(stats.active)} valueClass={stats.active > 0 ? 'text-blue-400' : ''} sub="Currently executing" />
-        <StatCard icon="file-text" label="Daemon uptime" value={daemon.data ? formatUptime(daemon.data.uptime_s) : '—'} valueClass="text-amber-400" sub={daemon.data ? `v${daemon.data.version} · schema ${daemon.data.schema_version}` : 'connecting…'} />
+        <StatCard icon="file-text" label="Daemon uptime" value={daemon.data ? formatUptime(daemon.data.uptime_s) : '—'} valueClass="text-amber-400" sub={daemon.data ? `v${daemon.data.version} · schema ${daemon.data.schema_version}` : daemon.isError ? 'unavailable' : 'connecting…'} />
       </div>
 
       {/* Main 4/8 split */}
@@ -158,7 +180,7 @@ export default function Metrics() {
                 <WorkerRow color="bg-red-400" label="Stopped" count={workerRows.rows.stopped} total={workerRows.total} />
               </tbody>
             </table>
-            {workerRows.total === 0 && <p className="mt-3 text-xs faint">No workers defined.</p>}
+            {workerRows.total === 0 && <p className="mt-3 text-xs faint">{jobs.isError ? 'Worker definitions are unavailable.' : jobs.isPending ? 'Loading workers…' : 'No workers defined.'}</p>}
           </section>
 
           {/* Active runs & queue depth */}
