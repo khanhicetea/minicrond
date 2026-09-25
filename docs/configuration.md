@@ -1,15 +1,17 @@
 # Configuration reference
 
-minicrond has exactly two configuration surfaces:
+minicrond has two configuration surfaces:
 
 1. **Bootstrap config** — the strict-TOML file the daemon loads at startup
    (`minicron.toml` by default). It configures the *daemon*: server,
-   scheduler, storage, logs, alert channels, and job defaults. Unknown fields are errors.
-2. **Definitions** — jobs and workers. Their **sole source of truth is the
-   SQLite registry**. They are created/edited in the web UI or via the API,
+   scheduler, storage, logs, alert channels, job defaults, and optional
+   config-owned `[[init]]`, `[[job]]`, and `[[worker]]` entries. Unknown fields are errors.
+2. **Registry definitions** — jobs and workers created/edited in the web UI or via the API.
+   Their source of truth is SQLite. They
    and can be round-tripped through TOML bundles with `minicrond import` /
    `minicrond export`. Import is an explicit copy; imported files are not
-   linked or watched.
+   linked or watched. Config-owned definitions are mirrored into SQLite for
+   scheduling and run history; the main TOML file remains authoritative for them.
 
 The `minicron`-prefixed identifiers (config filename, env vars, data paths,
 API paths) are retained compatibility names.
@@ -52,6 +54,20 @@ bot_token = "env:TELEGRAM_BOT_TOKEN"  # or file:/absolute/path (never inline)
 chat_id = "-1001234567890"
 disable_notification = false   # true = silent delivery
 batch_window = 10              # group runs per channel, seconds (1..3600)
+
+[[init]]
+name = "prepare"
+command = "./prepare.sh"     # runs synchronously on every daemon start
+
+[[worker]]
+name = "api"
+command = "./start-api.sh"   # supervised after init tasks succeed
+restart = "always"
+
+[[job]]
+name = "cleanup"
+schedule = "0 3 * * *"
+command = "./cleanup.sh"
 ```
 
 ### Field notes
@@ -87,9 +103,16 @@ and `max_concurrent_runs` are unitless.
   changing bootstrap defaults does not change existing jobs until they are
   saved or imported again. Worker definitions do not use bootstrap defaults.
   Zero-valued numeric fields use their defaults (as with bundle defaults).
-- Reload: `SIGHUP` or `minicrond reload` re-reads the bootstrap config
-  (server bind changes need a restart). Definitions are not reloaded from
-  disk — they live in the registry.
+- `[[init]]` entries run once per daemon start, in file order, before workers
+  start and before HTTP is ready. A failed init stops daemon startup. They do
+  not rerun on reload. Disabled init entries are skipped.
+- Config-owned `[[job]]` entries require a schedule; `[[worker]]` entries use normal supervision.
+  Names must be unique across init, job, worker, and registry definitions.
+- Reload: `SIGHUP` or `minicrond reload` re-reads the main config and syncs
+  its definitions. Removed config-owned entries are disabled and hidden; their
+  run history is retained. Listener changes still require a restart.
+- Config-owned entries appear in the UI as view-only. API edits, deletion,
+  enable/disable, import takeover, and manual trigger/start are rejected.
 
 Validate any file with `minicrond validate PATH`. The JSON Schema is
 `schema/minicron.schema.json` (also: `minicrond schema`).
@@ -140,7 +163,7 @@ schema below.
 Pending retry timers are in memory and are canceled on daemon shutdown; retries do not resume after a daemon crash. A retry uses the current enabled definition and retry budget. If it overlaps a running job under `on_overlap = "skip"`, it is recorded as skipped.
 
 Not supported (validation rejects): `priority`, `run_on_start` for jobs —
-use `@every` schedules or trigger manually; workers use `autostart`.
+use `[[init]]` in the main config for startup tasks; workers use `autostart`.
 
 ### Import bundle format
 
@@ -168,6 +191,8 @@ restart = "on-failure"
 - Workers must not have `schedule`; jobs must.
 - Unknown fields are errors; `minicrond import` previews server-side before
   applying, and is idempotent by `name`.
+- Export includes registry-owned definitions. Main-config entries remain in
+  the main TOML file.
 
 ### Runtime environment of a process
 

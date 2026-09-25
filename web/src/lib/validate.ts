@@ -41,9 +41,9 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
   }
 
   if (!isWorker) {
-    if (!def.schedule || !def.schedule.trim()) {
+    if ((!def.schedule || !def.schedule.trim()) && !(def.source === 'config' && def.run_on_start)) {
       add({ field: 'schedule', title: 'Missing schedule', message: 'Jobs need a cron expression or an @every interval.', severity: 'error' });
-    } else if (!parseSchedule(def.schedule)) {
+    } else if (def.schedule && !parseSchedule(def.schedule)) {
       add({
         field: 'schedule',
         title: 'Invalid: Cron expression',

@@ -157,7 +157,7 @@ export default function RunDetail() {
                 {stop.isPending ? 'Stopping…' : 'Stop'}
               </button>
             )}
-            {!running && (
+            {!running && jobDetail.data?.definition.source !== 'config' && (
               <button type="button" className="btn-sub" disabled={trigger.isPending} onClick={rerun}>
                 <Icon name="play" size={13} />
                 {trigger.isPending ? 'Starting…' : 'Run again'}

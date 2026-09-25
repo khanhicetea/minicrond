@@ -337,7 +337,7 @@ function Row({
     return () => document.removeEventListener('mousedown', onClick);
   }, [menuOpen]);
 
-  const scheduleLine = isWorker ? 'Continuous' : humanizeSchedule(definition.schedule ?? '') || '—';
+  const scheduleLine = isWorker ? 'Continuous' : definition.run_on_start ? 'Startup init' : humanizeSchedule(definition.schedule ?? '') || '—';
   const attention = isWorker ? (workerState?.failures ?? 0) > 0 || workerState?.held === true : ['failed', 'timeout'].includes(lastRun?.status ?? '');
   const stateLine = !enabled
     ? { text: 'Disabled', dot: 'dot-gray' }
@@ -363,6 +363,7 @@ function Row({
             <Link href={jobPath(definition.name)} className="block truncate font-mono text-[0.85rem] font-semibold hover:text-sky-300">
               {definition.name}
             </Link>
+			{definition.source === 'config' && <span className="text-xs muted">Config owned</span>}
             <div className="truncate text-xs muted">{definition.labels?.description ?? definition.command ?? ((definition.argv ?? []).join(' ') || '—')}</div>
           </div>
         </div>
@@ -443,7 +444,7 @@ function Row({
           <input
             type="checkbox"
             checked={enabled}
-            disabled={busy}
+            disabled={busy || definition.source === 'config'}
             onChange={event => onToggle(event.target.checked)}
             aria-label={`Enable ${definition.name}`}
           />
@@ -457,7 +458,7 @@ function Row({
           </button>
           {menuOpen && (
             <div className="menu-pop right-0 top-full mt-1">
-              {!isWorker && (
+              {!isWorker && definition.source !== 'config' && (
                 <button
                   type="button"
                   className="menu-item"
@@ -470,7 +471,7 @@ function Row({
                   <Icon name="play" size={14} /> Trigger now
                 </button>
               )}
-              <button
+              {definition.source !== 'config' && <button
                 type="button"
                 className="menu-item"
                 onClick={() => {
@@ -479,7 +480,7 @@ function Row({
                 }}
               >
                 <Icon name="pencil" size={14} /> Edit
-              </button>
+              </button>}
               <button
                 type="button"
                 className="menu-item"
@@ -500,7 +501,7 @@ function Row({
               >
                 <Icon name="copy" size={14} /> Duplicate
               </button>
-              <button
+              {definition.source !== 'config' && <button
                 type="button"
                 className="menu-item danger"
                 disabled={busy}
@@ -510,7 +511,7 @@ function Row({
                 }}
               >
                 <Icon name="trash" size={14} /> Delete
-              </button>
+              </button>}
             </div>
           )}
         </div>

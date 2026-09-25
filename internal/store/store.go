@@ -20,10 +20,11 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
+var ErrReadOnly = errors.New("config-owned definition is read-only")
 
 type Store struct{ db *sql.DB }
 
@@ -138,6 +139,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 5: %w", err)
 		}
 	}
+	if version <= 5 {
+		if _, err := s.db.ExecContext(ctx, migration6); err != nil {
+			return fmt.Errorf("migration 6: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -148,7 +154,7 @@ CREATE TABLE definitions (
  definition_id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  kind TEXT NOT NULL CHECK(kind IN ('job','worker')), spec TEXT NOT NULL,
  spec_hash TEXT NOT NULL, revision INTEGER NOT NULL,
- enabled INTEGER NOT NULL, created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL,
+ enabled INTEGER NOT NULL, source TEXT NOT NULL DEFAULT '', created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL,
  deleted_us INTEGER
 );
 CREATE TABLE definition_revisions (
@@ -179,7 +185,7 @@ CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT N
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=5;
+PRAGMA user_version=6;
 COMMIT;`
 
 const migration3 = `
@@ -206,8 +212,14 @@ ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
 PRAGMA user_version=5;
 COMMIT;`
 
+const migration6 = `
+BEGIN;
+ALTER TABLE definitions ADD COLUMN source TEXT NOT NULL DEFAULT '';
+PRAGMA user_version=6;
+COMMIT;`
+
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled FROM definitions WHERE deleted_us IS NULL ORDER BY name")
+	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled,source FROM definitions WHERE deleted_us IS NULL ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -216,13 +228,15 @@ func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
 	for rows.Next() {
 		var d model.Definition
 		var raw string
+		var source string
 		var enabled bool
-		if err := rows.Scan(&d.ID, &raw, &d.Revision, &enabled); err != nil {
+		if err := rows.Scan(&d.ID, &raw, &d.Revision, &enabled, &source); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &d); err != nil {
 			return nil, err
 		}
+		d.Source = source
 		d.Enabled = &enabled
 		out = append(out, d)
 	}
@@ -257,14 +271,16 @@ func (s *Store) RetentionDefinitions(ctx context.Context) ([]model.Definition, e
 func (s *Store) Definition(ctx context.Context, name string) (model.Definition, string, error) {
 	var d model.Definition
 	var raw, hash string
+	var source string
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,revision,enabled FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Revision, &enabled)
+	err := s.db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,revision,enabled,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Revision, &enabled, &source)
 	if err != nil {
 		return d, "", err
 	}
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		return d, "", err
 	}
+	d.Source = source
 	d.Enabled = &enabled
 	return d, hash, nil
 }
@@ -277,6 +293,7 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 	defer tx.Rollback()
 	now := time.Now().UnixMicro()
 	for _, d := range defs {
+		d.Source = ""
 		b, hash, err := config.Canonical(d)
 		if err != nil {
 			return err
@@ -284,7 +301,11 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 		var id, rev int64
 		var before string
 		var deleted sql.NullInt64
-		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted)
+		var source string
+		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us,source FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted, &source)
+		if err == nil && source == "config" {
+			return ErrReadOnly
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			res, execErr := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 			if execErr != nil {
@@ -310,6 +331,86 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 	return tx.Commit()
 }
 
+// SyncConfigDefinitions atomically mirrors the main config into the registry.
+// Names already owned by an API definition are never taken over.
+func (s *Store) SyncConfigDefinitions(ctx context.Context, defs []model.Definition) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UnixMicro()
+	seen := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		seen[d.Name] = true
+		d.Source = "config"
+		b, hash, err := config.Canonical(d)
+		if err != nil {
+			return err
+		}
+		var id, rev int64
+		var before, oldHash, source string
+		var deleted sql.NullInt64
+		err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,spec_hash,source,deleted_us FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &oldHash, &source, &deleted)
+		if errors.Is(err, sql.ErrNoRows) {
+			res, err := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,source,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), "config", now, now)
+			if err != nil {
+				return err
+			}
+			id, _ = res.LastInsertId()
+			rev = 1
+		} else if err != nil {
+			return err
+		} else {
+			if source != "config" {
+				return fmt.Errorf("config definition %q conflicts with registry definition", d.Name)
+			}
+			if oldHash == hash && !deleted.Valid {
+				continue
+			}
+			rev++
+			if _, err := tx.ExecContext(ctx, "UPDATE definitions SET kind=?,spec=?,spec_hash=?,revision=?,enabled=?,updated_us=?,deleted_us=NULL WHERE definition_id=?", d.Kind, string(b), hash, rev, d.IsEnabled(), now, id); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO definition_revisions(definition_id,revision,spec,spec_hash,actor,at_us) VALUES(?,?,?,?,?,?)", id, rev, string(b), hash, "config", now); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before,after) VALUES(?,?,?,?,?,?)", now, "config", "sync", d.Name, before, string(b)); err != nil {
+			return err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM definitions WHERE source='config' AND deleted_us IS NULL")
+	if err != nil {
+		return err
+	}
+	var removed []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		if !seen[name] {
+			removed = append(removed, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, name := range removed {
+		if _, err := tx.ExecContext(ctx, "UPDATE definitions SET deleted_us=?,enabled=0,updated_us=? WHERE name=?", now, now, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target) VALUES(?,?,?,?)", now, "config", "remove", name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -317,8 +418,12 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 	}
 	defer tx.Rollback()
 	var before string
-	if err = tx.QueryRowContext(ctx, "SELECT spec FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&before); err != nil {
+	var source string
+	if err = tx.QueryRowContext(ctx, "SELECT spec,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&before, &source); err != nil {
 		return err
+	}
+	if source == "config" {
+		return ErrReadOnly
 	}
 	now := time.Now().UnixMicro()
 	if _, err = tx.ExecContext(ctx, "UPDATE definitions SET deleted_us=?,enabled=0,updated_us=? WHERE name=?", now, now, name); err != nil {
@@ -338,8 +443,12 @@ func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error
 	defer tx.Rollback()
 	var id, revision int64
 	var spec, hash string
-	if err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,spec_hash FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&id, &revision, &spec, &hash); err != nil {
+	var source string
+	if err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,spec_hash,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&id, &revision, &spec, &hash, &source); err != nil {
 		return err
+	}
+	if source == "config" {
+		return ErrReadOnly
 	}
 	now := time.Now().UnixMicro()
 	revision++
@@ -367,6 +476,7 @@ func (s *Store) CreateDefinition(ctx context.Context, d model.Definition, actor 
 }
 
 func (s *Store) putDefinition(ctx context.Context, d model.Definition, expected int64, actor string, createOnly bool) (model.Definition, error) {
+	d.Source = ""
 	b, hash, err := config.Canonical(d)
 	if err != nil {
 		return d, err
@@ -380,7 +490,11 @@ func (s *Store) putDefinition(ctx context.Context, d model.Definition, expected 
 	var id, rev int64
 	var before string
 	var deleted sql.NullInt64
-	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted)
+	var source string
+	err = tx.QueryRowContext(ctx, "SELECT definition_id,revision,spec,deleted_us,source FROM definitions WHERE name=?", d.Name).Scan(&id, &rev, &before, &deleted, &source)
+	if err == nil && source == "config" {
+		return d, ErrReadOnly
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		res, e := tx.ExecContext(ctx, `INSERT INTO definitions(name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(?,?,?,?,1,?,?,?)`, d.Name, d.Kind, string(b), hash, d.IsEnabled(), now, now)
 		if e != nil {

@@ -455,6 +455,7 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 	if d.Kind == "" {
 		d.Kind = model.KindJob
 	}
+	d.Source = ""
 	var defaults model.Definition
 	if s.jobDefaults != nil {
 		defaults = s.jobDefaults()
@@ -494,6 +495,8 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case errors.Is(err, store.ErrReadOnly):
+			writeError(w, 403, "read_only", err.Error())
 		case errors.Is(err, store.ErrRevisionConflict):
 			writeError(w, 412, "revision_conflict", err.Error())
 		default:
@@ -509,6 +512,10 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteDefinition(r.Context(), r.PathValue("name"), "api"); err != nil {
+		if errors.Is(err, store.ErrReadOnly) {
+			writeError(w, 403, "read_only", err.Error())
+			return
+		}
 		writeError(w, 404, "not_found", err.Error())
 		return
 	}
@@ -522,6 +529,10 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
 	enabled := strings.HasSuffix(r.URL.Path, "/enable")
 	if err := s.store.SetEnabled(r.Context(), r.PathValue("name"), enabled); err != nil {
+		if errors.Is(err, store.ErrReadOnly) {
+			writeError(w, 403, "read_only", err.Error())
+			return
+		}
 		writeError(w, 404, "not_found", err.Error())
 		return
 	}
@@ -563,6 +574,9 @@ func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string
 	d, hash, err := s.store.Definition(ctx, name)
 	if err != nil {
 		return model.Run{}, false, &httpError{404, "not_found", "definition not found"}
+	}
+	if d.Source == "config" {
+		return model.Run{}, false, &httpError{403, "read_only", "config-owned definition is view only"}
 	}
 	if d.Kind == model.KindWorker {
 		return model.Run{}, false, &httpError{409, "trigger_rejected", "workers must be controlled through worker lifecycle endpoints"}
@@ -630,10 +644,23 @@ func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_found", "worker not found")
 		return
 	}
+	if d.Source == "config" {
+		writeError(w, 403, "read_only", "config-owned definition is view only")
+		return
+	}
 	s.super.StartDefinition(d)
 	writeJSON(w, 202, map[string]bool{"starting": true})
 }
 func (s *Server) workerStop(w http.ResponseWriter, r *http.Request) {
+	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
+	if err != nil || d.Kind != model.KindWorker {
+		writeError(w, 404, "not_found", "worker not found")
+		return
+	}
+	if d.Source == "config" {
+		writeError(w, 403, "read_only", "config-owned definition is view only")
+		return
+	}
 	if err := s.super.Stop(r.PathValue("name")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		internal(w, err)
 		return
@@ -644,6 +671,10 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
 	if err != nil || d.Kind != model.KindWorker {
 		writeError(w, 404, "not_found", "worker not found")
+		return
+	}
+	if d.Source == "config" {
+		writeError(w, 403, "read_only", "config-owned definition is view only")
 		return
 	}
 	s.super.Restart(d)
@@ -935,6 +966,13 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
+	editable := defs[:0]
+	for _, d := range defs {
+		if d.Source != "config" {
+			editable = append(editable, d)
+		}
+	}
+	defs = editable
 	if r.URL.Query().Get("format") == "json" {
 		writeJSON(w, 200, map[string]any{"definitions": defs})
 		return
@@ -1015,6 +1053,10 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = s.store.ImportDefinitions(r.Context(), defs, "api:import"); err != nil {
+		if errors.Is(err, store.ErrReadOnly) {
+			writeError(w, 403, "read_only", err.Error())
+			return
+		}
 		internal(w, err)
 		return
 	}

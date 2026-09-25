@@ -16,7 +16,8 @@ function literal(text: string): string {
 
 export function definitionToToml(def: Definition): { text: string; lineOf: Record<string, number> } {
   const isWorker = def.kind === 'worker';
-  const header = isWorker ? 'worker' : 'job';
+  const isInit = def.source === 'config' && def.run_on_start === true;
+  const header = isWorker ? 'worker' : isInit ? 'init' : 'job';
   const lines: string[] = [];
   const lineMap: Record<string, number> = {};
 
@@ -46,7 +47,7 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
     if (def.on_overlap) emit('on_overlap', 'on_overlap', literal(def.on_overlap));
     if (def.retries !== undefined) emit('retries', 'retries', String(def.retries));
     if (def.retry_delay !== undefined) emit('retry_delay', 'retry_delay', String(def.retry_delay));
-    if (def.run_on_start) emit('run_on_start', 'run_on_start', 'true');
+    if (def.run_on_start && !isInit) emit('run_on_start', 'run_on_start', 'true');
   }
   if (def.timezone) emit('timezone', 'timezone', literal(def.timezone));
   if (def.run_as) emit('run_as', 'run_as', literal(def.run_as));

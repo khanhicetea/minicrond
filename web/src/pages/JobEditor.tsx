@@ -46,7 +46,7 @@ export default function JobEditor({ params }: JobEditorProps) {
     if (initializedKey.current === editorKey) return;
     if (creating && copyFrom && source.data) {
       const { definition } = source.data;
-      setDraft({ ...definition, name: `${definition.name}-copy`, revision: undefined, definition_id: undefined });
+      setDraft({ ...definition, name: `${definition.name}-copy`, revision: undefined, definition_id: undefined, source: undefined, run_on_start: false, schedule: definition.schedule || '0 0 * * *' });
     } else if (!creating && detail.data) {
       setDraft({ ...detail.data.definition });
     } else if (creating && !copyFrom) {
@@ -92,6 +92,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   const hints = issues.filter(issue => issue.severity === 'hint');
 
   const submit = () => {
+	if (draft.source === 'config') return;
     if (errors.length > 0) {
       setTab('toml');
       return;
@@ -135,6 +136,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   if (loadedKey !== editorKey) return <div className="skeleton h-64 w-full" />;
 
   const isWorker = draft.kind === 'worker';
+	const configOwned = !creating && draft.source === 'config';
   const runAsEnabled = daemon.data?.capabilities.includes('run-as') ?? false;
 
   return (
@@ -153,15 +155,16 @@ export default function JobEditor({ params }: JobEditorProps) {
             {creating ? (isWorker ? 'New worker' : 'New job') : <span className="font-mono">{draft.name}</span>}
           </h1>
           {savedFlash && <span className="chip chip-success">Saved</span>}
+		  {configOwned && <span className="chip chip-info">Config owned · view only</span>}
         </div>
         <div className="flex items-center gap-2">
           <Link href={creating || !existingName ? '/jobs' : jobPath(existingName)} className="btn-sub">
             Cancel
           </Link>
-          <button type="button" className="btn-primary-x" onClick={submit} disabled={save.isPending}>
+          {!configOwned && <button type="button" className="btn-primary-x" onClick={submit} disabled={save.isPending}>
             {save.isPending && <Icon name="loader" size={14} className="spin" />}
             {creating ? 'Review changes' : 'Save changes'}
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -188,7 +191,7 @@ export default function JobEditor({ params }: JobEditorProps) {
             showKindTabs={creating && !copyFrom}
             nameLocked={!creating}
             draft={draft}
-            readOnly={save.isPending}
+            readOnly={save.isPending || configOwned}
             runAsEnabled={runAsEnabled}
             onChange={patch}
             formId={FORM_ID}
@@ -243,7 +246,7 @@ export default function JobEditor({ params }: JobEditorProps) {
       </div>
 
       {/* Edit mode: run history + danger zone */}
-      {!creating && existingName && (
+      {!creating && existingName && !configOwned && (
         <EditExtras name={existingName} onDelete={() => remove.mutate(existingName, { onSuccess: () => navigate('/jobs') })} deleting={remove.isPending} />
       )}
     </div>

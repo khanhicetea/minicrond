@@ -4,17 +4,18 @@ Status: implemented
 
 ## Single source of truth
 
-SQLite is the only authoritative store for job and worker definitions. Every
-create, edit, enable/disable, and delete operation changes the registry in one
-transaction and records a revision and audit entry. The scheduler and worker
-supervisor always reconcile from the registry.
+SQLite is authoritative for definitions created through the API or import.
+The main TOML file is authoritative for its `[[init]]`, `[[job]]`, and
+`[[worker]]` entries. Those entries are mirrored into SQLite in one
+transaction at startup and reload so runs retain stable IDs and history.
+The scheduler and worker supervisor reconcile from the registry.
 
 The daemon TOML file contains server, scheduler, storage, logs, alert channels,
-and optional `[defaults]` for jobs saved through the API or imported from TOML.
-It cannot contain `[[job]]`, `[[worker]]`, or `[include]`. Bootstrap defaults
+optional `[defaults]`, and optional config-owned definitions. It cannot
+contain `[include]`. Bootstrap defaults
 are copied into definitions when saved, not applied retroactively to registry
-entries. Startup and SIGHUP reload daemon settings and reconcile the runtime
-from the current registry; they never discover or watch job files.
+entries. Startup and SIGHUP reload the main file and reconcile the runtime.
+Init entries run in order before serving on startup; reload does not rerun them.
 
 ## TOML interchange
 
@@ -35,11 +36,11 @@ Import follows one path for CLI, API, and browser uploads:
    writing audit records.
 5. Reconcile the scheduler and worker supervisor from SQLite.
 
-An existing name is updated; a new name is created. There is no link mode,
-file authority, takeover, source tracking, or filesystem watcher. Changing or
-deleting an imported file has no effect until the operator imports it again.
+An existing registry-owned name is updated; a new name is created. Import
+cannot take over a config-owned name. There is no filesystem watcher. Changing
+or deleting an imported file has no effect until the operator imports it again.
 
-Export supports TOML bundles and canonical JSON. Runtime history and logs are
+Export includes registry-owned entries and supports TOML bundles and canonical JSON. Runtime history and logs are
 not part of definition export. Secrets are represented by their `env:` or
 `file:` references; referenced secret values are never embedded.
 

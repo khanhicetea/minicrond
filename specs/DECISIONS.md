@@ -86,6 +86,10 @@ Not debated — fixed inputs to every other decision.
 - Consequences: one edit and revision path serves UI, API, and CLI; imports
   are transactional; version-controlled TOML is applied explicitly. Spec `05`.
 
+2026-09-25 amendment: the main config may own `[[init]]`, `[[job]]`, and
+`[[worker]]` entries for container startup. They are mirrored into SQLite for
+run history and scheduling, but remain read-only through UI and API.
+
 ## ADR-4: System mode — root daemon with registered users
 
 - Date: 2026-08-26

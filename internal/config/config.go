@@ -23,12 +23,15 @@ import (
 )
 
 type Config struct {
-	Server        Server           `toml:"server" json:"server"`
-	Scheduler     Scheduler        `toml:"scheduler" json:"scheduler"`
-	Storage       Storage          `toml:"storage" json:"storage"`
-	Logs          Logs             `toml:"logs" json:"logs"`
-	Defaults      model.Definition `toml:"defaults" json:"-"`
-	AlertChannels []AlertChannel   `toml:"alert_channel" json:"alert_channels,omitempty"`
+	Server        Server             `toml:"server" json:"server"`
+	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
+	Storage       Storage            `toml:"storage" json:"storage"`
+	Logs          Logs               `toml:"logs" json:"logs"`
+	Defaults      model.Definition   `toml:"defaults" json:"-"`
+	AlertChannels []AlertChannel     `toml:"alert_channel" json:"alert_channels,omitempty"`
+	Init          []model.Definition `toml:"init" json:"-"`
+	Jobs          []model.Definition `toml:"job" json:"-"`
+	Workers       []model.Definition `toml:"worker" json:"-"`
 }
 
 type Server struct {
@@ -92,7 +95,46 @@ func Load(path string) (*Config, error) {
 	if err := validateConfig(&cfg); err != nil {
 		return nil, err
 	}
+	for i := range cfg.Init {
+		if cfg.Init[i].Schedule != "" {
+			return nil, fmt.Errorf("init %s cannot have schedule", cfg.Init[i].Name)
+		}
+		if cfg.Init[i].Retries != 0 {
+			return nil, fmt.Errorf("init %s cannot have retries", cfg.Init[i].Name)
+		}
+		cfg.Init[i].Kind, cfg.Init[i].Source, cfg.Init[i].RunOnStart = model.KindJob, "config", true
+		applyDefinitionDefaults(&cfg.Init[i], cfg.Defaults)
+		cfg.Init[i].Retries = 0
+	}
+	for i := range cfg.Jobs {
+		if cfg.Jobs[i].RunOnStart {
+			return nil, fmt.Errorf("job %s: use [[init]] for startup tasks", cfg.Jobs[i].Name)
+		}
+		if cfg.Jobs[i].Schedule == "" {
+			return nil, fmt.Errorf("job %s: schedule is required for config-owned jobs", cfg.Jobs[i].Name)
+		}
+		cfg.Jobs[i].Kind, cfg.Jobs[i].Source = model.KindJob, "config"
+		applyDefinitionDefaults(&cfg.Jobs[i], cfg.Defaults)
+	}
+	for i := range cfg.Workers {
+		cfg.Workers[i].Kind, cfg.Workers[i].Source = model.KindWorker, "config"
+		applyDefinitionDefaults(&cfg.Workers[i], model.Definition{})
+	}
+	defs := cfg.Definitions()
+	if err := validateDefinitions(defs, cfg.Scheduler.Timezone); err != nil {
+		return nil, fmt.Errorf("config definitions: %w", err)
+	}
+	copy(cfg.Init, defs)
+	copy(cfg.Jobs, defs[len(cfg.Init):])
+	copy(cfg.Workers, defs[len(cfg.Init)+len(cfg.Jobs):])
 	return &cfg, nil
+}
+
+func (c *Config) Definitions() []model.Definition {
+	defs := make([]model.Definition, 0, len(c.Init)+len(c.Jobs)+len(c.Workers))
+	defs = append(defs, c.Init...)
+	defs = append(defs, c.Jobs...)
+	return append(defs, c.Workers...)
 }
 
 func ParseImport(content []byte, jobDefaults ...model.Definition) ([]model.Definition, error) {
@@ -379,7 +421,7 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		if d.Priority != 0 {
 			return fmt.Errorf("%s.priority is not supported", d.Name)
 		}
-		if d.RunOnStart {
+		if d.RunOnStart && (d.Source != "config" || d.Kind != model.KindJob || d.Schedule != "") {
 			return fmt.Errorf("%s.run_on_start is not supported", d.Name)
 		}
 		if d.Kind == model.KindJob && d.Schedule != "" {

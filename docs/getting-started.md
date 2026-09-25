@@ -57,8 +57,9 @@ cat "$DATA/initial-token" && rm "$DATA/initial-token"
 
 ## 4. Create your first job
 
-Definitions live in the SQLite registry — not in the config file. Create
-them in the web UI, through the API, or by importing a TOML bundle. A
+Editable definitions live in the SQLite registry. Create them in the web UI,
+through the API, or by importing a TOML bundle. The main config can also
+hold view-only startup tasks, jobs, and workers. A
 minimal bundle:
 
 ```toml

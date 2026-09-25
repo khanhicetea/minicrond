@@ -106,6 +106,12 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err = st.Recover(ctx); err != nil {
 		return err
 	}
+	if err := validateAlertReferences(cfg.Definitions(), cfg.AlertChannels); err != nil {
+		return err
+	}
+	if err := st.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
+		return fmt.Errorf("sync config definitions: %w", err)
+	}
 	// Buffers orphaned by a crash (runs that never reached Close) are swept
 	// into the archive so their pre-crash output is not lost.
 	if err = logs.ArchiveOrphans(); err != nil {
@@ -192,6 +198,33 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		defer cancelAPI()
 		runErr = errors.Join(runErr, apiServer.Shutdown(apiCtx))
 	}()
+	for _, init := range cfg.Init {
+		if !init.IsEnabled() {
+			continue
+		}
+		def, hash, err := st.Definition(ctx, init.Name)
+		if err != nil {
+			return err
+		}
+		run, err := execService.Trigger(ctx, def, hash, "startup", nil)
+		if err != nil {
+			return fmt.Errorf("init %s: %w", init.Name, err)
+		}
+		if done := execService.Wait(run.ID); done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		finished, err := st.Run(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		if finished.Status != "succeeded" {
+			return fmt.Errorf("init %s: run %s ended %s", init.Name, run.ID, finished.Status)
+		}
+	}
 	if err := sched.Reload(ctx, defs); err != nil {
 		return err
 	}
@@ -242,11 +275,20 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := validateAlertReferences(defs, cfg.AlertChannels); err != nil {
+	active := cfg.Definitions()
+	for _, def := range defs {
+		if def.Source != "config" {
+			active = append(active, def)
+		}
+	}
+	if err := validateAlertReferences(active, cfg.AlertChannels); err != nil {
 		return err
 	}
 	if err := d.alerts.Reload(cfg.AlertChannels); err != nil {
 		return err
+	}
+	if err := d.store.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
+		return fmt.Errorf("sync config definitions: %w", err)
 	}
 	d.cfg = cfg
 	return d.reconcileLocked(ctx)

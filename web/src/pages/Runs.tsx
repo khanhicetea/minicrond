@@ -42,6 +42,7 @@ export default function Runs() {
   const jobs = useQuery(jobsQuery());
   const definitions = [...(jobs.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
   const selectedJob = definitions.find(job => job.name === requestedJob)?.name ?? (requestedJob ? '' : definitions[0]?.name ?? '');
+	const configOwned = definitions.find(job => job.name === selectedJob)?.source === 'config';
   const history = useInfiniteQuery({
     queryKey: ['run-pages', selectedJob, filter],
     queryFn: ({ pageParam, signal }) => api.listRunsPage(selectedJob, 100, pageParam, filter === 'all' ? '' : filter, signal),
@@ -175,9 +176,9 @@ export default function Runs() {
               <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                 {isActiveRun(detail.data) ? (
                   <button type="button" className="btn-danger-x" disabled={stop.isPending} onClick={() => { setActionError(''); stop.mutate(detail.data.run_id, { onError: err => setActionError(errorText(err)) }); }}><Icon name="square" size={13} />Stop</button>
-                ) : (
+                ) : !configOwned ? (
                   <button type="button" className="btn-sub" disabled={trigger.isPending} onClick={rerun}><Icon name="play" size={13} />Run again</button>
-                )}
+                ) : null}
                 <button type="button" className="btn-icon" title="Download raw log" aria-label="Download raw log" onClick={() => { setActionError(''); downloadFile(api.rawLogUrl(detail.data.run_id), `${detail.data.run_id}.log`, api.download).catch(err => setActionError(errorText(err))); }}><Icon name="download" size={16} /></button>
                 <Link href={`/runs/${detail.data.run_id}`} className="btn-icon" title="Full run details" aria-label="Full run details"><Icon name="external-link" size={16} /></Link>
               </div>

@@ -16,7 +16,8 @@ func TestMigration4AddsRetryParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := strings.Replace(schema, " parent_run_id TEXT,\n", "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=5;", "PRAGMA user_version=4;", 1)
+	old = strings.Replace(old, " source TEXT NOT NULL DEFAULT '',", "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=6;", "PRAGMA user_version=4;", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
 	}

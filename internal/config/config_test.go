@@ -41,18 +41,25 @@ func TestUnixOnlyConfigRequiresSocketAndIgnoresUnusedBind(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsDefinitionSources(t *testing.T) {
-	for name, content := range map[string]string{
-		"include": "[include]\npaths=['jobs/*.toml']\n",
-		"job":     "[[job]]\nname='hello'\ncommand='true'\n",
+func TestLoadConfigDefinitions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "[defaults]\nshell='/bin/bash'\n[[init]]\nname='prepare'\ncommand='true'\n[[job]]\nname='tick'\ncommand='true'\nschedule='@every 1m'\n[[worker]]\nname='serve'\ncommand='sleep 60'\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Definitions()) != 3 || !cfg.Init[0].RunOnStart || cfg.Init[0].Schedule != "" || cfg.Init[0].Source != "config" || cfg.Jobs[0].Shell != "/bin/bash" || cfg.Workers[0].Kind != model.KindWorker {
+		t.Fatalf("unexpected config definitions: %+v", cfg.Definitions())
+	}
+	for _, content := range []string{
+		"[include]\npaths=['jobs/*.toml']\n",
+		"[[init]]\nname='same'\ncommand='true'\n[[job]]\nname='same'\ncommand='true'\n",
+		"[[init]]\nname='bad'\ncommand='true'\nschedule='@daily'\n",
 	} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "minicron.toml")
-			mustWrite(t, path, content)
-			if _, err := Load(path); err == nil {
-				t.Fatal("expected settings parser to reject definition source")
-			}
-		})
+		mustWrite(t, path, content)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("accepted invalid config %q", content)
+		}
 	}
 }
 

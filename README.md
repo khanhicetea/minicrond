@@ -20,9 +20,10 @@ go build -o minicrond ./cmd/minicrond
   Streams survive crashes; buffers orphaned mid-write are salvaged at boot.
 - **Jobs *and* workers.** Cron jobs with catch-up and overlap policies,
   plus long-running supervised processes with restart policies.
-- **SQLite is the single source of truth.** Definitions live in the
-  registry; TOML bundles import/export explicitly (previewed and
-  hash-checked). No config-file drift.
+- **Clear definition ownership.** UI and API definitions live in SQLite;
+  TOML bundles import/export explicitly (previewed and hash-checked).
+  Main-config `[[init]]`, `[[job]]`, and `[[worker]]` entries stay file-owned
+  and appear read-only in the UI.
 - **Real auth model.** Bearer-token TCP API, mode-0600 token-free Unix
   socket for the local CLI, loopback-only by default, optional Unix-only mode, secrets referenced
   as `env:`/`file:` — never inline.
@@ -89,7 +90,10 @@ read and remove it as root. See [service operations](docs/operations.md#systemd-
 
 ### 2. Add jobs and workers
 
-Create definitions in the web UI, through the API, or import a TOML **bundle**.
+Create editable definitions in the web UI, through the API, or import a TOML **bundle**.
+For container startup, put `[[init]]` tasks and `[[worker]]` services in the
+main config. Init tasks finish in order before the daemon serves requests;
+their failure stops startup.
 For example, save this as `bundle.toml` (replace the example program paths
 with programs installed on your host):
 

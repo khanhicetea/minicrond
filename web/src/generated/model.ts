@@ -11,6 +11,7 @@ export interface Definition {
   name: string;
   kind: Kind;
   revision?: number /* int64 */;
+  source?: string;
   enabled?: boolean;
   command?: string;
   argv?: string[];

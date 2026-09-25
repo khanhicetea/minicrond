@@ -4,8 +4,9 @@ Status: Draft · Format decision: OQ-2 (TOML recommended) · Table style: OQ-4
 
 ## Philosophy
 
-- **One small settings file.** `minicron.toml` contains daemon settings only.
-- **One definition registry.** SQLite is authoritative. TOML bundles enter
+- **One main config file.** `minicron.toml` contains daemon settings and optional
+  config-owned startup tasks, jobs, and workers.
+- **One definition registry.** SQLite is authoritative for UI and API definitions. TOML bundles enter
   through explicit import and can be exported for review or version control
   (`05`). Imported files are never watched or linked.
 - **Strict and positional.** Unknown keys, bad durations, invalid cron fail
