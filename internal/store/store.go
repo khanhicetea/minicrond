@@ -906,18 +906,21 @@ func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, last time.Time, hash string, err error) {
+func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, last, next time.Time, hash string, err error) {
 	var anchorUS int64
-	var lastUS sql.NullInt64
-	err = s.db.QueryRowContext(ctx, "SELECT anchor_us,last_fire_us,schedule_hash FROM schedule_state WHERE definition_id=?", definitionID).Scan(&anchorUS, &lastUS, &hash)
+	var lastUS, nextUS sql.NullInt64
+	err = s.db.QueryRowContext(ctx, "SELECT anchor_us,last_fire_us,next_fire_us,schedule_hash FROM schedule_state WHERE definition_id=?", definitionID).Scan(&anchorUS, &lastUS, &nextUS, &hash)
 	if err != nil {
-		return time.Time{}, time.Time{}, "", err
+		return time.Time{}, time.Time{}, time.Time{}, "", err
 	}
 	anchor = time.UnixMicro(anchorUS)
 	if lastUS.Valid {
 		last = time.UnixMicro(lastUS.Int64)
 	}
-	return anchor, last, hash, nil
+	if nextUS.Valid {
+		next = time.UnixMicro(nextUS.Int64)
+	}
+	return anchor, last, next, hash, nil
 }
 func (s *Store) ScheduleNextBatch(ctx context.Context) (map[int64]time.Time, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,next_fire_us FROM schedule_state WHERE next_fire_us IS NOT NULL")

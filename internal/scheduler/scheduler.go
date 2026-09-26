@@ -64,9 +64,16 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		slog.Error("scheduler: canonicalizing definition failed", "job", d.Name, "error", err)
 		return
 	}
+	schedule, err := compileSchedule(d)
+	if err != nil {
+		slog.Error("scheduler: compiling schedule failed", "job", d.Name, "error", err)
+		return
+	}
 	hashBytes := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	hash := hex.EncodeToString(hashBytes[:])
-	anchor, last, storedHash, err := s.store.ScheduleState(ctx, d.ID)
+	anchor, last, persistedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
+	persistedLast := last
+	hasPersisted := err == nil && storedHash == hash
 	now := time.Now().UTC()
 	if err != nil || storedHash != hash {
 		anchor = now
@@ -75,29 +82,38 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			slog.Error("scheduler: initialize state failed", "job", d.Name, "error", err)
 			return
 		}
+		persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
+	}
+	// Only a successful database write advances the cached state. A reload can
+	// start from the next fire already stored by the previous loop.
+	persistNext := func(next time.Time) error {
+		if hasPersisted && persistedLast.Equal(last) && persistedNext.Equal(next) {
+			return nil
+		}
+		if err := s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next); err != nil {
+			return err
+		}
+		persistedLast, persistedNext, hasPersisted = last, next, true
+		return nil
 	}
 	if ctx.Err() != nil {
 		return
 	}
 	if !last.IsZero() && last.Before(now) {
-		next, err := nextFireDistinct(d, last, anchor, last)
+		next, err := schedule.nextFireDistinct(last, anchor, last)
 		if err == nil && next.Before(now) {
 			count := 0
 			cursor := next
 			latest := next
-			if raw, ok := strings.CutPrefix(d.Schedule, "@every "); ok {
-				interval, parseErr := time.ParseDuration(raw)
-				if parseErr != nil || interval <= 0 {
-					return
-				}
-				steps := now.Sub(next) / interval
-				latest = next.Add(steps * interval)
+			if schedule.interval > 0 {
+				steps := now.Sub(next) / schedule.interval
+				latest = next.Add(steps * schedule.interval)
 				count = int(steps + 1)
 			} else {
 				for !cursor.After(now) && count < 10000 {
 					latest = cursor
 					count++
-					cursor, _ = nextFireDistinct(d, cursor, anchor, latest)
+					cursor, _ = schedule.nextFireDistinct(cursor, anchor, latest)
 				}
 				if count == 10000 && !cursor.After(now) {
 					slog.Warn("scheduler: cron catch-up summarized at safety bound", "job", d.Name, "count", count)
@@ -122,17 +138,18 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 					slog.Error("scheduler: persist catch-up watermark failed", "job", d.Name, "error", stateErr)
 					return
 				}
+				persistedLast, persistedNext = last, time.Time{}
 			}
 		}
 	}
 	for ctx.Err() == nil {
-		next, err := nextFireDistinct(d, maxTime(last, time.Now().UTC()), anchor, last)
+		next, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
 			return
 		}
 		// Keep the pending fire in durable state so API clients can display
 		// the same instant the scheduler is waiting for.
-		if err := s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next); err != nil {
+		if err := persistNext(next); err != nil {
 			slog.Error("scheduler: persist next fire failed", "job", d.Name, "error", err)
 			return
 		}
@@ -153,12 +170,12 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			if !now.Before(next) {
 				break
 			}
-			recomputed, err := nextFireDistinct(d, maxTime(last, now), anchor, last)
+			recomputed, err := schedule.nextFireDistinct(maxTime(last, now), anchor, last)
 			if err != nil {
 				return
 			}
 			next = recomputed
-			if err := s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next); err != nil {
+			if err := persistNext(next); err != nil {
 				slog.Error("scheduler: persist recomputed fire failed", "job", d.Name, "error", err)
 				return
 			}
@@ -181,74 +198,104 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		// Publish the following fire immediately after triggering this one.
 		// This prevents the API from reporting the just-fired instant while
 		// the next scheduler iteration is being prepared.
-		following, err := nextFireDistinct(d, maxTime(last, time.Now().UTC()), anchor, last)
+		following, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
 			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
 				slog.Error("scheduler: persist watermark failed", "job", d.Name, "error", stateErr)
 			}
 			return
 		}
-		if err := s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, following); err != nil {
+		if err := persistNext(following); err != nil {
 			slog.Error("scheduler: persist following fire failed", "job", d.Name, "error", err)
 			return
 		}
 	}
 }
-func nextFireDistinct(d model.Definition, after, anchor, last time.Time) (time.Time, error) {
-	candidate, err := nextFire(d, after, anchor)
-	if err != nil || last.IsZero() || strings.HasPrefix(d.Schedule, "@every ") {
-		return candidate, err
+
+type compiledSchedule struct {
+	raw      string
+	interval time.Duration
+	loc      *time.Location
+	cron     cron.Schedule
+}
+
+func compileSchedule(d model.Definition) (compiledSchedule, error) {
+	c := compiledSchedule{raw: d.Schedule}
+	if raw, ok := strings.CutPrefix(d.Schedule, "@every "); ok {
+		interval, err := time.ParseDuration(raw)
+		if err != nil {
+			return c, err
+		}
+		if interval <= 0 {
+			return c, fmt.Errorf("schedule interval must be positive: %q", raw)
+		}
+		c.interval = interval
+		return c, nil
 	}
 	loc, err := time.LoadLocation(d.Timezone)
 	if err != nil {
+		return c, err
+	}
+	schedule, err := parser.Parse(d.Schedule)
+	if err != nil {
+		return c, err
+	}
+	c.loc, c.cron = loc, schedule
+	return c, nil
+}
+
+func nextFireDistinct(d model.Definition, after, anchor, last time.Time) (time.Time, error) {
+	c, err := compileSchedule(d)
+	if err != nil {
 		return time.Time{}, err
 	}
-	if sameWallMinute(last.In(loc), candidate.In(loc)) {
-		return nextFire(d, candidate, anchor)
+	return c.nextFireDistinct(after, anchor, last)
+}
+
+func (c compiledSchedule) nextFireDistinct(after, anchor, last time.Time) (time.Time, error) {
+	candidate, err := c.nextFire(after, anchor)
+	if err != nil || last.IsZero() || c.interval > 0 {
+		return candidate, err
+	}
+	if sameWallMinute(last.In(c.loc), candidate.In(c.loc)) {
+		return c.nextFire(candidate, anchor)
 	}
 	return candidate, nil
 }
 
 func nextFire(d model.Definition, after, anchor time.Time) (time.Time, error) {
-	if raw, ok := strings.CutPrefix(d.Schedule, "@every "); ok {
-		interval, err := time.ParseDuration(raw)
-		if err != nil {
-			return time.Time{}, err
-		}
-		if interval <= 0 {
-			return time.Time{}, fmt.Errorf("schedule interval must be positive: %q", raw)
-		}
+	c, err := compileSchedule(d)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return c.nextFire(after, anchor)
+}
+
+func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
+	if c.interval > 0 {
 		if after.Before(anchor) {
-			return anchor.Add(interval), nil
+			return anchor.Add(c.interval), nil
 		}
-		steps := after.Sub(anchor)/interval + 1
-		return anchor.Add(steps * interval), nil
+		steps := after.Sub(anchor)/c.interval + 1
+		return anchor.Add(steps * c.interval), nil
 	}
-	loc, err := time.LoadLocation(d.Timezone)
-	if err != nil {
-		return time.Time{}, err
-	}
-	schedule, err := parser.Parse(d.Schedule)
-	if err != nil {
-		return time.Time{}, err
-	}
-	candidate := schedule.Next(after.In(loc)).UTC()
+	candidate := c.cron.Next(after.In(c.loc)).UTC()
 	if candidate.IsZero() {
-		return time.Time{}, fmt.Errorf("schedule has no future occurrence: %q", d.Schedule)
+		return time.Time{}, fmt.Errorf("schedule has no future occurrence: %q", c.raw)
 	}
 
 	// Suppress the second instance of a wall-clock minute in a DST fold.
-	if sameWallMinute(after.In(loc), candidate.In(loc)) {
-		candidate = schedule.Next(candidate.In(loc)).UTC()
+	if sameWallMinute(after.In(c.loc), candidate.In(c.loc)) {
+		candidate = c.cron.Next(candidate.In(c.loc)).UTC()
 	}
 
 	// robfig/cron correctly skips nonexistent wall times. minicron's contract
 	// instead coalesces any matching minute in a forward gap at the transition.
-	if transition, oldOffset, newOffset, ok := forwardTransition(after, candidate, loc); ok {
+	if transition, oldOffset, newOffset, ok := forwardTransition(after, candidate, c.loc); ok {
 		fixed := time.FixedZone("before-dst", oldOffset)
 		gapStart := transition.In(fixed).Truncate(time.Minute)
 		for minute := gapStart; minute.Before(gapStart.Add(time.Duration(newOffset-oldOffset) * time.Second)); minute = minute.Add(time.Minute) {
-			if schedule.Next(minute.Add(-time.Minute)).Equal(minute) {
+			if c.cron.Next(minute.Add(-time.Minute)).Equal(minute) {
 				return transition.UTC(), nil
 			}
 		}
