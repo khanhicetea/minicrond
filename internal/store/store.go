@@ -20,7 +20,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -144,6 +144,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 6: %w", err)
 		}
 	}
+	if version <= 6 {
+		if _, err := s.db.ExecContext(ctx, migration7); err != nil {
+			return fmt.Errorf("migration 7: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -175,6 +180,7 @@ CREATE TABLE runs (
 CREATE INDEX idx_runs_job_time ON runs(job, queued_us DESC);
 CREATE INDEX idx_runs_time ON runs(queued_us DESC);
 CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
+CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
 CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('pending','running');
 CREATE UNIQUE INDEX idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
 CREATE TABLE schedule_state (
@@ -183,9 +189,10 @@ CREATE TABLE schedule_state (
 );
 CREATE TABLE audit (id INTEGER PRIMARY KEY, at_us INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, before TEXT, after TEXT);
 CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_us INTEGER NOT NULL, PRIMARY KEY(principal,operation,key));
+CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=6;
+PRAGMA user_version=7;
 COMMIT;`
 
 const migration3 = `
@@ -216,6 +223,13 @@ const migration6 = `
 BEGIN;
 ALTER TABLE definitions ADD COLUMN source TEXT NOT NULL DEFAULT '';
 PRAGMA user_version=6;
+COMMIT;`
+
+const migration7 = `
+BEGIN;
+CREATE INDEX IF NOT EXISTS idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
+CREATE INDEX IF NOT EXISTS idx_idempotency_run_time ON idempotency(run_id,created_us);
+PRAGMA user_version=7;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
@@ -874,35 +888,64 @@ func scanRun(row scanner) (model.Run, error) {
 	}
 	return r, nil
 }
-func (s *Store) RetentionCandidates(ctx context.Context, definitionID int64, keep int, olderThan time.Time) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id,ended_us FROM runs WHERE definition_id=? AND status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed') ORDER BY COALESCE(ended_us,queued_us) DESC`, definitionID)
+
+// RetentionCandidate is a run eligible for deletion and its position in the
+// stable newest-first ordering used to resume a sweep after this page.
+type RetentionCandidate struct {
+	ID     string
+	SortUS int64
+}
+
+// RetentionCandidates returns at most limit eligible runs after cursor. A
+// protected idempotency key is skipped while its 24-hour window is active.
+func (s *Store) RetentionCandidates(ctx context.Context, definitionID int64, keep int, olderThan time.Time, cursor *RetentionCandidate, limit int) ([]RetentionCandidate, error) {
+	if limit <= 0 {
+		return nil, errors.New("retention page limit must be positive")
+	}
+	countEnabled := keep > 0
+	boundaryOffset := max(keep, 1) - 1 // The newest terminal run always survives.
+	var after, sortUS int64
+	var id string
+	if cursor != nil {
+		after, sortUS, id = 1, cursor.SortUS, cursor.ID
+	}
+	rows, err := s.db.QueryContext(ctx, `
+WITH newest AS (
+ SELECT run_id FROM runs WHERE definition_id=? AND status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed')
+ ORDER BY COALESCE(ended_us,queued_us) DESC, run_id DESC LIMIT 1
+), boundary AS MATERIALIZED (
+ SELECT COALESCE(ended_us,queued_us) AS sort_us,run_id FROM runs
+ WHERE definition_id=? AND status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed')
+ ORDER BY sort_us DESC,run_id DESC LIMIT 1 OFFSET ?
+)
+SELECT r.run_id,COALESCE(r.ended_us,r.queued_us) AS sort_us FROM runs AS r
+WHERE r.definition_id=? AND r.status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed')
+ AND r.run_id NOT IN (SELECT run_id FROM newest)
+ AND ((? AND EXISTS (SELECT 1 FROM boundary AS b WHERE b.sort_us>COALESCE(r.ended_us,r.queued_us)
+      OR (b.sort_us=COALESCE(r.ended_us,r.queued_us) AND b.run_id>r.run_id)))
+      OR (? AND r.ended_us IS NOT NULL AND r.ended_us<?))
+ AND NOT EXISTS (SELECT 1 FROM idempotency AS i WHERE i.run_id=r.run_id AND i.created_us>?)
+ AND (?=0 OR sort_us<? OR (sort_us=? AND r.run_id<?))
+ORDER BY sort_us DESC,r.run_id DESC LIMIT ?`,
+		definitionID, definitionID, boundaryOffset, definitionID, countEnabled, !olderThan.IsZero(), olderThan.UnixMicro(),
+		time.Now().Add(-24*time.Hour).UnixMicro(), after, sortUS, sortUS, id, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
-	index := 0
+	var out []RetentionCandidate
 	for rows.Next() {
-		var id string
-		var ended sql.NullInt64
-		if err := rows.Scan(&id, &ended); err != nil {
+		var candidate RetentionCandidate
+		if err := rows.Scan(&candidate.ID, &candidate.SortUS); err != nil {
 			return nil, err
 		}
-		index++
-		if index == 1 {
-			continue
-		}
-		tooMany := keep > 0 && index > keep
-		tooOld := !olderThan.IsZero() && ended.Valid && time.UnixMicro(ended.Int64).Before(olderThan)
-		if tooMany || tooOld {
-			out = append(out, id)
-		}
+		out = append(out, candidate)
 	}
 	return out, rows.Err()
 }
 func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running')
-		AND run_id NOT IN (SELECT run_id FROM idempotency WHERE created_us>?)`, id, time.Now().Add(-24*time.Hour).UnixMicro())
+		AND NOT EXISTS (SELECT 1 FROM idempotency WHERE idempotency.run_id=runs.run_id AND created_us>?)`, id, time.Now().Add(-24*time.Hour).UnixMicro())
 	return err
 }
 

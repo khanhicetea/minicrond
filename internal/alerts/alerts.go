@@ -175,8 +175,38 @@ func (d *Dispatcher) batch() {
 			d.work <- group
 		}
 	}
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	resetDeadline := func() {
+		var next time.Time
+		for _, p := range batches {
+			if next.IsZero() || p.until.Before(next) {
+				next = p.until
+			}
+		}
+		if next.IsZero() {
+			if timer != nil {
+				timer.Stop()
+			}
+			deadline = nil
+			return
+		}
+		wait := time.Until(next)
+		if wait < 0 {
+			wait = 0
+		}
+		if timer == nil {
+			timer = time.NewTimer(wait)
+		} else {
+			timer.Reset(wait)
+		}
+		deadline = timer.C
+	}
 	for {
 		select {
 		case item, ok := <-d.queue:
@@ -187,6 +217,10 @@ func (d *Dispatcher) batch() {
 				return
 			}
 			p := batches[item.name]
+			if len(p.items) > 0 && !time.Now().Before(p.until) {
+				flush(item.name)
+				p = pending{}
+			}
 			if len(p.items) > 0 && p.items[0].channel != item.channel {
 				flush(item.name)
 				p = pending{}
@@ -199,12 +233,15 @@ func (d *Dispatcher) batch() {
 			if len(p.items) >= 256 {
 				flush(item.name)
 			}
-		case <-ticker.C:
+			resetDeadline()
+		case <-deadline:
+			now := time.Now()
 			for key, p := range batches {
-				if !time.Now().Before(p.until) {
+				if !now.Before(p.until) {
 					flush(key)
 				}
 			}
+			resetDeadline()
 		}
 	}
 }

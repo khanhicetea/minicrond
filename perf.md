@@ -9,8 +9,8 @@ The suggested changes preserve the current API, UI refresh behavior, exact run m
 | 1 (implemented) | Many scheduled jobs, especially low-frequency cron jobs | Avoid unchanged schedule-state writes and repeated schedule parsing | Less idle CPU, SQLite work, and WAL I/O |
 | 2 | High-volume logs or many simultaneous log readers | Use constant-time live-tail eviction and smaller internal read batches | Less CPU per frame and lower peak heap |
 | 3 | Large run history with the dashboard or metrics page open | Make metrics scan index-friendly and bound temporary work | Less query CPU and temporary memory |
-| 4 | Idle daemon or long-running alert batches | Replace the alert poll ticker with deadline timers | Fewer idle wakeups |
-| 5 | Large retained history | Select and delete retention candidates in bounded batches | Lower sweep memory and shorter database stalls |
+| 4 (implemented) | Idle daemon or long-running alert batches | Replace the alert poll ticker with a deadline timer | Fewer idle wakeups |
+| 5 (implemented) | Large retained history | Select and delete retention candidates in bounded pages | Lower sweep memory and shorter database stalls |
 
 ## 1. Scheduler: persist only changed state, compile once per job
 
@@ -53,11 +53,11 @@ The function also stores durations in global, per-job, and per-bucket slices, th
 
 ## 4. Alerts: wake only at the next deadline
 
-The alert batcher creates a 100 ms ticker at startup and checks its map on every tick, even with no alert channels or pending batches ([`alerts.go`](internal/alerts/alerts.go), lines 150–209). Use one resettable timer for the earliest pending `until`; disable it when the map is empty. Recompute the earliest deadline after an item arrives, a batch flushes, or a channel reload splits a batch. Keep the same configured batch windows and immediate flush on shutdown. This chiefly improves an otherwise idle daemon; the absolute CPU saving should be measured.
+The alert batcher now uses one resettable timer for the earliest pending `until` and disables it when the map is empty ([`alerts.go`](internal/alerts/alerts.go)). It recomputes the deadline after an item arrives, a batch flushes, or a channel reload splits a batch. Configured batch windows and immediate shutdown flush remain in place. The previous 100 ms ticker woke even with no pending batches. The absolute CPU saving has not been measured.
 
 ## 5. Retention: process candidates in pages
 
-The hourly sweep loops over every definition, materializes all terminal runs for each one, then accumulates every candidate ID before deleting each run and its logs ([`daemon.go`](internal/daemon/daemon.go), lines 344–393; [`store.go`](internal/store/store.go), lines 877–906). Select only expired/excess runs and return a bounded page, then repeat until caught up. Preserve the rule that the newest run is kept, even if older than `keep_for`, and preserve the 24-hour idempotency protection in `DeleteRun`. Page-size limits reduce peak memory and allow cancellation to interrupt a long sweep. A suitable index or query plan can also avoid repeatedly sorting all terminal runs; measure the write cost of any new index.
+The hourly sweep now selects eligible runs in pages of 128 and checks cancellation between pages and deletions ([`daemon.go`](internal/daemon/daemon.go); [`store.go`](internal/store/store.go)). The query uses a stable newest-first cursor, retains the newest terminal run even when it is older than `keep_for`, and skips runs protected by a live 24-hour idempotency key before deleting their logs. A new expression index supplies the retention order; a run/time index supports the idempotency check. The query plan uses both indexes, but the sweep's memory, stall time, and added index write cost have not been measured.
 
 ## How to validate changes
 

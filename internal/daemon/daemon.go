@@ -355,6 +355,7 @@ func (d *Daemon) retentionLoop(ctx context.Context) {
 	}
 }
 func (d *Daemon) sweepRetention(ctx context.Context) {
+	const pageSize = 128
 	d.mu.Lock()
 	storageCfg := d.cfg.Storage
 	d.mu.Unlock()
@@ -367,6 +368,9 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 		slog.Error("metadata retention failed", "error", err)
 	}
 	for _, def := range defs {
+		if ctx.Err() != nil {
+			return
+		}
 		keep := def.KeepRuns
 		if keep == 0 {
 			keep = storageCfg.KeepRunsDefault
@@ -375,18 +379,35 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 		if keepFor == 0 {
 			keepFor = storageCfg.KeepForDefault
 		}
-		ids, err := d.store.RetentionCandidates(ctx, def.ID, keep, time.Now().Add(-time.Duration(keepFor)*24*time.Hour))
-		if err != nil {
-			slog.Error("run retention selection failed", "definition", def.Name, "error", err)
-			continue
-		}
-		for _, id := range ids {
-			if err := d.logs.Delete(id); err != nil {
-				slog.Error("retained log deletion failed", "run", id, "error", err)
-				continue
+		olderThan := time.Now().Add(-time.Duration(keepFor) * 24 * time.Hour)
+		var cursor *store.RetentionCandidate
+		for {
+			if ctx.Err() != nil {
+				return
 			}
-			if err := d.store.DeleteRun(ctx, id); err != nil {
-				slog.Error("retained run deletion failed", "run", id, "error", err)
+			page, err := d.store.RetentionCandidates(ctx, def.ID, keep, olderThan, cursor, pageSize)
+			if err != nil {
+				slog.Error("run retention selection failed", "definition", def.Name, "error", err)
+				break
+			}
+			if len(page) == 0 {
+				break
+			}
+			for _, candidate := range page {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := d.logs.Delete(candidate.ID); err != nil {
+					slog.Error("retained log deletion failed", "run", candidate.ID, "error", err)
+					continue
+				}
+				if err := d.store.DeleteRun(ctx, candidate.ID); err != nil {
+					slog.Error("retained run deletion failed", "run", candidate.ID, "error", err)
+				}
+			}
+			cursor = &page[len(page)-1]
+			if len(page) < pageSize {
+				break
 			}
 		}
 	}

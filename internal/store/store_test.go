@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func TestCrashRecoveryAndRetentionKeepNewest(t *testing.T) {
 	if recovered.Status != "interrupted" {
 		t.Fatalf("status = %s", recovered.Status)
 	}
-	ids, err := s.RetentionCandidates(t.Context(), d.ID, 1, time.Time{})
+	ids, err := s.RetentionCandidates(t.Context(), d.ID, 1, time.Time{}, nil, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +249,7 @@ func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 		}
 	}
 	// keep=2 and nothing older than cutoff: only count overflow applies.
-	stale, err := s.RetentionCandidates(t.Context(), stored.ID, 2, time.Now().UTC().Add(-1000*time.Hour))
+	stale, err := s.RetentionCandidates(t.Context(), stored.ID, 2, time.Now().UTC().Add(-1000*time.Hour), nil, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,10 +257,10 @@ func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 		t.Fatalf("expected 3 candidates past keep=2, got %v", stale)
 	}
 	for _, id := range stale {
-		if id == ids[4] {
+		if id.ID == ids[4] {
 			t.Fatal("newest terminal run must always be retained")
 		}
-		if err := s.DeleteRun(t.Context(), id); err != nil {
+		if err := s.DeleteRun(t.Context(), id.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -272,9 +273,79 @@ func TestRetentionKeepsNewestTerminalRun(t *testing.T) {
 	}
 	// Age cap: everything except the newest eventually expires.
 	cutoff := time.Now().UTC().Add(-1 * time.Hour)
-	stale, _ = s.RetentionCandidates(t.Context(), stored.ID, 0, cutoff)
-	if len(stale) == 0 || stale[0] == ids[4] {
+	stale, _ = s.RetentionCandidates(t.Context(), stored.ID, 0, cutoff, nil, 10)
+	if len(stale) == 0 || stale[0].ID == ids[4] {
 		t.Fatalf("age cap must expire old runs but keep the newest: %v", stale)
+	}
+}
+
+func TestRetentionCandidatesPagesAndIdempotency(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	def, err := s.PutDefinition(t.Context(), model.Definition{
+		Name: "pages", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC",
+		OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0},
+	}, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-48 * time.Hour)
+	for i := range 7 {
+		at := base.Add(time.Duration(i) * time.Hour)
+		if i == 3 {
+			at = base.Add(4 * time.Hour) // Equal sort keys need a stable run-ID tie break.
+		}
+		r := model.Run{ID: fmt.Sprintf("run-%d", i), DefinitionID: def.ID, Job: def.Name,
+			Kind: def.Kind, Revision: def.Revision, Status: "succeeded", Trigger: "manual", QueuedAt: at, EndedAt: &at}
+		if err := s.CreateRun(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveIdempotency(t.Context(), "client", "trigger", "protected", "hash", "run-2"); err != nil {
+		t.Fatal(err)
+	}
+	// An expired key must not hold its run indefinitely.
+	if _, err := s.db.ExecContext(t.Context(), `INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us)
+		VALUES('client','trigger','expired','hash','run-1',?)`, time.Now().Add(-25*time.Hour).UnixMicro()); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	var cursor *RetentionCandidate
+	for {
+		page, err := s.RetentionCandidates(t.Context(), def.ID, 2, time.Time{}, cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, candidate := range page {
+			got = append(got, candidate.ID)
+			if err := s.DeleteRun(t.Context(), candidate.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cursor = &page[len(page)-1]
+	}
+	want := []string{"run-4", "run-3", "run-1", "run-0"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("paged candidates = %v, want %v", got, want)
+	}
+	page, err := s.RetentionCandidates(t.Context(), def.ID, 0, time.Time{}, nil, 10)
+	if err != nil || len(page) != 0 {
+		t.Fatalf("retention with no count or age cap = %v, %v", page, err)
+	}
+	// Age expiration may remove a run inside the count allowance, but never
+	// the newest run. The protected run remains until its key expires.
+	page, err = s.RetentionCandidates(t.Context(), def.ID, 2, time.Now().Add(-time.Hour), nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].ID != "run-5" {
+		t.Fatalf("age candidates = %v, want run-5", page)
 	}
 }
 

@@ -73,6 +73,42 @@ func TestBatchWindowSendsWithoutClose(t *testing.T) {
 	}
 }
 
+func TestBatchReloadFlushesPreviousChannel(t *testing.T) {
+	t.Setenv("BOT_TOKEN", "test")
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldChannel := &captureChannel{messages: make(chan Alert, 1)}
+	newChannel := &captureChannel{messages: make(chan Alert, 1)}
+	d.mu.Lock()
+	d.channels["ops"] = oldChannel
+	d.mu.Unlock()
+	def := model.Definition{Alerts: []string{"ops"}}
+	d.Notify(model.Run{ID: "before", Status: "failed"}, def)
+	d.mu.Lock()
+	d.channels["ops"] = newChannel
+	d.mu.Unlock()
+	d.Notify(model.Run{ID: "after", Status: "failed"}, def)
+	if err := d.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for name, ch := range map[string]*captureChannel{"old": oldChannel, "new": newChannel} {
+		select {
+		case got := <-ch.messages:
+			want := "before"
+			if name == "new" {
+				want = "after"
+			}
+			if len(got.Runs) != 1 || got.Runs[0].ID != want {
+				t.Fatalf("%s channel batch = %#v, want %s", name, got, want)
+			}
+		default:
+			t.Fatalf("%s channel received no batch", name)
+		}
+	}
+}
+
 func TestFormatBatch(t *testing.T) {
 	text := formatAlert(Alert{Runs: []model.Run{{ID: "one", Job: "backup", Status: "failed"}, {ID: "two", Job: "worker", Status: "timeout"}}})
 	for _, want := range []string{"minicrond alerts", "Run: one", "Run: two", "Status: timeout"} {
