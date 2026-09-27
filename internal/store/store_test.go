@@ -183,6 +183,147 @@ func TestRunMetricsCountsBeyondRunsLimit(t *testing.T) {
 	}
 }
 
+func TestRunMetricsExactPercentilesAcrossScopes(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ids := make(map[string]int64)
+	for _, name := range []string{"a", "b"} {
+		d := model.Definition{Name: name, Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+		d, err = s.PutDefinition(t.Context(), d, 0, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = d.ID
+	}
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	for i, row := range []struct {
+		job                  string
+		queued, started, end int
+	}{
+		{"a", 10, 20, 21},
+		{"a", 40, 70, 73},
+		{"a", 70, 80, 85},
+		{"b", 80, 90, 97},
+		{"b", 90, 95, 104},
+		{"b", -10, 25, 36}, // bucket-only duration; excluded from job/global values
+	} {
+		_, err := s.db.ExecContext(t.Context(), `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,trigger,queued_us,started_us,ended_us)
+			VALUES(?,?,?,'job',1,'hash','succeeded','manual',?,?,?)`, fmt.Sprintf("p-%d", i), ids[row.job], row.job,
+			base.Add(time.Duration(row.queued)*time.Minute).UnixMicro(),
+			base.Add(time.Duration(row.started)*time.Minute).UnixMicro(),
+			base.Add(time.Duration(row.end)*time.Minute).UnixMicro())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	metrics, err := s.RunMetrics(t.Context(), base, base.Add(2*time.Hour), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(name string, got *int64, want int64) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Fatalf("%s = %v, want %d", name, got, want)
+		}
+	}
+	check("global p50", metrics.DurationP50MS, 5*60*1000)
+	check("global p95", metrics.DurationP95MS, 9*60*1000)
+	if len(metrics.Jobs) != 2 || metrics.Jobs[0].Name != "a" || metrics.Jobs[1].Name != "b" {
+		t.Fatalf("jobs = %#v", metrics.Jobs)
+	}
+	check("a p50", metrics.Jobs[0].DurationP50MS, 3*60*1000)
+	check("a p95", metrics.Jobs[0].DurationP95MS, 5*60*1000)
+	check("b p50", metrics.Jobs[1].DurationP50MS, 9*60*1000)
+	check("b p95", metrics.Jobs[1].DurationP95MS, 9*60*1000)
+	check("bucket 0 p50", metrics.Buckets[0].DurationP50MS, 11*60*1000)
+	check("bucket 0 p95", metrics.Buckets[0].DurationP95MS, 11*60*1000)
+	check("bucket 1 p50", metrics.Buckets[1].DurationP50MS, 7*60*1000)
+	check("bucket 1 p95", metrics.Buckets[1].DurationP95MS, 9*60*1000)
+}
+
+func TestRunMetricsPercentilesMatchIndependentGrouping(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ids := make(map[string]int64)
+	for _, name := range []string{"a", "b", "c"} {
+		d := model.Definition{Name: name, Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}
+		d, err = s.PutDefinition(t.Context(), d, 0, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = d.ID
+	}
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	var global []int64
+	byJob := make(map[string][]int64)
+	byBucket := make([][]int64, 6)
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 300 {
+		job := []string{"a", "b", "c"}[i%3]
+		queuedMinute := (i*37)%181 - 30
+		startedMinute := queuedMinute + 1
+		durationMinute := (i * 13) % 21
+		endedMinute := startedMinute + durationMinute
+		_, err := tx.ExecContext(t.Context(), `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,trigger,queued_us,started_us,ended_us)
+			VALUES(?,?,?,'job',1,'hash','succeeded','manual',?,?,?)`, fmt.Sprintf("g-%d", i), ids[job], job,
+			base.Add(time.Duration(queuedMinute)*time.Minute).UnixMicro(),
+			base.Add(time.Duration(startedMinute)*time.Minute).UnixMicro(),
+			base.Add(time.Duration(endedMinute)*time.Minute).UnixMicro())
+		if err != nil {
+			t.Fatal(err)
+		}
+		durationMS := int64(durationMinute) * 60 * 1000
+		if queuedMinute >= 0 && queuedMinute <= 120 {
+			global = append(global, durationMS)
+			byJob[job] = append(byJob[job], durationMS)
+		}
+		if endedMinute >= 0 && endedMinute <= 120 {
+			bucket := min(5, endedMinute/20)
+			byBucket[bucket] = append(byBucket[bucket], durationMS)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := s.RunMetrics(t.Context(), base, base.Add(2*time.Hour), 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := func(values []int64, p float64) *int64 {
+		if len(values) == 0 {
+			return nil
+		}
+		slices.Sort(values)
+		v := values[min(len(values)-1, int(float64(len(values))*p))]
+		return &v
+	}
+	check := func(label string, got, expected *int64) {
+		t.Helper()
+		if (got == nil) != (expected == nil) || (got != nil && *got != *expected) {
+			t.Fatalf("%s = %v, want %v", label, got, expected)
+		}
+	}
+	check("global p50", metrics.DurationP50MS, want(global, 0.5))
+	check("global p95", metrics.DurationP95MS, want(global, 0.95))
+	for _, job := range metrics.Jobs {
+		check(job.Name+" p50", job.DurationP50MS, want(byJob[job.Name], 0.5))
+		check(job.Name+" p95", job.DurationP95MS, want(byJob[job.Name], 0.95))
+	}
+	for i, bucket := range metrics.Buckets {
+		check(fmt.Sprintf("bucket %d p50", i), bucket.DurationP50MS, want(byBucket[i], 0.5))
+		check(fmt.Sprintf("bucket %d p95", i), bucket.DurationP95MS, want(byBucket[i], 0.95))
+	}
+}
+
 func TestRunsPageKeepsStableOrderWhenNewRunArrives(t *testing.T) {
 	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {
@@ -346,6 +487,42 @@ func TestRetentionCandidatesPagesAndIdempotency(t *testing.T) {
 	}
 	if len(page) != 1 || page[0].ID != "run-5" {
 		t.Fatalf("age candidates = %v, want run-5", page)
+	}
+}
+
+func TestDeleteRunsKeepsActiveAndIdempotentRuns(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	def, err := s.PutDefinition(t.Context(), model.Definition{Name: "batch", Kind: model.KindJob, Command: "true", Shell: "/bin/sh", Timezone: "UTC", OnOverlap: "skip", CatchUp: "none", SuccessCodes: []int{0}}, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-time.Hour)
+	for _, row := range []struct{ id, status string }{{"active", "running"}, {"protected", "succeeded"}, {"free", "succeeded"}} {
+		r := model.Run{ID: row.id, DefinitionID: def.ID, Job: def.Name, Kind: def.Kind, Revision: def.Revision, Status: row.status, Trigger: "manual", QueuedAt: at}
+		if err := s.CreateRun(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveIdempotency(t.Context(), "client", "trigger", "key", "hash", "protected"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRuns(t.Context(), []string{"active", "protected", "free"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"active", "protected"} {
+		if _, err := s.Run(t.Context(), id); err != nil {
+			t.Fatalf("guarded run %q was deleted: %v", id, err)
+		}
+	}
+	if _, err := s.Run(t.Context(), "free"); err != sql.ErrNoRows {
+		t.Fatalf("free run lookup = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.DeleteRuns(t.Context(), nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

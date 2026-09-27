@@ -20,7 +20,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -149,6 +149,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 7: %w", err)
 		}
 	}
+	if version <= 7 {
+		if _, err := s.db.ExecContext(ctx, migration8); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -179,6 +184,7 @@ CREATE TABLE runs (
 );
 CREATE INDEX idx_runs_job_time ON runs(job, queued_us DESC);
 CREATE INDEX idx_runs_time ON runs(queued_us DESC);
+CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);
 CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
 CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
 CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('pending','running');
@@ -192,7 +198,7 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=7;
+PRAGMA user_version=8;
 COMMIT;`
 
 const migration3 = `
@@ -230,6 +236,12 @@ BEGIN;
 CREATE INDEX IF NOT EXISTS idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
 CREATE INDEX IF NOT EXISTS idx_idempotency_run_time ON idempotency(run_id,created_us);
 PRAGMA user_version=7;
+COMMIT;`
+
+const migration8 = `
+BEGIN;
+CREATE INDEX IF NOT EXISTS idx_runs_end_time ON runs(ended_us DESC);
+PRAGMA user_version=8;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
@@ -714,12 +726,22 @@ func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, fil
 func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets int) (RunMetrics, error) {
 	buckets = min(max(buckets, 1), 288)
 	out := RunMetrics{Buckets: make([]RunMetricBucket, buckets)}
-	jobDurations := make(map[string][]int64)
-	bucketDurations := make([][]int64, buckets)
+	// A sample can contribute to the window-wide/job percentiles, a bucket
+	// percentile, or both. Keeping one record avoids three duration copies
+	// for the common case where a run starts and ends in the same window.
+	type durationSample struct {
+		value  int64
+		job    int32
+		bucket int16
+	}
+	var samples []durationSample
+	var durationCount int
+	var jobs []*RunJobMetrics
+	var jobDurationCounts []int
+	bucketDurationCounts := make([]int, buckets)
 	queuedDiff := make([]int, buckets+1)
 	activeDiff := make([]int, buckets+1)
-	jobStats := make(map[string]*RunJobMetrics)
-	var durations []int64
+	jobStats := make(map[string]int32)
 	startUS, endUS := since.UnixMicro(), now.UnixMicro()
 	windowUS := max(endUS-startUS, 1)
 	bucketIndex := func(us int64) int {
@@ -741,12 +763,15 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 	}
 	isActive := func(status string) bool { return status == "pending" || status == "running" }
 	jobEntry := func(name string) *RunJobMetrics {
-		entry := jobStats[name]
-		if entry == nil {
-			entry = &RunJobMetrics{Name: name}
-			jobStats[name] = entry
+		index, ok := jobStats[name]
+		if !ok {
+			index = int32(len(jobs))
+			jobStats[name] = index
+			entry := &RunJobMetrics{Name: name}
+			jobs = append(jobs, entry)
+			jobDurationCounts = append(jobDurationCounts, 0)
 		}
-		return entry
+		return jobs[index]
 	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('pending','running')`, startUS, startUS)
@@ -761,6 +786,11 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		if err := rows.Scan(&job, &status, &queuedUS, &started, &ended); err != nil {
 			return out, err
 		}
+		hasDuration := started.Valid && ended.Valid && ended.Int64 >= started.Int64
+		sample := durationSample{job: -1, bucket: -1}
+		if hasDuration {
+			sample.value = (ended.Int64 - started.Int64) / 1000
+		}
 		queuedInWindow := queuedUS >= startUS && queuedUS <= endUS
 		if queuedInWindow {
 			out.Total++
@@ -773,10 +803,10 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 				out.Failed++
 				entry.Failed++
 			}
-			if started.Valid && ended.Valid && ended.Int64 >= started.Int64 {
-				duration := (ended.Int64 - started.Int64) / 1000
-				durations = append(durations, duration)
-				jobDurations[job] = append(jobDurations[job], duration)
+			if hasDuration {
+				sample.job = jobStats[job]
+				durationCount++
+				jobDurationCounts[sample.job]++
 			}
 		}
 		if isActive(status) {
@@ -795,9 +825,13 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 			} else if isFailed(status) {
 				out.Buckets[index].Failure++
 			}
-			if started.Valid && ended.Int64 >= started.Int64 {
-				bucketDurations[index] = append(bucketDurations[index], (ended.Int64-started.Int64)/1000)
+			if hasDuration {
+				sample.bucket = int16(index)
+				bucketDurationCounts[index]++
 			}
+		}
+		if sample.job >= 0 || sample.bucket >= 0 {
+			samples = append(samples, sample)
 		}
 		endedUS := endUS + 1
 		if ended.Valid && ended.Int64 < endedUS {
@@ -822,15 +856,55 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		out.Buckets[i].Queued = queuedNow
 		out.Buckets[i].Active = activeNow
 	}
-	out.DurationP50MS = percentileMS(durations, 0.5)
-	out.DurationP95MS = percentileMS(durations, 0.95)
-	for i := range buckets {
-		out.Buckets[i].DurationP50MS = percentileMS(bucketDurations[i], 0.5)
-		out.Buckets[i].DurationP95MS = percentileMS(bucketDurations[i], 0.95)
+	slices.SortFunc(samples, func(a, b durationSample) int { return cmp.Compare(a.value, b.value) })
+	globalP50, globalP95 := percentileRanks(durationCount)
+	globalSeen := 0
+	jobSeen := make([]int, len(jobs))
+	jobP50, jobP95 := make([]int, len(jobs)), make([]int, len(jobs))
+	for i, count := range jobDurationCounts {
+		jobP50[i], jobP95[i] = percentileRanks(count)
 	}
-	for name, entry := range jobStats {
-		entry.DurationP50MS = percentileMS(jobDurations[name], 0.5)
-		entry.DurationP95MS = percentileMS(jobDurations[name], 0.95)
+	bucketSeen := make([]int, buckets)
+	bucketP50, bucketP95 := make([]int, buckets), make([]int, buckets)
+	for i, count := range bucketDurationCounts {
+		bucketP50[i], bucketP95[i] = percentileRanks(count)
+	}
+	for _, sample := range samples {
+		if sample.job >= 0 {
+			if globalSeen == globalP50 {
+				v := sample.value
+				out.DurationP50MS = &v
+			}
+			if globalSeen == globalP95 {
+				v := sample.value
+				out.DurationP95MS = &v
+			}
+			globalSeen++
+			index := int(sample.job)
+			if jobSeen[index] == jobP50[index] {
+				v := sample.value
+				jobs[index].DurationP50MS = &v
+			}
+			if jobSeen[index] == jobP95[index] {
+				v := sample.value
+				jobs[index].DurationP95MS = &v
+			}
+			jobSeen[index]++
+		}
+		if sample.bucket >= 0 {
+			index := int(sample.bucket)
+			if bucketSeen[index] == bucketP50[index] {
+				v := sample.value
+				out.Buckets[index].DurationP50MS = &v
+			}
+			if bucketSeen[index] == bucketP95[index] {
+				v := sample.value
+				out.Buckets[index].DurationP95MS = &v
+			}
+			bucketSeen[index]++
+		}
+	}
+	for _, entry := range jobs {
 		out.Jobs = append(out.Jobs, *entry)
 	}
 	slices.SortFunc(out.Jobs, func(a, b RunJobMetrics) int {
@@ -839,13 +913,11 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 	return out, nil
 }
 
-func percentileMS(values []int64, p float64) *int64 {
-	if len(values) == 0 {
-		return nil
+func percentileRanks(count int) (int, int) {
+	if count == 0 {
+		return -1, -1
 	}
-	slices.Sort(values)
-	v := values[min(len(values)-1, int(float64(len(values))*p))]
-	return &v
+	return min(count-1, int(float64(count)*0.5)), min(count-1, int(float64(count)*0.95))
 }
 
 func (s *Store) Run(ctx context.Context, id string) (model.Run, error) {
@@ -946,6 +1018,24 @@ ORDER BY sort_us DESC,r.run_id DESC LIMIT ?`,
 func (s *Store) DeleteRun(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running')
 		AND NOT EXISTS (SELECT 1 FROM idempotency WHERE idempotency.run_id=runs.run_id AND created_us>?)`, id, time.Now().Add(-24*time.Hour).UnixMicro())
+	return err
+}
+
+// DeleteRuns applies the same terminal and idempotency guards as DeleteRun
+// to one retention page in a single atomic statement.
+func (s *Store) DeleteRuns(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, time.Now().Add(-24*time.Hour).UnixMicro())
+	query := `DELETE FROM runs WHERE run_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `)
+		AND status NOT IN ('pending','running')
+		AND NOT EXISTS (SELECT 1 FROM idempotency WHERE idempotency.run_id=runs.run_id AND created_us>?)`
+	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
 }
 

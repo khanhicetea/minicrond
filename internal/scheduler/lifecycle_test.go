@@ -56,3 +56,66 @@ func TestStopJoinsSchedulingLoops(t *testing.T) {
 		t.Fatalf("unexpected runs: %v", runs)
 	}
 }
+
+func TestReloadKeepsUnchangedLoopAndJoinsChangedLoop(t *testing.T) {
+	st, _, s := setup(t)
+	d := worker("selective", "none")
+	d.Schedule = "0 0 1 1 *"
+	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	defs, err := st.Definitions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(t.Context(), defs); err != nil {
+		t.Fatal(err)
+	}
+	first := s.running[d.Name]
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		next, err := st.ScheduleNextBatch(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !next[defs[0].ID].IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first loop did not publish next fire")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := s.Reload(t.Context(), defs); err != nil {
+		t.Fatal(err)
+	}
+	if s.running[d.Name].done != first.done {
+		t.Fatal("unchanged definition restarted its loop")
+	}
+	changed := defs[0]
+	changed.Command = "printf changed"
+	changed.Revision++
+	if err := s.Reload(t.Context(), []model.Definition{changed}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("changed loop was not joined before replacement")
+	}
+	second := s.running[d.Name]
+	if second.done == first.done {
+		t.Fatal("changed definition kept the old loop")
+	}
+	if err := s.Reload(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-second.done:
+	default:
+		t.Fatal("removed definition left its loop running")
+	}
+	if len(s.running) != 0 {
+		t.Fatalf("running loops = %d, want 0", len(s.running))
+	}
+}

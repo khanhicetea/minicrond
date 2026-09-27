@@ -120,3 +120,37 @@ func TestDeleteRunAndPrune(t *testing.T) {
 		t.Fatalf("stats after prune = %d/%d", runs, chunks)
 	}
 }
+
+func TestDeleteRunsRollsBackOnFailure(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for _, id := range []string{"first", "blocked", "last"} {
+		if err := l.PutChunks(t.Context(), id, "job", "job", time.Now(), []Chunk{chunk(1, 1, 1, []byte("blob"))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.db.ExecContext(t.Context(), `CREATE TRIGGER block_delete BEFORE DELETE ON log_runs
+		WHEN OLD.run_id='blocked' BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.DeleteRuns(t.Context(), []string{"first", "blocked", "last"}); err == nil {
+		t.Fatal("batch should fail")
+	}
+	runs, chunks, _, err := l.Stats(t.Context())
+	if err != nil || runs != 3 || chunks != 3 {
+		t.Fatalf("failed batch changed archive: runs=%d chunks=%d err=%v", runs, chunks, err)
+	}
+	if _, err := l.db.ExecContext(t.Context(), "DROP TRIGGER block_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.DeleteRuns(t.Context(), []string{"first", "blocked", "last"}); err != nil {
+		t.Fatal(err)
+	}
+	runs, chunks, _, err = l.Stats(t.Context())
+	if err != nil || runs != 0 || chunks != 0 {
+		t.Fatalf("archive remains after batch: runs=%d chunks=%d err=%v", runs, chunks, err)
+	}
+}

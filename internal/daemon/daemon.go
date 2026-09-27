@@ -393,16 +393,28 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 			if len(page) == 0 {
 				break
 			}
+			ids := make([]string, 0, len(page))
 			for _, candidate := range page {
 				if ctx.Err() != nil {
 					return
 				}
-				if err := d.logs.Delete(candidate.ID); err != nil {
-					slog.Error("retained log deletion failed", "run", candidate.ID, "error", err)
-					continue
-				}
-				if err := d.store.DeleteRun(ctx, candidate.ID); err != nil {
-					slog.Error("retained run deletion failed", "run", candidate.ID, "error", err)
+				ids = append(ids, candidate.ID)
+			}
+			deletable, err := d.logs.DeleteRuns(ids)
+			if err != nil {
+				slog.Error("retained log deletion failed", "count", len(ids), "error", err)
+			}
+			if err := d.store.DeleteRuns(ctx, deletable); err != nil {
+				slog.Error("retained run batch deletion failed", "count", len(deletable), "error", err)
+				// Preserve per-run progress and diagnostics if one row prevents
+				// the atomic batch from completing.
+				for _, id := range deletable {
+					if ctx.Err() != nil {
+						return
+					}
+					if err := d.store.DeleteRun(ctx, id); err != nil {
+						slog.Error("retained run deletion failed", "run", id, "error", err)
+					}
 				}
 			}
 			cursor = &page[len(page)-1]

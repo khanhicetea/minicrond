@@ -538,6 +538,23 @@ func TestSSEStreamAndWindowedReads(t *testing.T) {
 	}
 }
 
+func TestWriteSSEWireFormat(t *testing.T) {
+	frame := logstore.Frame{Sequence: 17, Timestamp: time.Unix(1, 2).UTC(), Stream: logstore.Stdout,
+		Payload: []byte("<&\n")}
+	encoded, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("id: 17\nevent: line\ndata: %s\n\n", encoded)
+	var got bytes.Buffer
+	if err := writeSSE(&got, "line", frame.Sequence, frame); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != want {
+		t.Fatalf("SSE wire format changed: got %q, want %q", got.String(), want)
+	}
+}
+
 func TestImportPreviewApplyHashBinding(t *testing.T) {
 	s, _, _ := setup(t)
 	content := "[[job]]\nname = \"imported\"\nargv = [\"/bin/echo\", \"hi\"]\n"

@@ -3,6 +3,7 @@ package scheduler
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,6 +22,101 @@ func mustLoc(t *testing.T, name string) *time.Location {
 	return loc
 }
 
+func TestForwardTransitionMatchesSampledSearch(t *testing.T) {
+	for _, zone := range []string{"UTC", "America/New_York", "Europe/Berlin", "Australia/Lord_Howe", "Africa/Casablanca", "Pacific/Apia"} {
+		loc := mustLoc(t, zone)
+		for year := 2023; year <= 2027; year++ {
+			for month := 1; month <= 12; month += 3 {
+				start := time.Date(year, time.Month(month), 5, 12, 0, 0, 0, time.UTC)
+				end := start.Add(370 * 24 * time.Hour)
+				gotAt, gotOld, gotNew, gotOK := forwardTransition(start, end, loc)
+				wantAt, wantOld, wantNew, wantOK := sampledForwardTransition(start, end, loc)
+				if gotOK != wantOK || gotOld != wantOld || gotNew != wantNew || (gotOK && !gotAt.Equal(wantAt)) {
+					t.Fatalf("%s from %s: got %s %d→%d %v, want %s %d→%d %v", zone, start, gotAt, gotOld, gotNew, gotOK, wantAt, wantOld, wantNew, wantOK)
+				}
+			}
+		}
+	}
+}
+
+// sampledForwardTransition retains the former six-hour search as an
+// independent check of transition instants and offsets.
+func sampledForwardTransition(start, end time.Time, loc *time.Location) (time.Time, int, int, bool) {
+	if !end.After(start) {
+		return time.Time{}, 0, 0, false
+	}
+	cursor := start
+	_, previous := cursor.In(loc).Zone()
+	for cursor.Before(end) {
+		next := cursor.Add(6 * time.Hour)
+		if next.After(end) {
+			next = end
+		}
+		_, offset := next.In(loc).Zone()
+		if offset != previous {
+			low, high := cursor, next
+			for high.Sub(low) > time.Second {
+				mid := low.Add(high.Sub(low) / 2)
+				_, atMid := mid.In(loc).Zone()
+				if atMid == previous {
+					low = mid
+				} else {
+					high = mid
+				}
+			}
+			transition := high.Truncate(time.Second)
+			if offset > previous {
+				return transition, previous, offset, true
+			}
+			previous = offset
+		}
+		cursor = next
+	}
+	return time.Time{}, 0, 0, false
+}
+
+func TestNextFireMatchesSampledGapSearch(t *testing.T) {
+	for _, zone := range []string{"UTC", "America/New_York", "Europe/Berlin", "Australia/Lord_Howe", "Africa/Casablanca"} {
+		loc := mustLoc(t, zone)
+		for _, expression := range []string{"0 2 * * *", "30 1 * * *", "0 4 * * *", "*/15 * * * *", "0 0 1 1 *", "0 3 * * 1"} {
+			c, err := compileSchedule(model.Definition{Schedule: expression, Timezone: zone})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for year := 2025; year <= 2027; year++ {
+				for _, date := range [][2]int{{1, 2}, {3, 7}, {3, 29}, {10, 24}, {11, 1}} {
+					after := time.Date(year, time.Month(date[0]), date[1], 0, 0, 0, 0, loc)
+					got, gotErr := c.nextFire(after, time.Time{})
+					want, wantErr := sampledNextFire(c, after)
+					if (gotErr == nil) != (wantErr == nil) || (gotErr == nil && !got.Equal(want)) {
+						t.Fatalf("%s %s after %s: got %s (%v), want %s (%v)", zone, expression, after, got, gotErr, want, wantErr)
+					}
+				}
+			}
+		}
+	}
+}
+
+func sampledNextFire(c compiledSchedule, after time.Time) (time.Time, error) {
+	candidate := c.cron.Next(after.In(c.loc)).UTC()
+	if candidate.IsZero() {
+		return time.Time{}, fmt.Errorf("no future occurrence")
+	}
+	if sameWallMinute(after.In(c.loc), candidate.In(c.loc)) {
+		candidate = c.cron.Next(candidate.In(c.loc)).UTC()
+	}
+	if transition, oldOffset, newOffset, ok := sampledForwardTransition(after, candidate, c.loc); ok {
+		fixed := time.FixedZone("before-dst", oldOffset)
+		gapStart := transition.In(fixed).Truncate(time.Minute)
+		for minute := gapStart; minute.Before(gapStart.Add(time.Duration(newOffset-oldOffset) * time.Second)); minute = minute.Add(time.Minute) {
+			if c.cron.Next(minute.Add(-time.Minute)).Equal(minute) {
+				return transition.UTC(), nil
+			}
+		}
+	}
+	return candidate, nil
+}
+
 // Spring forward: the 02:00 wall time does not exist on 2026-03-08 in
 // America/New_York. The occurrence fires once, at the end of the gap.
 func TestNextFireDSTGapFiresOnceAtGapEnd(t *testing.T) {
@@ -34,6 +130,20 @@ func TestNextFireDSTGapFiresOnceAtGapEnd(t *testing.T) {
 	want := time.Date(2026, 3, 8, 3, 0, 0, 0, ny)
 	if !got.Equal(want) {
 		t.Fatalf("gap fire: got %s, want %s", got.UTC(), want.UTC())
+	}
+}
+
+func TestNextFireDSTGapLeavesUnmatchedScheduleAlone(t *testing.T) {
+	ny := mustLoc(t, "America/New_York")
+	after := time.Date(2026, 3, 7, 12, 0, 0, 0, ny)
+	d := model.Definition{Schedule: "0 4 * * *", Timezone: "America/New_York"}
+	got, err := nextFire(d, after, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 3, 8, 4, 0, 0, 0, ny)
+	if !got.Equal(want) {
+		t.Fatalf("unmatched gap fire: got %s, want %s", got, want)
 	}
 }
 

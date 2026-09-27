@@ -910,9 +910,11 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
+	reader := s.logs.NewStreamReader(r.PathValue("id"))
+	defer reader.Close()
 	controller := http.NewResponseController(w)
 	for {
-		backlog, err := s.logs.ReadContext(r.Context(), r.PathValue("id"), after, 5000)
+		backlog, err := reader.ReadContext(r.Context(), after, 5000)
 		if err != nil {
 			internal(w, err)
 			return
@@ -929,6 +931,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		}
 		flusher.Flush()
 	}
+	reader.Close()
 	_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	if _, err := fmt.Fprint(w, "event: backlog_done\ndata: {}\n\n"); err != nil {
 		return
@@ -1216,11 +1219,13 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 func internal(w http.ResponseWriter, err error) { writeError(w, 500, "internal_error", err.Error()) }
 func writeSSE(w io.Writer, event string, id uint64, value any) error {
-	b, err := json.Marshal(value)
-	if err != nil {
+	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: ", id, event); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, b)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\n")
 	return err
 }
 

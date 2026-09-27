@@ -241,7 +241,9 @@ type Writer struct {
 	truncated    bool
 	idx          index
 	subs         map[chan Frame]chan struct{}
-	history      []Frame
+	history      []Frame // circular storage; only historyCount entries are live
+	historyHead  int
+	historyCount int
 	historyBytes int
 	closed       bool
 	closeErr     error
@@ -288,7 +290,22 @@ func (w *Writer) rotate() error {
 	if err != nil {
 		return err
 	}
-	enc, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	// Most chunks are at most 1 MiB. Reserve a larger match window only
+	// when the configured line limit permits an oversized single frame.
+	window := chunkLimit
+	if w.maxLine <= 0 || w.maxLine > 8<<20 {
+		window = 8 << 20
+	} else {
+		for window < w.maxLine {
+			window *= 2
+		}
+	}
+	enc, err := zstd.NewWriter(f,
+		zstd.WithEncoderLevel(zstd.SpeedFastest),
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(window),
+		zstd.WithLowerEncoderMem(true),
+	)
 	if err != nil {
 		f.Close()
 		return err
@@ -388,7 +405,7 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 		}
 	}
 	w.seq++
-	f := Frame{w.seq, time.Now().UTC(), stream, flags, slices.Clone(payload)}
+	f := Frame{w.seq, time.Now().UTC(), stream, flags, payload}
 	if err := encode(w.enc, f); err != nil {
 		return err
 	}
@@ -403,16 +420,14 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
 	w.buffered += int64(frameSize)
-	historySize := len(f.Payload) + 24
-	if w.store.reserveTail(historySize) {
-		w.history = append(w.history, f)
-		w.historyBytes += historySize
+	// Encoding and syncing are complete before the caller can reuse payload.
+	// Copy only when a live tail or subscriber will retain it after return.
+	reservedHistory := w.store.reserveTail(frameSize)
+	if (reservedHistory && frameSize <= historyByteLimit) || len(w.subs) > 0 {
+		f.Payload = slices.Clone(payload)
 	}
-	for len(w.history) > 0 && (len(w.history) > historyLimit || w.historyBytes > historyByteLimit) {
-		released := len(w.history[0].Payload) + 24
-		w.historyBytes -= released
-		w.store.releaseTail(released)
-		w.history = slices.Delete(w.history, 0, 1)
+	if reservedHistory {
+		w.appendReservedHistory(f)
 	}
 	for ch, dropped := range w.subs {
 		select {
@@ -424,6 +439,54 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 		}
 	}
 	return nil
+}
+
+func (w *Writer) appendHistory(f Frame) {
+	historySize := len(f.Payload) + 24
+	if !w.store.reserveTail(historySize) {
+		return
+	}
+	w.appendReservedHistory(f)
+}
+
+// appendReservedHistory accepts a frame whose bytes were already charged to
+// the store's tail quota. The payload must be owned by the caller.
+func (w *Writer) appendReservedHistory(f Frame) {
+	historySize := len(f.Payload) + 24
+	if w.historyCount == historyLimit {
+		w.store.releaseTail(w.evictHistory())
+	}
+	if w.historyCount == len(w.history) {
+		size := min(max(64, 2*len(w.history)), historyLimit)
+		grown := make([]Frame, size)
+		for i := range w.historyCount {
+			grown[i] = w.history[(w.historyHead+i)%len(w.history)]
+		}
+		w.history, w.historyHead = grown, 0
+	}
+	w.history[(w.historyHead+w.historyCount)%len(w.history)] = f
+	w.historyCount++
+	w.historyBytes += historySize
+	for w.historyCount > 0 && w.historyBytes > historyByteLimit {
+		w.store.releaseTail(w.evictHistory())
+	}
+}
+
+// evictHistory clears the slot so the payload can be collected promptly.
+// Callers hold w.mu and release the returned bytes from the store's quota.
+func (w *Writer) evictHistory() int {
+	f := &w.history[w.historyHead]
+	released := len(f.Payload) + 24
+	*f = Frame{}
+	w.historyBytes -= released
+	w.historyCount--
+	if w.historyCount == 0 {
+		w.history = nil
+		w.historyHead = 0
+	} else {
+		w.historyHead = (w.historyHead + 1) % len(w.history)
+	}
+	return released
 }
 func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	limit := w.maxLine
@@ -477,8 +540,9 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 func (w *Writer) Snapshot(after uint64, limit int) []Frame {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	out := make([]Frame, 0, min(limit, len(w.history)))
-	for _, frame := range w.history {
+	out := make([]Frame, 0, min(limit, w.historyCount))
+	for i := range w.historyCount {
+		frame := w.history[(w.historyHead+i)%len(w.history)]
 		if frame.Sequence > after && len(out) < limit {
 			out = append(out, frame)
 		}
@@ -519,6 +583,8 @@ func (w *Writer) Close() error {
 	w.store.releaseTail(w.historyBytes)
 	w.historyBytes = 0
 	w.history = nil
+	w.historyHead = 0
+	w.historyCount = 0
 	for ch := range w.subs {
 		close(ch)
 		delete(w.subs, ch)
@@ -529,13 +595,10 @@ func (w *Writer) Close() error {
 // discardHistoryThrough releases frames no longer needed in the live tail.
 // Callers hold w.mu. Archived frames must not reappear after archive pruning.
 func (w *Writer) discardHistoryThrough(sequence uint64) {
-	n, released := 0, 0
-	for n < len(w.history) && w.history[n].Sequence <= sequence {
-		released += len(w.history[n].Payload) + 24
-		n++
+	released := 0
+	for w.historyCount > 0 && w.history[w.historyHead].Sequence <= sequence {
+		released += w.evictHistory()
 	}
-	w.history = slices.Delete(w.history, 0, n)
-	w.historyBytes -= released
 	w.store.releaseTail(released)
 }
 
@@ -573,13 +636,23 @@ func encode(dst io.Writer, f Frame) error {
 	return err
 }
 func decode(src io.Reader) (Frame, error) {
+	f, n, err := decodeHeader(src)
+	if err != nil {
+		return f, err
+	}
+	f.Payload = make([]byte, n)
+	_, err = io.ReadFull(src, f.Payload)
+	return f, err
+}
+
+func decodeHeader(src io.Reader) (Frame, int, error) {
 	var f Frame
 	var h [24]byte
 	if _, err := io.ReadFull(src, h[:]); err != nil {
-		return f, err
+		return f, 0, err
 	}
 	if h[0] != Version {
-		return f, fmt.Errorf("unsupported log frame version %d", h[0])
+		return f, 0, fmt.Errorf("unsupported log frame version %d", h[0])
 	}
 	f.Stream = Stream(h[1])
 	f.Flags = Flags(h[2])
@@ -587,11 +660,9 @@ func decode(src io.Reader) (Frame, error) {
 	f.Timestamp = time.UnixMicro(int64(binary.BigEndian.Uint64(h[12:20])))
 	n := binary.BigEndian.Uint32(h[20:24])
 	if n > maxFramePayload {
-		return f, fmt.Errorf("log frame payload %d exceeds maximum %d", n, maxFramePayload)
+		return f, 0, fmt.Errorf("log frame payload %d exceeds maximum %d", n, maxFramePayload)
 	}
-	f.Payload = make([]byte, int(n))
-	_, err := io.ReadFull(src, f.Payload)
-	return f, err
+	return f, int(n), nil
 }
 
 // salvageFrames decodes frames from a possibly torn chunk stream, stopping at
@@ -638,6 +709,53 @@ func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 }
 
 func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, limit int) ([]Frame, error) {
+	return s.readContext(ctx, runID, after, limit, 16<<20, nil)
+}
+
+// ReadStreamContext uses a 1 MiB page budget for streaming consumers.
+// Like ReadContext, one oversized valid frame is returned to advance the cursor.
+func (s *Store) ReadStreamContext(ctx context.Context, runID string, after uint64, limit int) ([]Frame, error) {
+	return s.readContext(ctx, runID, after, limit, 1<<20, nil)
+}
+
+// StreamReader reuses a decoder across backlog pages of one stream. It is
+// owned by one caller and must be closed when that stream ends.
+type StreamReader struct {
+	store     *Store
+	runID     string
+	pageBytes int
+	decoder   *zstd.Decoder
+}
+
+func (s *Store) NewStreamReader(runID string) *StreamReader {
+	return s.newStreamReader(runID, 1<<20)
+}
+
+func (s *Store) newStreamReader(runID string, pageBytes int) *StreamReader {
+	return &StreamReader{store: s, runID: runID, pageBytes: pageBytes}
+}
+
+func (r *StreamReader) ReadContext(ctx context.Context, after uint64, limit int) ([]Frame, error) {
+	return r.store.readContext(ctx, r.runID, after, limit, r.pageBytes, &r.decoder)
+}
+
+func (r *StreamReader) Close() {
+	if r.decoder != nil {
+		r.decoder.Close()
+		r.decoder = nil
+	}
+}
+
+func (s *Store) readContext(ctx context.Context, runID string, after uint64, limit, maxResponseBytes int, decoder **zstd.Decoder) ([]Frame, error) {
+	if decoder == nil {
+		var owned *zstd.Decoder
+		decoder = &owned
+		defer func() {
+			if owned != nil {
+				owned.Close()
+			}
+		}()
+	}
 	// Pin the run's tier layout for the entire page. Migration, retention,
 	// finalization and writes cannot move the cursor past unseen frames.
 	unlock := s.lockRun(runID, false)
@@ -648,7 +766,6 @@ func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, lim
 	limit = min(max(limit, 1), 5000)
 	out := make([]Frame, 0, min(limit, 100))
 	last, responseBytes := after, 0
-	const maxResponseBytes = 16 << 20
 	appendFrame := func(frame Frame) bool {
 		if frame.Sequence <= last {
 			return true
@@ -664,16 +781,43 @@ func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, lim
 		return len(out) < limit && responseBytes < maxResponseBytes
 	}
 	consume := func(src io.Reader) (bool, error) {
-		dec, err := zstd.NewReader(src, zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
-		if err != nil {
+		if *decoder == nil {
+			var err error
+			*decoder, err = zstd.NewReader(src, zstd.WithDecoderConcurrency(2), zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
+			if err != nil {
+				return false, err
+			}
+		} else if err := (*decoder).Reset(src); err != nil {
 			return false, err
 		}
-		defer dec.Close()
 		for {
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
-			frame, err := decode(dec)
+			frame, payloadSize, err := decodeHeader(*decoder)
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return true, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			if frame.Sequence <= last {
+				_, err = io.CopyN(io.Discard, *decoder, int64(payloadSize))
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return true, nil
+				}
+				if err != nil {
+					return false, err
+				}
+				continue
+			}
+			// Stop after the header, before allocating a payload that cannot
+			// fit in this page. The next call restarts at the same sequence.
+			if len(out) > 0 && responseBytes+payloadSize+24 > maxResponseBytes {
+				return false, nil
+			}
+			frame.Payload = make([]byte, payloadSize)
+			_, err = io.ReadFull(*decoder, frame.Payload)
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return true, nil
 			}
@@ -703,7 +847,27 @@ func (s *Store) ReadContext(ctx context.Context, runID string, after uint64, lim
 	if err != nil {
 		return nil, err
 	}
+	// The index lists only sealed chunks. Missing, stale, or invalid entries
+	// still take the normal decode path so unsealed and crash-salvaged files
+	// remain visible.
+	var sealedLast map[int]uint64
+	if after > 0 && len(entries) > 1 {
+		if data, err := os.ReadFile(filepath.Join(s.root, runID, "index.json")); err == nil {
+			var idx index
+			if json.Unmarshal(data, &idx) == nil && idx.Version == int(Version) {
+				sealedLast = make(map[int]uint64, len(idx.Chunks))
+				for _, chunk := range idx.Chunks {
+					if chunk.Number > 0 && chunk.First > 0 && chunk.Last >= chunk.First {
+						sealedLast[chunk.Number] = chunk.Last
+					}
+				}
+			}
+		}
+	}
 	for _, entry := range entries {
+		if lastSequence, ok := sealedLast[entry.number]; ok && lastSequence <= after {
+			continue
+		}
 		f, err := os.Open(entry.path)
 		if err != nil {
 			return nil, err
@@ -731,9 +895,11 @@ func (s *Store) Raw(runID string, w io.Writer) error {
 }
 
 func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error {
+	reader := s.newStreamReader(runID, 4<<20)
+	defer reader.Close()
 	var after uint64
 	for {
-		frames, err := s.ReadContext(ctx, runID, after, 5000)
+		frames, err := reader.ReadContext(ctx, after, 5000)
 		if err != nil {
 			return err
 		}
@@ -777,4 +943,57 @@ func (s *Store) Delete(runID string) error {
 		}
 	}
 	return os.RemoveAll(filepath.Join(s.root, runID))
+}
+
+// DeleteRuns removes a retention page of inactive runs. An archive batch
+// failure falls back to individual deletion, allowing unaffected runs to
+// progress. The returned IDs have had both archive and file buffers removed.
+func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
+	s.archiveMu.Lock()
+	defer s.archiveMu.Unlock()
+	seen := make(map[string]bool, len(runIDs))
+	valid := make([]string, 0, len(runIDs))
+	var unlocks []func()
+	var errs []error
+	for _, id := range runIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		unlock := s.lockRun(id, true)
+		if s.Active(id) != nil {
+			unlock()
+			errs = append(errs, fmt.Errorf("run %s: cannot delete logs of an active writer", id))
+			continue
+		}
+		unlocks = append(unlocks, unlock)
+		valid = append(valid, id)
+	}
+	defer func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}()
+	batchFailed := false
+	if s.db != nil && len(valid) > 0 {
+		if err := s.db.DeleteRuns(context.Background(), valid); err != nil {
+			batchFailed = true
+			errs = append(errs, fmt.Errorf("archive batch deletion: %w", err))
+		}
+	}
+	deleted := make([]string, 0, len(valid))
+	for _, id := range valid {
+		if batchFailed {
+			if err := s.db.DeleteRun(context.Background(), id); err != nil {
+				errs = append(errs, fmt.Errorf("run %s: %w", id, err))
+				continue
+			}
+		}
+		if err := os.RemoveAll(filepath.Join(s.root, id)); err != nil {
+			errs = append(errs, fmt.Errorf("run %s: %w", id, err))
+			continue
+		}
+		deleted = append(deleted, id)
+	}
+	return deleted, errors.Join(errs...)
 }

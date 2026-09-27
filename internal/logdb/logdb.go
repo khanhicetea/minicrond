@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -185,6 +186,34 @@ func (l *LogDB) DeleteRun(ctx context.Context, runID string) error {
 	}
 	_, err = l.db.ExecContext(ctx, "DELETE FROM log_runs WHERE run_id=?", runID)
 	return err
+}
+
+// DeleteRuns removes up to a page of archived runs in one transaction. Both
+// tables are deleted explicitly so cleanup does not depend on connection-local
+// foreign-key settings if the SQLite connection is ever recreated.
+func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for start := 0; start < len(runIDs); start += 128 {
+		page := runIDs[start:min(start+128, len(runIDs))]
+		args := make([]any, len(page))
+		for i, id := range page {
+			args[i] = id
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(page)), ",")
+		for _, table := range []string{"log_chunks", "log_runs"} {
+			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE run_id IN ("+placeholders+")", args...); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // Prune applies a rolling age window to individual archived chunks. A run row

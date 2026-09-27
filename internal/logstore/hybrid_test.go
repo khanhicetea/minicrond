@@ -78,6 +78,32 @@ func TestReadByteBudgetAcrossTiers(t *testing.T) {
 			if after != want {
 				t.Fatalf("last sequence = %d, want %d", after, want)
 			}
+			reader := s.NewStreamReader("run")
+			defer reader.Close()
+			var streamAfter uint64
+			for {
+				frames, err := reader.ReadContext(t.Context(), streamAfter, 5000)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(frames) == 0 {
+					break
+				}
+				pageBytes := 0
+				for _, frame := range frames {
+					if frame.Sequence != streamAfter+1 {
+						t.Fatalf("stream sequence %d followed by %d", streamAfter, frame.Sequence)
+					}
+					streamAfter = frame.Sequence
+					pageBytes += 24 + len(frame.Payload)
+				}
+				if pageBytes > 1<<20 && len(frames) != 1 {
+					t.Fatalf("stream page uses %d bytes across %d frames", pageBytes, len(frames))
+				}
+			}
+			if streamAfter != want {
+				t.Fatalf("stream last sequence = %d, want %d", streamAfter, want)
+			}
 		})
 	}
 }
@@ -97,13 +123,18 @@ func TestReadMaximumFrameMakesProgress(t *testing.T) {
 	if err := s.Close("run"); err != nil {
 		t.Fatal(err)
 	}
-	for after := range uint64(2) {
-		frames, err := s.Read("run", after, 5000)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(frames) != 1 || frames[0].Sequence != after+1 {
-			t.Fatalf("after %d: expected exactly frame %d, got %d frames", after, after+1, len(frames))
+	for _, read := range []func(uint64) ([]Frame, error){
+		func(after uint64) ([]Frame, error) { return s.Read("run", after, 5000) },
+		func(after uint64) ([]Frame, error) { return s.ReadStreamContext(t.Context(), "run", after, 5000) },
+	} {
+		for after := range uint64(2) {
+			frames, err := read(after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(frames) != 1 || frames[0].Sequence != after+1 {
+				t.Fatalf("after %d: expected exactly frame %d, got %d frames", after, after+1, len(frames))
+			}
 		}
 	}
 }

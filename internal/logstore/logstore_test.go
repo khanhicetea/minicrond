@@ -2,7 +2,9 @@ package logstore
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -72,6 +74,87 @@ func TestBacklogToLiveSubscriptionHasStableSequence(t *testing.T) {
 	}
 }
 
+func TestWritePayloadOwnershipWithAndWithoutTail(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tail       bool
+		subscriber bool
+	}{
+		{"disk_only", false, false},
+		{"subscriber_only", false, true},
+		{"live_tail", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.tail {
+				s.tailLimit = 0
+			}
+			w, err := s.Open("run", "job", model.KindJob, WriterOptions{MaxLine: 1024})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close("run")
+			var live <-chan Frame
+			if tc.subscriber {
+				var unsubscribe func()
+				live, _, unsubscribe = w.Subscribe(0)
+				defer unsubscribe()
+			}
+			payload := []byte("original")
+			if err := w.Write(Stdout, payload, 0); err != nil {
+				t.Fatal(err)
+			}
+			copy(payload, "mutated!")
+			frames, err := s.Read("run", 0, 10)
+			if err != nil || len(frames) != 1 || string(frames[0].Payload) != "original" {
+				t.Fatalf("read after caller reuse = %v, %v", frames, err)
+			}
+			if tc.subscriber {
+				frame := <-live
+				if string(frame.Payload) != "original" {
+					t.Fatalf("subscriber saw reused payload %q", frame.Payload)
+				}
+			}
+			if tc.tail {
+				frames = w.Snapshot(0, 10)
+				if len(frames) != 1 || string(frames[0].Payload) != "original" {
+					t.Fatalf("tail saw reused payload %v", frames)
+				}
+			}
+		})
+	}
+}
+
+func TestOversizedFrameEvictsEarlierLiveTail(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{MaxBytes: 32 << 20, MaxLine: maxFramePayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close("run")
+	if err := w.Write(Stdout, []byte("old"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(Stdout, make([]byte, maxFramePayload), 0); err != nil {
+		t.Fatal(err)
+	}
+	if frames := w.Snapshot(0, 10); len(frames) != 0 {
+		t.Fatalf("oversized frame left %d older tail frames", len(frames))
+	}
+	if err := w.Write(Stdout, []byte("new"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if frames := w.Snapshot(0, 10); len(frames) != 1 || frames[0].Sequence != 3 {
+		t.Fatalf("tail after oversized frame = %v", frames)
+	}
+}
+
 func TestInvalidUTF8IsFlaggedAndPreserved(t *testing.T) {
 	s, _ := New(t.TempDir())
 	w, _ := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1024, MaxLine: 1024})
@@ -88,6 +171,90 @@ func TestInvalidUTF8IsFlaggedAndPreserved(t *testing.T) {
 	}
 	if len(frames) != 1 || frames[0].Flags&FlagInvalidUTF8 == 0 || !bytes.Equal(frames[0].Payload, []byte{0xff}) {
 		t.Fatalf("frame = %#v", frames)
+	}
+}
+
+func TestLiveTailWrapAndDiscard(t *testing.T) {
+	s := &Store{tailLimit: 64 << 20}
+	w := &Writer{store: s}
+	for seq := uint64(1); seq <= 2*historyLimit; seq++ {
+		w.appendHistory(Frame{Sequence: seq, Payload: []byte("line")})
+	}
+	if w.historyCount != historyLimit || w.historyBytes != historyLimit*28 || s.tailBytes != int64(w.historyBytes) {
+		t.Fatalf("tail accounting: count=%d bytes=%d global=%d", w.historyCount, w.historyBytes, s.tailBytes)
+	}
+	frames := w.Snapshot(0, historyLimit)
+	if len(frames) != historyLimit || frames[0].Sequence != historyLimit+1 || frames[len(frames)-1].Sequence != 2*historyLimit {
+		t.Fatalf("wrapped tail sequence: first=%d last=%d count=%d", frames[0].Sequence, frames[len(frames)-1].Sequence, len(frames))
+	}
+	w.discardHistoryThrough(historyLimit + 2500)
+	frames = w.Snapshot(historyLimit+2500, historyLimit)
+	if len(frames) != 2500 || frames[0].Sequence != historyLimit+2501 {
+		t.Fatalf("discarded tail: count=%d first=%d", len(frames), frames[0].Sequence)
+	}
+	for i := 1; i <= 2500; i++ {
+		if w.history[(w.historyHead-i+len(w.history))%len(w.history)].Payload != nil {
+			t.Fatal("evicted payload remains referenced")
+		}
+	}
+	w.discardHistoryThrough(2 * historyLimit)
+	if w.history != nil || w.historyBytes != 0 || s.tailBytes != 0 {
+		t.Fatalf("tail not released: storage=%d bytes=%d global=%d", len(w.history), w.historyBytes, s.tailBytes)
+	}
+}
+
+func TestLiveTailByteLimit(t *testing.T) {
+	s := &Store{tailLimit: 64 << 20}
+	w := &Writer{store: s}
+	w.appendHistory(Frame{Sequence: 1, Payload: make([]byte, 10<<20)})
+	w.appendHistory(Frame{Sequence: 2, Payload: make([]byte, 10<<20)})
+	frames := w.Snapshot(0, 10)
+	if len(frames) != 1 || frames[0].Sequence != 2 || s.tailBytes != int64(w.historyBytes) {
+		t.Fatalf("byte-limited tail: frames=%d bytes=%d global=%d", len(frames), w.historyBytes, s.tailBytes)
+	}
+}
+
+func TestReadSkipsIndexedChunksButDecodesUnindexedFiles(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(s.root, "run")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		blob, err := encodeFrames([]Frame{{Sequence: uint64(i), Stream: Stdout, Payload: []byte("line")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%06d.zst", i)), blob, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexPath := filepath.Join(dir, "index.json")
+	idx := index{Version: int(Version), Chunks: []chunkMeta{{Number: 1, First: 1, Last: 1}, {Number: 2, First: 2, Last: 2}}}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A skipped sealed chunk is never opened, while the unindexed third file
+	// must still be decoded (as it would be after a crash during rotation).
+	if err := os.WriteFile(filepath.Join(dir, "000001.zst"), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	frames, err := s.Read("run", 2, 1)
+	if err != nil || len(frames) != 1 || frames[0].Sequence != 3 {
+		t.Fatalf("indexed read: frames=%v err=%v", frames, err)
+	}
+	if err := os.WriteFile(indexPath, []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Read("run", 2, 1); err == nil {
+		t.Fatal("corrupt index should fall back to decoding files")
 	}
 }
 
@@ -144,6 +311,39 @@ func TestJobLogArchivedIntoDatabaseOnClose(t *testing.T) {
 	}
 	if raw.String() != "line one\nline two\n" {
 		t.Fatalf("raw = %q", raw.String())
+	}
+}
+
+func TestRawDownloadAcrossPageBoundaries(t *testing.T) {
+	s, _, _ := newArchiveStore(t)
+	w, err := s.Open("raw-pages", "job", model.KindJob, WriterOptions{MaxBytes: 20 << 20, MaxLine: 4 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("x"), 3<<20)
+	for _, stream := range []Stream{Stdout, Stderr, System} {
+		if err := w.Write(stream, payload, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close("raw-pages"); err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	if err := s.Raw("raw-pages", &raw); err != nil {
+		t.Fatal(err)
+	}
+	expected := make([]byte, 0, 3*len(payload)+40)
+	expected = append(expected, payload...)
+	expected = append(expected, '\n')
+	expected = append(expected, "[err] "...)
+	expected = append(expected, payload...)
+	expected = append(expected, '\n')
+	expected = append(expected, "[minicron] "...)
+	expected = append(expected, payload...)
+	expected = append(expected, '\n')
+	if !bytes.Equal(raw.Bytes(), expected) {
+		t.Fatalf("raw download length = %d, want %d; content differs", raw.Len(), len(expected))
 	}
 }
 

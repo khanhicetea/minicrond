@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -21,16 +22,21 @@ import (
 var parser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 type Scheduler struct {
-	store  *store.Store
-	exec   *executor.Service
-	mu     sync.Mutex
+	store   *store.Store
+	exec    *executor.Service
+	mu      sync.Mutex
+	loops   sync.WaitGroup
+	running map[string]scheduledLoop
+}
+
+type scheduledLoop struct {
+	def    model.Definition
 	cancel context.CancelFunc
-	loops  sync.WaitGroup
-	defs   map[string]model.Definition
+	done   chan struct{}
 }
 
 func New(st *store.Store, ex *executor.Service) *Scheduler {
-	return &Scheduler{store: st, exec: ex, defs: make(map[string]model.Definition)}
+	return &Scheduler{store: st, exec: ex, running: make(map[string]scheduledLoop)}
 }
 func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	s.mu.Lock()
@@ -38,24 +44,48 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s.cancel != nil {
-		s.cancel()
-		s.loops.Wait()
-	}
-	runCtx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	s.defs = make(map[string]model.Definition)
+	wanted := make(map[string]model.Definition, len(defs))
 	for _, d := range defs {
 		if d.Kind == model.KindJob && d.IsEnabled() && (d.Schedule != "") {
-			s.defs[d.Name] = d
-			s.loops.Go(func() {
-				s.loop(runCtx, d)
-			})
+			wanted[d.Name] = d
 		}
+	}
+	// Join changed loops before their replacements start. This preserves the
+	// one-loop-per-job rule near a scheduled fire.
+	for name, old := range s.running {
+		if d, ok := wanted[name]; ok && reflect.DeepEqual(old.def, d) {
+			select {
+			case <-old.done: // An exited loop needs a fresh attempt.
+			default:
+				continue
+			}
+		}
+		old.cancel()
+		<-old.done
+		delete(s.running, name)
+	}
+	for _, d := range defs {
+		if _, ok := wanted[d.Name]; !ok {
+			continue
+		}
+		d = wanted[d.Name]
+		if _, ok := s.running[d.Name]; ok {
+			continue
+		}
+		runCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		s.running[d.Name] = scheduledLoop{def: d, cancel: cancel, done: done}
+		s.loops.Go(func() {
+			defer close(done)
+			s.loop(runCtx, d)
+		})
 	}
 	return nil
 }
 func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
+	if ctx.Err() != nil {
+		return
+	}
 	// A panic here would take the whole daemon down; definitions are
 	// validated before they reach the scheduler, so a canonicalization
 	// failure logs and drops the loop instead.
@@ -72,6 +102,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	hashBytes := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	hash := hex.EncodeToString(hashBytes[:])
 	anchor, last, persistedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
+	if ctx.Err() != nil {
+		return
+	}
 	persistedLast := last
 	hasPersisted := err == nil && storedHash == hash
 	now := time.Now().UTC()
@@ -79,6 +112,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		anchor = now
 		last = time.Time{}
 		if err := s.store.SetScheduleState(ctx, d.ID, hash, anchor, time.Time{}); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			slog.Error("scheduler: initialize state failed", "job", d.Name, "error", err)
 			return
 		}
@@ -294,10 +330,10 @@ func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
 	if transition, oldOffset, newOffset, ok := forwardTransition(after, candidate, c.loc); ok {
 		fixed := time.FixedZone("before-dst", oldOffset)
 		gapStart := transition.In(fixed).Truncate(time.Minute)
-		for minute := gapStart; minute.Before(gapStart.Add(time.Duration(newOffset-oldOffset) * time.Second)); minute = minute.Add(time.Minute) {
-			if c.cron.Next(minute.Add(-time.Minute)).Equal(minute) {
-				return transition.UTC(), nil
-			}
+		gapEnd := gapStart.Add(time.Duration(newOffset-oldOffset) * time.Second)
+		firstInGap := c.cron.Next(gapStart.Add(-time.Minute))
+		if !firstInGap.IsZero() && firstInGap.Before(gapEnd) {
+			return transition.UTC(), nil
 		}
 	}
 	return candidate, nil
@@ -313,39 +349,25 @@ func forwardTransition(start, end time.Time, loc *time.Location) (time.Time, int
 	if !end.After(start) {
 		return time.Time{}, 0, 0, false
 	}
-	cursor := start
+	cursor := start.In(loc)
 	_, previous := cursor.In(loc).Zone()
 	for cursor.Before(end) {
-		next := minTime(cursor.Add(6*time.Hour), end)
-		_, offset := next.In(loc).Zone()
-		if offset != previous {
-			low, high := cursor, next
-			for high.Sub(low) > time.Second {
-				mid := low.Add(high.Sub(low) / 2)
-				_, atMid := mid.In(loc).Zone()
-				if atMid == previous {
-					low = mid
-				} else {
-					high = mid
-				}
-			}
-			transition := high.Truncate(time.Second)
-			if offset > previous {
-				return transition, previous, offset, true
-			}
-			previous = offset
+		// ZoneBounds jumps directly to the next location transition. Fixed
+		// zones return a zero end, so distant cron fires cost one lookup.
+		_, next := cursor.ZoneBounds()
+		if next.IsZero() || next.After(end) || !next.After(cursor) {
+			return time.Time{}, 0, 0, false
 		}
+		_, offset := next.In(loc).Zone()
+		if offset > previous {
+			return next.UTC(), previous, offset, true
+		}
+		previous = offset
 		cursor = next
 	}
 	return time.Time{}, 0, 0, false
 }
 
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
-}
 func maxTime(a, b time.Time) time.Time {
 	if a.After(b) {
 		return a
@@ -357,8 +379,9 @@ func maxTime(a, b time.Time) time.Time {
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-		s.loops.Wait()
+	for _, loop := range s.running {
+		loop.cancel()
 	}
+	s.loops.Wait()
+	clear(s.running)
 }
