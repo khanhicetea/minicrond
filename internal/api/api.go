@@ -1182,13 +1182,13 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Always revalidate the SPA shell so it picks up new asset bundles.
 	w.Header().Set("Cache-Control", "no-cache")
-	if s.basePath == "" {
-		_, _ = w.Write(asset.body)
-		return
-	}
 	base := s.basePath + "/"
 	page := strings.Replace(string(asset.body), `<base href="/" />`, `<base href="`+base+`" />`, 1)
-	page = strings.ReplaceAll(page, `"/assets/`, `"`+s.basePath+`/assets/`)
+	// Vite emits relative links for the entry script and stylesheet.
+	// Put those HTML links under the asset route; the <base> tag
+	// resolves them under BASE_PATH on every client-side route.
+	page = strings.ReplaceAll(page, `src="./`, `src="assets/`)
+	page = strings.ReplaceAll(page, `href="./`, `href="assets/`)
 	_, _ = io.WriteString(w, page)
 }
 func (s *Server) requireRun(w http.ResponseWriter, r *http.Request, id string) bool {

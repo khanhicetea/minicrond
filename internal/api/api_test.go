@@ -81,6 +81,10 @@ func decode(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 
 func TestBasePath(t *testing.T) {
 	s, token, _ := setup(t)
+	root := call(s, false, "GET", "/jobs", "", "", nil)
+	if root.Code != 200 || !strings.Contains(root.Body.String(), `src="assets/app-`) || !strings.Contains(root.Body.String(), `href="assets/style-`) {
+		t.Fatalf("root UI assets: %d %s", root.Code, root.Body.String())
+	}
 	for _, invalid := range []string{"minicron", "/bad//path", "/bad//", "/../bad", "/bad?query"} {
 		if err := s.SetBasePath(invalid); err == nil {
 			t.Errorf("accepted invalid BASE_PATH %q", invalid)
@@ -99,9 +103,22 @@ func TestBasePath(t *testing.T) {
 	}
 	for _, path := range []string{"/tools/minicron/", "/tools/minicron/jobs", "/tools/minicron/runs/example"} {
 		rec := call(s, false, "GET", path, "", "", nil)
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/tools/minicron/" />`) || !strings.Contains(rec.Body.String(), `"/tools/minicron/assets/`) {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/tools/minicron/" />`) || !strings.Contains(rec.Body.String(), `src="assets/app-`) || !strings.Contains(rec.Body.String(), `href="assets/style-`) {
 			t.Errorf("UI path %q: %d %s", path, rec.Code, rec.Body.String())
 		}
+	}
+	jsCount := 0
+	for name, asset := range cachedAssets() {
+		if !strings.HasSuffix(name, ".js") {
+			continue
+		}
+		jsCount++
+		if bytes.Contains(asset.body, []byte("/assets/")) {
+			t.Errorf("JavaScript asset %q contains an absolute /assets/ path", name)
+		}
+	}
+	if jsCount != 1 {
+		t.Errorf("embedded UI contains %d JavaScript files, want one bundle", jsCount)
 	}
 	for _, path := range []string{"/tools/minicron/api/v1/daemon", "/tools/minicron/openapi.json"} {
 		if rec := call(s, false, "GET", path, "", "", nil); rec.Code != 401 {
