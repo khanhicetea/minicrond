@@ -28,11 +28,11 @@ const (
 // a busy worker can continue writing and readers can make progress.
 func (s *Store) archiveWriter(w *Writer, through int) error {
 	for {
-		unlock := s.lockRun(w.runID, true)
+		lock := s.lockRun(w.runID, true)
 		w.mu.Lock()
 		more, err := s.archiveBatchLocked(w, through)
 		w.mu.Unlock()
-		unlock()
+		s.unlockRun(w.runID, lock, true)
 		if err != nil || !more {
 			return err
 		}

@@ -369,11 +369,11 @@ func TestArchiveBatchBounds(t *testing.T) {
 				w.buffered += raw
 			}
 			s.archiveMu.Lock()
-			unlock := s.lockRun("run", true)
+			lock := s.lockRun("run", true)
 			w.mu.Lock()
 			more, err := s.archiveBatchLocked(w, tc.count)
 			w.mu.Unlock()
-			unlock()
+			s.unlockRun("run", lock, true)
 			s.archiveMu.Unlock()
 			if err != nil || !more {
 				t.Fatalf("first batch: more=%v, error=%v", more, err)

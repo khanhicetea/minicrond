@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestFailedJobRetriesAndLinksAttempts(t *testing.T) {
 	finished := make(chan model.Run, 4)
 	svc := New(st, logs, Options{OnFinished: func(r model.Run, _ model.Definition) { finished <- r }})
 	defer svc.Shutdown(context.Background())
-	d := model.Definition{Name: "flaky", Kind: model.KindJob, Command: "exit 1", Shell: "/bin/sh", OnOverlap: "skip", Retries: 2, RetryDelay: 1}
+	d := model.Definition{Name: "flaky", Kind: model.KindJob, Command: `printf '%s\n' "$MINICRON_ATTEMPT"; exit 1`, Shell: "/bin/sh", OnOverlap: "skip", Retries: 2, RetryDelay: 1}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +50,20 @@ func TestFailedJobRetriesAndLinksAttempts(t *testing.T) {
 			if attempt == 1 && r.ID != first.ID || attempt > 1 && r.Trigger != "retry" {
 				t.Fatalf("attempt %d: unexpected run = %+v", attempt, r)
 			}
+			frames, err := logs.Read(r.ID, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAttempt := strconv.Itoa(attempt)
+			foundAttempt := false
+			for _, frame := range frames {
+				if frame.Stream == logstore.Stdout && string(frame.Payload) == wantAttempt {
+					foundAttempt = true
+				}
+			}
+			if !foundAttempt {
+				t.Fatalf("attempt %d: MINICRON_ATTEMPT=%q not found in %#v", attempt, wantAttempt, frames)
+			}
 			parent = r.ID
 		case <-time.After(5 * time.Second):
 			t.Fatalf("attempt %d never finished", attempt)
@@ -58,6 +73,12 @@ func TestFailedJobRetriesAndLinksAttempts(t *testing.T) {
 	case r := <-finished:
 		t.Fatalf("unexpected extra attempt: %+v", r)
 	case <-time.After(1200 * time.Millisecond):
+	}
+	svc.mu.Lock()
+	trackedJobs := len(svc.byJob)
+	svc.mu.Unlock()
+	if trackedJobs != 0 {
+		t.Fatalf("finished jobs retained in active counter: %d", trackedJobs)
 	}
 }
 

@@ -12,7 +12,11 @@ type runLock struct {
 
 // Lock order: archiveMu (archive operations only), run lock, Writer.mu,
 // Store.mu. Store.mu is released before waiting on a run lock.
-func (s *Store) lockRun(runID string, exclusive bool) func() {
+//
+// Acquisition and release are separate calls because this lock is taken for
+// every accepted log frame. Returning an unlock closure here makes that hot
+// path allocate even though the lock itself is already reference counted.
+func (s *Store) lockRun(runID string, exclusive bool) *runLock {
 	s.mu.Lock()
 	lock := s.runLocks[runID]
 	if lock == nil {
@@ -26,17 +30,19 @@ func (s *Store) lockRun(runID string, exclusive bool) func() {
 	} else {
 		lock.mu.RLock()
 	}
-	return func() {
-		if exclusive {
-			lock.mu.Unlock()
-		} else {
-			lock.mu.RUnlock()
-		}
-		s.mu.Lock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(s.runLocks, runID)
-		}
-		s.mu.Unlock()
+	return lock
+}
+
+func (s *Store) unlockRun(runID string, lock *runLock, exclusive bool) {
+	if exclusive {
+		lock.mu.Unlock()
+	} else {
+		lock.mu.RUnlock()
 	}
+	s.mu.Lock()
+	lock.refs--
+	if lock.refs == 0 {
+		delete(s.runLocks, runID)
+	}
+	s.mu.Unlock()
 }

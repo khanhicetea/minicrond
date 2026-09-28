@@ -119,8 +119,8 @@ type WriterOptions struct {
 }
 
 func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error) {
-	unlock := s.lockRun(runID, true)
-	defer unlock()
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
 	dir := filepath.Join(s.root, runID)
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, err
@@ -155,8 +155,8 @@ func (s *Store) Close(runID string) error {
 	if s.db != nil && err == nil {
 		err = s.archiveWriter(w, w.chunk)
 	}
-	unlock := s.lockRun(runID, true)
-	defer unlock()
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
 	if s.db != nil && err == nil {
 		err = os.RemoveAll(w.dir)
 	}
@@ -209,13 +209,13 @@ func (s *Store) ArchiveOrphans() error {
 			continue
 		}
 		runID := e.Name()
-		unlock := s.lockRun(runID, true)
+		lock := s.lockRun(runID, true)
 		if s.Active(runID) == nil {
 			if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
 				errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
 			}
 		}
-		unlock()
+		s.unlockRun(runID, lock, true)
 	}
 	return errors.Join(errs...)
 }
@@ -245,6 +245,7 @@ type Writer struct {
 	historyHead  int
 	historyCount int
 	historyBytes int
+	header       [24]byte
 	closed       bool
 	closeErr     error
 }
@@ -264,8 +265,8 @@ func (w *Writer) Flush(s *Store) error {
 }
 
 func (w *Writer) sealForArchive() (int, error) {
-	unlock := w.store.lockRun(w.runID, true)
-	defer unlock()
+	lock := w.store.lockRun(w.runID, true)
+	defer w.store.unlockRun(w.runID, lock, true)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed || w.store.db == nil {
@@ -362,8 +363,8 @@ func (w *Writer) writeIndex() error {
 	return err
 }
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
-	unlock := w.store.lockRun(w.runID, true)
-	defer unlock()
+	lock := w.store.lockRun(w.runID, true)
+	defer w.store.unlockRun(w.runID, lock, true)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -406,7 +407,7 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	}
 	w.seq++
 	f := Frame{w.seq, time.Now().UTC(), stream, flags, payload}
-	if err := encode(w.enc, f); err != nil {
+	if err := encodeWithHeader(w.enc, f, w.header[:]); err != nil {
 		return err
 	}
 	// A successful Write is a durability boundary. Flush compressed bytes and
@@ -570,8 +571,8 @@ func (w *Writer) Subscribe(after uint64) (<-chan Frame, <-chan struct{}, func())
 	}
 }
 func (w *Writer) Close() error {
-	unlock := w.store.lockRun(w.runID, true)
-	defer unlock()
+	lock := w.store.lockRun(w.runID, true)
+	defer w.store.unlockRun(w.runID, lock, true)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -623,13 +624,18 @@ func (s *Store) releaseTail(n int) {
 func (w *Writer) Stats() (int64, bool) { w.mu.Lock(); defer w.mu.Unlock(); return w.total, w.truncated }
 func encode(dst io.Writer, f Frame) error {
 	var h [24]byte
+	return encodeWithHeader(dst, f, h[:])
+}
+
+func encodeWithHeader(dst io.Writer, f Frame, h []byte) error {
 	h[0] = Version
 	h[1] = byte(f.Stream)
 	h[2] = byte(f.Flags)
+	h[3] = 0
 	binary.BigEndian.PutUint64(h[4:12], f.Sequence)
 	binary.BigEndian.PutUint64(h[12:20], uint64(f.Timestamp.UnixMicro()))
 	binary.BigEndian.PutUint32(h[20:24], uint32(len(f.Payload)))
-	if _, err := dst.Write(h[:]); err != nil {
+	if _, err := dst.Write(h); err != nil {
 		return err
 	}
 	_, err := dst.Write(f.Payload)
@@ -758,8 +764,8 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 	}
 	// Pin the run's tier layout for the entire page. Migration, retention,
 	// finalization and writes cannot move the cursor past unseen frames.
-	unlock := s.lockRun(runID, false)
-	defer unlock()
+	lock := s.lockRun(runID, false)
+	defer s.unlockRun(runID, lock, false)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -932,8 +938,8 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 func (s *Store) Delete(runID string) error {
 	s.archiveMu.Lock()
 	defer s.archiveMu.Unlock()
-	unlock := s.lockRun(runID, true)
-	defer unlock()
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
 	if s.Active(runID) != nil {
 		return errors.New("cannot delete logs of an active writer")
 	}
@@ -953,25 +959,29 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 	defer s.archiveMu.Unlock()
 	seen := make(map[string]bool, len(runIDs))
 	valid := make([]string, 0, len(runIDs))
-	var unlocks []func()
+	type heldRunLock struct {
+		id   string
+		lock *runLock
+	}
+	var locks []heldRunLock
 	var errs []error
 	for _, id := range runIDs {
 		if seen[id] {
 			continue
 		}
 		seen[id] = true
-		unlock := s.lockRun(id, true)
+		lock := s.lockRun(id, true)
 		if s.Active(id) != nil {
-			unlock()
+			s.unlockRun(id, lock, true)
 			errs = append(errs, fmt.Errorf("run %s: cannot delete logs of an active writer", id))
 			continue
 		}
-		unlocks = append(unlocks, unlock)
+		locks = append(locks, heldRunLock{id: id, lock: lock})
 		valid = append(valid, id)
 	}
 	defer func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
+		for i := len(locks) - 1; i >= 0; i-- {
+			s.unlockRun(locks[i].id, locks[i].lock, true)
 		}
 	}()
 	batchFailed := false

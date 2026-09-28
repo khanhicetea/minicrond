@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"uuid"
 
@@ -257,11 +258,11 @@ func (s *Server) Start(bind, socket string) error {
 	// Acquire all listeners before serving, so a partial startup cannot leave
 	// an HTTP server running against resources the caller has already closed.
 	if socket != "" {
-		if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeStaleUnixSocket(socket); err != nil {
 			if ln != nil {
 				_ = ln.Close()
 			}
-			return fmt.Errorf("remove stale Unix socket: %w", err)
+			return err
 		}
 		unixListener, err := net.Listen("unix", socket)
 		if err != nil {
@@ -295,6 +296,32 @@ func (s *Server) Start(bind, socket string) error {
 	}
 	return nil
 }
+
+func removeStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Unix socket path: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("Unix socket path %s exists and is not a socket", path)
+	}
+	conn, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("Unix socket path %s is already in use", path)
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) && !errors.Is(dialErr, os.ErrNotExist) {
+		return fmt.Errorf("probe Unix socket path: %w", dialErr)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale Unix socket: %w", err)
+	}
+	return nil
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
 	for _, server := range []*http.Server{s.tcp, s.unix} {

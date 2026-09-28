@@ -182,10 +182,17 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			return
 		}
 		delay := time.Duration(d.RestartDelay) * time.Second
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			return
-		case <-time.After(delay):
+		case <-timer.C:
 		}
 	}
 }

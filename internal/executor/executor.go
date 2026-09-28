@@ -225,7 +225,11 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		s.logs.Close(r.ID)
 		s.mu.Lock()
 		delete(s.active, r.ID)
-		s.byJob[d.Name]--
+		if s.byJob[d.Name] <= 1 {
+			delete(s.byJob, d.Name)
+		} else {
+			s.byJob[d.Name]--
+		}
 		s.mu.Unlock()
 		if d.Kind == model.KindJob {
 			<-s.capacity
@@ -568,7 +572,7 @@ func environment(d model.Definition, home string, r model.Run) ([]string, error)
 		}
 		env = append(env, k+"="+value)
 	}
-	env = append(env, "MINICRON_JOB="+d.Name, "MINICRON_RUN_ID="+r.ID, "MINICRON_TRIGGER="+r.Trigger, "MINICRON_ATTEMPT=1")
+	env = append(env, "MINICRON_JOB="+d.Name, "MINICRON_RUN_ID="+r.ID, "MINICRON_TRIGGER="+r.Trigger, "MINICRON_ATTEMPT="+strconv.Itoa(r.Attempt))
 	return env, nil
 }
 func readEnvFile(path string) (map[string]string, error) {
