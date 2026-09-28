@@ -7,33 +7,6 @@ import type { Definition } from '../types';
 import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
 import { TIMEZONES } from '../lib/timezones';
 
-export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
-  const base: Definition = {
-    name: '',
-    kind,
-    enabled: true,
-    timezone: 'UTC',
-    env_base: 'clean',
-    timeout: 0,
-    grace: 10,
-  };
-  if (kind === 'job') {
-    base.schedule = '0 0 * * *';
-    base.catch_up = 'none';
-    base.on_overlap = 'skip';
-    base.retries = 0;
-    base.retry_delay = 5;
-    base.run_on_start = false;
-  } else {
-    base.autostart = true;
-    base.restart = 'always';
-    base.restart_delay = 5;
-    base.max_restart_attempts = 5;
-    base.healthy_after = 30;
-  }
-  return base;
-}
-
 const MINUTE_OPTIONS = ['*', '*/5', '*/10', '*/15', '*/30', ...Array.from({ length: 60 }, (_, i) => String(i))];
 const HOUR_OPTIONS = ['*', '*/2', '*/4', '*/6', '*/12', ...Array.from({ length: 24 }, (_, i) => String(i))];
 const DOM_OPTIONS = ['*', ...Array.from({ length: 31 }, (_, i) => String(i + 1))];
@@ -71,7 +44,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   const channelNames = [...new Set([...configuredChannels.map(channel => channel.name), ...selectedAlerts])];
 
   const setKind = (kind: 'job' | 'worker') => {
-    onChange({ ...emptyDefinition(kind), name: draft.name, retries: kind === 'worker' ? undefined : 0, retry_delay: kind === 'worker' ? undefined : 5 });
+    onChange({ kind });
   };
 
   const cronParts = cronSelectValues(draft.schedule ?? '');

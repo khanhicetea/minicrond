@@ -40,7 +40,11 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
     add({ field: 'command', title: 'Invalid: Command', message: 'command and argv are mutually exclusive; keep one.', severity: 'error' });
   }
 
-  if (!isWorker) {
+  if (isWorker) {
+    if (def.schedule) {
+      add({ field: 'schedule', title: 'Invalid: Worker schedule', message: 'Workers run continuously and cannot have a schedule.', severity: 'error' });
+    }
+  } else {
     if ((!def.schedule || !def.schedule.trim()) && !(def.source === 'config' && def.run_on_start)) {
       add({ field: 'schedule', title: 'Missing schedule', message: 'Jobs need a cron expression or an @every interval.', severity: 'error' });
     } else if (def.schedule && !parseSchedule(def.schedule)) {

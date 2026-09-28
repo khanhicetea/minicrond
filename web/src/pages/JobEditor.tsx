@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
-import JobForm, { emptyDefinition } from '../components/JobForm';
+import JobForm from '../components/JobForm';
 import RunsTable from '../components/RunsTable';
 import { errorText } from '../api';
 import { daemonQuery, jobQuery, runsQuery, useDeleteJob, useSaveJob } from '../queries';
 import { definitionToToml, highlightToml } from '../lib/toml';
+import { duplicateDefinition, emptyDefinition, updateDefinitionDraft } from '../lib/definition';
 import { validateDefinition, type DefinitionIssue } from '../lib/validate';
 import { jobPath } from '../lib/routes';
 import type { Definition } from '../types';
@@ -37,6 +38,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   const [loadedKey, setLoadedKey] = useState('');
   const initializedKey = useRef('');
   const [dirty, setDirty] = useState(false);
+  const [validationVisible, setValidationVisible] = useState(false);
   const [tab, setTab] = useState<'form' | 'toml'>('toml');
   const [serverError, setServerError] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
@@ -46,7 +48,7 @@ export default function JobEditor({ params }: JobEditorProps) {
     if (initializedKey.current === editorKey) return;
     if (creating && copyFrom && source.data) {
       const { definition } = source.data;
-      setDraft({ ...definition, name: `${definition.name}-copy`, revision: undefined, definition_id: undefined, source: undefined, run_on_start: false, schedule: definition.schedule || '0 0 * * *' });
+      setDraft(duplicateDefinition(definition));
     } else if (!creating && detail.data) {
       setDraft({ ...detail.data.definition });
     } else if (creating && !copyFrom) {
@@ -54,6 +56,7 @@ export default function JobEditor({ params }: JobEditorProps) {
     } else return;
     initializedKey.current = editorKey;
     setDirty(false);
+    setValidationVisible(false);
     setLoadedKey(editorKey);
   }, [creating, copyFrom, source.data, detail.data, editorKey]);
 
@@ -82,8 +85,9 @@ export default function JobEditor({ params }: JobEditorProps) {
   }, [dirty]);
 
   const patch = (changes: Partial<Definition>) => {
-    setDraft(previous => ({ ...previous, ...changes }));
+    setDraft(previous => updateDefinitionDraft(previous, changes));
     setDirty(true);
+    if (Object.keys(changes).some(field => field !== 'kind')) setValidationVisible(true);
   };
 
   const { text: tomlText, lineOf } = definitionToToml(draft);
@@ -93,6 +97,7 @@ export default function JobEditor({ params }: JobEditorProps) {
 
   const submit = () => {
 	if (draft.source === 'config') return;
+    setValidationVisible(true);
     if (errors.length > 0) {
       setTab('toml');
       return;
@@ -178,7 +183,7 @@ export default function JobEditor({ params }: JobEditorProps) {
           The latest definition could not be refreshed. Your draft is preserved; saving may require reloading if the server revision changed.
         </div>
       )}
-      {errors.length > 0 && (
+      {(!creating || validationVisible) && errors.length > 0 && (
         <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-2.5 text-sm text-red-300">
           Fix {errors.length} validation {errors.length === 1 ? 'issue' : 'issues'} before saving — see the panel on the right.
         </div>
@@ -199,7 +204,7 @@ export default function JobEditor({ params }: JobEditorProps) {
         </div>
 
         <div className="space-y-4 min-w-0 xl:col-span-4">
-          <ValidationCard errors={errors} hints={hints} />
+          {(!creating || validationVisible) && <ValidationCard errors={errors} hints={hints} />}
 
           <section className="panel flex min-h-[24rem] flex-col overflow-hidden">
             <div className="flex items-center justify-between border-b border-base-300 px-3 py-2">
