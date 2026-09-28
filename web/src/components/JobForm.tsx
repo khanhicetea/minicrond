@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, errorText } from '../api';
 import { alertChannelsQuery } from '../queries';
@@ -6,6 +6,7 @@ import { Icon } from './Icon';
 import type { Definition } from '../types';
 import { buildCron, cronSelectValues, humanizeSchedule, nextFires, parseSchedule } from '../lib/cron';
 import { TIMEZONES } from '../lib/timezones';
+import { commandToArgv } from '../lib/command-argv';
 
 const MINUTE_OPTIONS = ['*', '*/5', '*/10', '*/15', '*/30', ...Array.from({ length: 60 }, (_, i) => String(i))];
 const HOUR_OPTIONS = ['*', '*/2', '*/4', '*/6', '*/12', ...Array.from({ length: 24 }, (_, i) => String(i))];
@@ -38,6 +39,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
   const channels = useQuery(alertChannelsQuery());
   const [testing, setTesting] = useState('');
   const [testResult, setTestResult] = useState('');
+  const advancedRef = useRef<HTMLDetailsElement>(null);
   const selectedAlerts = draft.alerts ?? [];
   const configuredChannels = channels.data ?? [];
   // Keep saved names that are no longer configured available for removal.
@@ -66,6 +68,9 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
 
   const field = 'mc-input';
   const label = 'field-label';
+  const suggestedArgv = !disabled && (!draft.shell || draft.shell === '/bin/sh') && !(draft.argv?.length)
+    ? commandToArgv(draft.command ?? '')
+    : null;
 
   return (
     <form id={formId} onSubmit={event => event.preventDefault()} className="space-y-4" aria-label="Definition editor">
@@ -112,6 +117,27 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
               spellCheck={false}
             />
             <p className="field-help">Command to execute (run with shell -c). argv can be set under Advanced.</p>
+            {suggestedArgv && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base-200/35 px-3 py-2 text-xs">
+                <span>Can run directly without a shell.</span>
+                <button
+                  type="button"
+                  className="btn-sub"
+                  onClick={() => {
+                    if (advancedRef.current) advancedRef.current.open = true;
+                    onChange({ command: undefined, argv: suggestedArgv });
+                  }}
+                >
+                  Convert to argv
+                </button>
+                <span className="mono muted">{JSON.stringify(suggestedArgv)}</span>
+              </div>
+            )}
+            {Boolean(draft.argv?.length) && (
+              <p className="mt-2 break-all text-xs muted">
+                Runs directly via argv: <span className="mono">{JSON.stringify(draft.argv)}</span>. Edit under Advanced settings.
+              </p>
+            )}
           </div>
 
           {isJob ? (
@@ -386,7 +412,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
       </section>
 
       {/* Advanced */}
-      <details className="panel group px-4 py-3 sm:px-5">
+      <details ref={advancedRef} className="panel group px-4 py-3 sm:px-5">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold">
           <span className="flex items-center gap-2">
             <Icon name="chevron-right" size={14} className="transition-transform group-open:rotate-90 muted" />
