@@ -49,7 +49,7 @@ database, files, and memory tail.
 Retention:
 
 - **Runs:** per-definition `keep_runs` (default `storage.keep_runs_default`
-  = 200) and `keep_for` in days (default 30). Pruning a run removes its logs from
+  = 10,000) and `keep_for` in days (default 7). Pruning a run removes its logs from
   both tiers.
 - **Log archive:** chunks older than `logs.db_keep_for` in days (default 30) are
   pruned daily at `logs.db_prune_at` (default 03:30 local).

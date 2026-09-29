@@ -190,13 +190,13 @@ func applyConfigDefaults(c *Config) {
 		c.Scheduler.MaxConcurrentRuns = 32
 	}
 	if c.Storage.KeepRunsDefault == 0 {
-		c.Storage.KeepRunsDefault = 200
+		c.Storage.KeepRunsDefault = 10000
 	}
 	if c.Storage.AuditKeep == 0 {
 		c.Storage.AuditKeep = 10000
 	}
 	if c.Storage.KeepForDefault == 0 {
-		c.Storage.KeepForDefault = 30
+		c.Storage.KeepForDefault = 7
 	}
 	if c.Logs.Backend == "" {
 		c.Logs.Backend = "file"

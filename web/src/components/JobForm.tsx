@@ -595,7 +595,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
               </div>
               <div>
                 <label htmlFor={`${formId}-keepfor`} className={label}>Keep for (days)</label>
-                <input id={`${formId}-keepfor`} type="number" min={0} step={1} className={field} value={draft.keep_for ?? ''} disabled={disabled} onChange={event => onChange({ keep_for: optionalNumber(event.target.value) })} placeholder="30" />
+                <input id={`${formId}-keepfor`} type="number" min={0} step={1} className={field} value={draft.keep_for ?? ''} disabled={disabled} onChange={event => onChange({ keep_for: optionalNumber(event.target.value) })} placeholder="7" />
               </div>
               <div>
                 <label htmlFor={`${formId}-logmax`} className={label}>Log max size (MiB)</label>

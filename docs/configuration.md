@@ -32,8 +32,8 @@ timezone = "UTC"               # IANA name; default schedule timezone
 max_concurrent_runs = 32       # global gate across all definitions
 
 [storage]
-keep_runs_default = 200        # default per-definition run history length
-keep_for_default = 30          # default per-definition run age retention, days
+keep_runs_default = 10000      # default per-definition run history length
+keep_for_default = 7           # default per-definition run age retention, days
 audit_keep = 10000             # audit-log rows kept
 
 [logs]

@@ -41,8 +41,8 @@ max_catchup     = 5                 # cap for catch_up = "all"
 jitter_gate     = false             # v1.0+: serialize jittered starts
 
 [storage]
-keep_runs_default = 200             # applies when job omits keep_runs
-keep_for_default  = 30              # days
+keep_runs_default = 10000           # applies when job omits keep_runs
+keep_for_default  = 7               # days
 audit_keep        = 5000
 
 [logs]

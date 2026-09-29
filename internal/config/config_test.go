@@ -16,7 +16,7 @@ func TestLoadSettingsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Server.Bind != "127.0.0.1:9000" || cfg.Scheduler.MaxConcurrentRuns != 32 {
+	if cfg.Server.Bind != "127.0.0.1:9000" || cfg.Scheduler.MaxConcurrentRuns != 32 || cfg.Storage.KeepRunsDefault != 10000 || cfg.Storage.KeepForDefault != 7 {
 		t.Fatalf("unexpected config: %#v", cfg)
 	}
 }

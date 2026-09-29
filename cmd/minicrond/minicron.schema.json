@@ -50,12 +50,12 @@
         "keep_runs_default": {
           "type": "integer",
           "minimum": 1,
-          "default": 200
+          "default": 10000
         },
         "keep_for_default": {
           "type": "integer",
           "minimum": 1,
-          "default": 30,
+          "default": 7,
           "description": "Default run age retention in days"
         },
         "audit_keep": {
