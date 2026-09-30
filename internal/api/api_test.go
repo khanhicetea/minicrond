@@ -85,7 +85,10 @@ func TestBasePath(t *testing.T) {
 	if root.Code != 200 || !strings.Contains(root.Body.String(), `src="assets/app-`) || !strings.Contains(root.Body.String(), `href="assets/style-`) {
 		t.Fatalf("root UI assets: %d %s", root.Code, root.Body.String())
 	}
-	for _, invalid := range []string{"minicron", "/bad//path", "/bad//", "/../bad", "/bad?query"} {
+	for _, invalid := range []string{
+		"minicron", "/bad//path", "/bad//", "/../bad", "/bad?query",
+		`/bad"><script>alert(1)</script>`, "/bad&quote;", "/bad%22", "/bad\npath",
+	} {
 		if err := s.SetBasePath(invalid); err == nil {
 			t.Errorf("accepted invalid BASE_PATH %q", invalid)
 		}
@@ -374,6 +377,51 @@ func TestSecurityHeadersAndURLCap(t *testing.T) {
 	}
 	if rec := call(s, false, "GET", "/api/v1/runs?pad="+strings.Repeat("x", 3000), token, "", nil); rec.Code != 414 {
 		t.Fatalf("oversized URL: %d", rec.Code)
+	}
+}
+
+func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
+	s, _, _ := setup(t)
+	var script string
+	for name := range cachedAssets() {
+		if strings.HasSuffix(name, ".js") {
+			script = name
+			break
+		}
+	}
+	if script == "" {
+		t.Fatal("missing JavaScript bundle")
+	}
+	for _, local := range []bool{false, true} {
+		for _, base := range []string{"", "/tools/minicron"} {
+			if err := s.SetBasePath(base); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/", "/jobs/example", "/assets/" + script, "/api/v1/daemon", "/assets/missing.js"} {
+				t.Run(fmt.Sprintf("local=%t%s%s", local, base, path), func(t *testing.T) {
+					rec := call(s, local, "GET", base+path, "", "", nil)
+					directives := make(map[string]string)
+					for _, directive := range strings.Split(rec.Header().Get("Content-Security-Policy"), ";") {
+						name, value, _ := strings.Cut(strings.TrimSpace(directive), " ")
+						if _, exists := directives[name]; exists {
+							t.Fatalf("duplicate CSP directive %q", name)
+						}
+						directives[name] = value
+					}
+					for name, want := range map[string]string{
+						"default-src": "'self'", "script-src": "'self'", "script-src-attr": "'none'",
+						"style-src": "'self'", "style-src-attr": "'unsafe-inline'",
+						"img-src": "'self' data:", "connect-src": "'self'", "base-uri": "'self'",
+						"object-src": "'none'", "frame-src": "'none'", "frame-ancestors": "'none'",
+						"form-action": "'none'", "worker-src": "'none'",
+					} {
+						if got := directives[name]; got != want {
+							t.Errorf("CSP %s = %q, want %q", name, got, want)
+						}
+					}
+				})
+			}
+		}
 	}
 }
 

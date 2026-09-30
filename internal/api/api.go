@@ -117,6 +117,14 @@ var cachedAssets = sync.OnceValue(func() map[string]cachedAsset {
 
 type localKey struct{}
 
+// Charts emit style attributes, but do not need inline stylesheet blocks.
+// The SPA submits forms through fetch and needs its same-origin <base> tag
+// for deployments under BASE_PATH.
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; script-src-attr 'none'; " +
+	"style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+	"base-uri 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; " +
+	"form-action 'none'; worker-src 'none'"
+
 type jobListItem struct {
 	model.Definition
 	NextFireAt *time.Time `json:"next_fire_at,omitzero"`
@@ -377,7 +385,7 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		if len(r.URL.RequestURI()) > 2048 {
 			writeError(w, 414, "request_too_large", "URL exceeds 2 KiB")
 			return

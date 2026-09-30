@@ -107,7 +107,9 @@ enforce CSRF/Origin checks on writes, prevent credential forwarding to other
 origins, and give each daemon its own browser origin. API access permits
 arbitrary job commands as the daemon UID, so treat it as full operator access.
 Direct daemon responses deny framing; an embedding proxy may replace
-`X-Frame-Options: DENY` and set a narrow CSP `frame-ancestors` policy.
+`X-Frame-Options: DENY` and the existing CSP `frame-ancestors 'none'` directive
+with a narrow framing policy, preserving the other CSP restrictions. Adding
+a second CSP header does not override the original restriction.
 Never grant access by trusting a caller-supplied identity header.
 
 For an unprivileged numeric UID without a passwd entry, set an absolute
@@ -122,8 +124,8 @@ use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`.
 - TCP is plaintext HTTP, enabled by default, and defaults to loopback. A non-loopback bind is
   rejected at load unless `server.allow_insecure_remote = true`; use that
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
-- Every `/api/` endpoint requires the bearer token over TCP;
-  `/healthz`, `/readyz`, `/openapi.json`, and UI shell assets are public
+- Every `/api/` endpoint and `/openapi.json` require the bearer token over TCP;
+  `/healthz`, `/readyz`, and UI shell assets are public
   and disclose nothing.
 - The Unix socket is mode 0600 in a 0700 data directory; daemon-UID and root
   peers are authorized by kernel credentials.
@@ -135,6 +137,36 @@ use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`.
 - The daemon signals process **groups** for stop/timeout. Deliberately
   daemonized descendants can escape; v0.1 is not a hostile-workload
   sandbox.
+
+### Browser XSS defenses
+
+The UI renders job definitions, API errors, and decoded log output as React
+text. ANSI log formatting uses fixed CSS classes, not generated HTML or
+clickable terminal hyperlinks. The chart dependency generates SVG markup;
+its text and attribute escaping must remain intact when upgrading it. Keep
+untrusted values out of raw HTML, script, and URL insertion paths. CSP
+supplements this escaping. In standalone mode the bearer token is held in
+`sessionStorage`, which executing scripts can read; XSS could gain full
+operator access, including job command execution.
+
+The daemon sends CSP on UI, asset, API, and error responses. Scripts and
+stylesheets are limited to the same origin; inline scripts, event-handler
+attributes, eval, inline stylesheet blocks, objects, frames, workers, and
+native form submissions are blocked. Forms use authenticated fetch calls.
+Style attributes remain allowed for chart SVG and dynamic UI styling, and
+data images remain allowed. `base-uri 'self'` permits the SPA's validated
+`BASE_PATH` tag while blocking an external base URL.
+
+This is an origin allowlist policy. For internet-facing deployments or
+deployments with less-trusted log producers, consider a nonce- or hash-based
+script policy, especially if the origin also serves other applications or
+user-controlled files. Such a policy must authorize the Vite entry script
+and any future imports; adding `'strict-dynamic'` without a nonce or hash
+will block the app. Keep each daemon on its own origin: stricter CSP cannot
+isolate applications that already share browser storage and origin access.
+Test a stronger policy in report-only mode before enforcement. Trusted Types
+enforcement needs compatibility work on the chart dependency's HTML sinks.
+See the [OWASP CSP guidance](https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html).
 
 ## systemd installation
 

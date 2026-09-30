@@ -40,8 +40,10 @@ protect state-changing requests against cross-site requests, isolate each
 daemon on its own origin, and deny `/api/v1/token/rotate`. Proxy access is
 full operator access: it can create commands that run as the daemon UID.
 Use `tcp_enabled = false` for browser proxy deployments. The daemon denies
-direct framing with `X-Frame-Options: DENY`; a trusted embedding proxy may
-replace that header and set a narrow CSP `frame-ancestors` policy.
+direct framing with `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'`;
+a trusted embedding proxy must replace the former and the latter directive
+with a narrow framing policy, preserving the other CSP restrictions. Adding
+a second CSP header cannot relax the daemon's framing restriction.
 
 ## Endpoints
 
