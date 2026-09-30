@@ -358,6 +358,7 @@ func TestDaemonRunAsCapabilityReflectsPrivileges(t *testing.T) {
 }
 
 func TestSecurityHeadersAndURLCap(t *testing.T) {
+	t.Setenv("MINICRON_ALLOW_IFRAME", "")
 	s, token, _ := setup(t)
 	rec := call(s, false, "GET", "/api/v1/daemon", token, "", nil)
 	for header, want := range map[string]string{
@@ -381,6 +382,7 @@ func TestSecurityHeadersAndURLCap(t *testing.T) {
 }
 
 func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
+	t.Setenv("MINICRON_ALLOW_IFRAME", "")
 	s, _, _ := setup(t)
 	var script string
 	for name := range cachedAssets() {
@@ -422,6 +424,46 @@ func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestIframeEnvironmentOnBrowserResponses(t *testing.T) {
+	s, _, _ := setup(t)
+	for _, tt := range []struct {
+		value string
+		allow bool
+	}{
+		{"", false}, {"0", false}, {"false", false}, {"f", false},
+		{"no", false}, {"n", false}, {"off", false}, {" FALSE ", false},
+		{" Off ", false}, {" \t ", false},
+		{"1", true}, {"true", true}, {"yes", true}, {"on", true},
+		{" TRUE ", true}, {"enabled", true},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("MINICRON_ALLOW_IFRAME", tt.value)
+			for _, local := range []bool{false, true} {
+				for _, base := range []string{"", "/tools/minicron"} {
+					if err := s.SetBasePath(base); err != nil {
+						t.Fatal(err)
+					}
+					for _, path := range []string{"/", "/jobs/example", "/api/v1/daemon", "/assets/missing.js"} {
+						rec := call(s, local, "GET", base+path, "", "", nil)
+						wantFrame := "DENY"
+						wantCSP := contentSecurityPolicy
+						if tt.allow {
+							wantFrame = ""
+							wantCSP = strings.Replace(wantCSP, "frame-ancestors 'none'; ", "", 1)
+						}
+						if got := rec.Header().Get("X-Frame-Options"); got != wantFrame {
+							t.Errorf("local=%t %s: X-Frame-Options = %q, want %q", local, base+path, got, wantFrame)
+						}
+						if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP {
+							t.Errorf("local=%t %s: CSP = %q, want %q", local, base+path, got, wantCSP)
+						}
+					}
+				}
+			}
+		})
 	}
 }
 

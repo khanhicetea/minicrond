@@ -95,6 +95,13 @@ and `max_concurrent_runs` are unitless.
   Set the same variable for local Unix-socket CLI commands, or include the
   prefix in `MINICRON_URL` for HTTP CLI commands. Restart the daemon after
   changing it.
+- `MINICRON_ALLOW_IFRAME` — optional daemon environment variable to allow
+  embedding the web UI in an iframe, for example `MINICRON_ALLOW_IFRAME=1`.
+  Unset, empty, or whitespace-only values and `0`, `false`, `f`, `no`, `n`,
+  or `off` keep embedding blocked (case-insensitive, with surrounding
+  whitespace ignored). Any other value enables embedding by omitting
+  `X-Frame-Options` and CSP's `frame-ancestors` directive. Restart the daemon
+  after changing it.
 - `scheduler.max_concurrent_runs` — 1..1024. When the cap is reached,
   scheduled fires wait; see `catch_up` below for how missed fires are
   handled.

@@ -362,6 +362,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 func (s *Server) middleware(next http.Handler, local bool) http.Handler {
+	allowIframe := true
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MINICRON_ALLOW_IFRAME"))) {
+	case "", "0", "false", "f", "no", "n", "off":
+		allowIframe = false
+	}
+	csp := contentSecurityPolicy
+	if allowIframe {
+		csp = strings.Replace(csp, "frame-ancestors 'none'; ", "", 1)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := &trackedResponse{ResponseWriter: w}
 		if flusher, ok := w.(http.Flusher); ok {
@@ -383,9 +392,11 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 			}
 		}()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
+		if !allowIframe {
+			w.Header().Set("X-Frame-Options", "DENY")
+		}
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		w.Header().Set("Content-Security-Policy", csp)
 		if len(r.URL.RequestURI()) > 2048 {
 			writeError(w, 414, "request_too_large", "URL exceeds 2 KiB")
 			return
