@@ -83,6 +83,47 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 	}
 }
 
+func TestFastExitPersistsProcessIdentity(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("process start identity uses Linux procfs")
+	}
+	finished := make(chan model.Run, 1)
+	st, _, service := failureService(t, Options{OnFinished: func(run model.Run, _ model.Definition) {
+		finished <- run
+	}})
+	for _, tc := range []struct {
+		name, command, status string
+		code                  int
+	}{
+		{"success", "exit 0", "succeeded", 0},
+		{"failure", "exit 7", "failed", 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := model.Definition{Name: tc.name, Kind: model.KindJob, Command: tc.command, Shell: "/bin/sh", Timezone: "UTC", EnvBase: "clean", SuccessCodes: []int{0}}
+			// Repeat immediate exits to exercise identity capture racing with reaping.
+			for range 50 {
+				r := admitFailureRun(t, st, service, d)
+				current := waitFailureRun(t, st, service, r.ID)
+				var event model.Run
+				select {
+				case event = <-finished: // Wait also waits for the completion callback.
+				default:
+					t.Fatal("finished run did not emit a completion event")
+				}
+				if current.Status != tc.status || current.ExitCode == nil || *current.ExitCode != tc.code {
+					t.Fatalf("run = %#v, want %s with exit code %d", current, tc.status, tc.code)
+				}
+				if current.PID <= 0 || current.PGID != current.PID || current.ProcessStartID == "" || current.StartedAt == nil {
+					t.Fatalf("process identity was not persisted: %#v", current)
+				}
+				if event.ID != current.ID || event.ProcessStartID != current.ProcessStartID {
+					t.Fatalf("finished event identity = %#v, want run %s with identity %q", event, current.ID, current.ProcessStartID)
+				}
+			}
+		})
+	}
+}
+
 // A backgrounded descendant that inherits stdout must not delay the run
 // forever, lose captured output, or produce spurious pump-error lines.
 func TestDescendantHoldingPipeIsBoundedAndClean(t *testing.T) {

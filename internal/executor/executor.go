@@ -304,6 +304,9 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// is reachable once every writer (including descendants) exits.
 	closePipe(stdoutW)
 	closePipe(stderrW)
+	// Capture identity before Wait can reap a fast-exiting child and remove
+	// /proc/PID/stat. An exited child retains its procfs entry until reaped.
+	startID := processIdentity(cmd.Process.Pid)
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	leaderDone := false
@@ -321,7 +324,6 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	a.pgid = pgid
 	s.mu.Unlock()
 	started := time.Now().UTC()
-	startID := processIdentity(cmd.Process.Pid)
 	if err = s.store.StartRun(context.Background(), r.ID, cmd.Process.Pid, pgid, startID, started); err != nil {
 		killGroup(pgid, syscall.SIGKILL)
 		<-wait
