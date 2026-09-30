@@ -952,7 +952,7 @@ textarea.mc-input {
   color: color-mix(in srgb, var(--color-base-content) 65%, transparent);
 }
 
-/* Overview header: icon-only daemon health check (pulse ring while healthy). */
+/* Settings header: icon-only daemon health check (pulse ring while healthy). */
 .health-check {
   position: relative;
   display: inline-flex;
@@ -995,7 +995,7 @@ textarea.mc-input {
   }
 }
 
-/* Overview header: segmented stat group (ver / up / tz / cfg). */
+/* Settings header: segmented daemon stats. */
 .health-stats {
   display: inline-flex;
   align-items: stretch;

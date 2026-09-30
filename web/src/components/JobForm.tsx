@@ -94,6 +94,7 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
               id={`${formId}-name`}
               className={`${field} mono`}
               value={draft.name}
+              autoFocus={!nameLocked && !disabled}
               readOnly={nameLocked || disabled}
               disabled={disabled}
               onChange={event => onChange({ name: event.target.value })}

@@ -22,9 +22,10 @@ interface JobEditorProps {
 export default function JobEditor({ params }: JobEditorProps) {
   const routeName = params?.name;
   const existingName = routeName === 'new' ? undefined : routeName;
-  const copyFrom = new URLSearchParams(useSearch()).get('from') ?? undefined;
+  const sourceName = new URLSearchParams(useSearch()).get('from') ?? undefined;
   const [, navigate] = useLocation();
   const creating = !existingName;
+  const copyFrom = creating ? sourceName : undefined;
   const editorKey = creating ? `new:${copyFrom ?? ''}` : `edit:${existingName}`;
 
   const detail = useQuery({ ...jobQuery(existingName ?? ''), enabled: Boolean(existingName) });
@@ -96,7 +97,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   const hints = issues.filter(issue => issue.severity === 'hint');
 
   const submit = () => {
-	if (draft.source === 'config') return;
+    if (draft.source === 'config' || save.isPending) return;
     setValidationVisible(true);
     if (errors.length > 0) {
       setTab('toml');
@@ -136,7 +137,7 @@ export default function JobEditor({ params }: JobEditorProps) {
     );
   }
   if (creating && copyFrom && source.isError && !source.data) {
-    return <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">Failed to load {copyFrom} for duplication: {errorText(source.error)} <button type="button" className="ml-2 underline" onClick={() => void source.refetch()}>Retry</button></div>;
+    return <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">Failed to load {copyFrom} for cloning: {errorText(source.error)} <button type="button" className="ml-2 underline" onClick={() => void source.refetch()}>Retry</button></div>;
   }
   if (loadedKey !== editorKey) return <div className="skeleton h-64 w-full" />;
 
@@ -150,7 +151,7 @@ export default function JobEditor({ params }: JobEditorProps) {
       <nav className="crumbs" aria-label="Breadcrumb">
         <Link href="/jobs">Jobs &amp; Workers</Link>
         <Icon name="chevron-right" size={12} className="faint" />
-        <span>{creating ? (copyFrom ? `Duplicate of ${copyFrom}` : 'New definition') : draft.name}</span>
+        <span>{creating ? (copyFrom ? `Clone of ${copyFrom}` : 'New definition') : draft.name}</span>
       </nav>
 
       {/* Title row */}
@@ -163,15 +164,22 @@ export default function JobEditor({ params }: JobEditorProps) {
 		  {configOwned && <span className="chip chip-info">Config owned · view only</span>}
         </div>
         <div className="flex items-center gap-2">
+          {!creating && existingName && <Link href={`/jobs/new?from=${encodeURIComponent(existingName)}`} className="btn-sub">
+            <Icon name="copy" size={14} /> Clone
+          </Link>}
           <Link href={creating || !existingName ? '/jobs' : jobPath(existingName)} className="btn-sub">
             Cancel
           </Link>
           {!configOwned && <button type="button" className="btn-primary-x" onClick={submit} disabled={save.isPending}>
             {save.isPending && <Icon name="loader" size={14} className="spin" />}
-            {creating ? 'Review changes' : 'Save changes'}
+            {creating ? 'Save' : 'Save changes'}
           </button>}
         </div>
       </div>
+
+      {creating && copyFrom && (
+        <p className="text-sm muted">Settings copied from <span className="font-mono">{copyFrom}</span>. Enter a new name, review the settings, then click Save to create this {isWorker ? 'worker' : 'job'}.</p>
+      )}
 
       {serverError && (
         <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-300">

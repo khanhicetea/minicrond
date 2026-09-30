@@ -6,7 +6,7 @@ import { isActiveRun } from './types';
 /**
  * Shared limit for the global recent-runs list.
  *
- * Overview, Jobs, and Settings share the same "latest N runs" feed;
+ * Jobs, Settings, and global search share the same "latest N runs" feed;
  * fetching it through one identical query (same key, same limit) lets
  * react-query reuse a single request/cache entry across those pages instead
  * of pulling overlapping ?limit=… payloads per page.
@@ -69,7 +69,7 @@ export const runAlertsQuery = (id: string) =>
 
 /**
  * Fetch worker runtime state (active/held/failures) in a single request.
- * Used by the jobs list, overview, and metrics pages.
+ * Used by the jobs list and metrics pages.
  */
 export function useWorkerStates(names: string[]): Record<string, WorkerState | undefined> {
   const query = useQuery({

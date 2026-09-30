@@ -28,8 +28,7 @@ function ThemeToggle() {
 }
 
 const NAV: { href: string; label: string; icon: IconName; match: (path: string) => boolean }[] = [
-  { href: '/', label: 'Overview', icon: 'home', match: p => p === '/' },
-  { href: '/jobs', label: 'Jobs & Workers', icon: 'list', match: p => p.startsWith('/jobs') },
+  { href: '/jobs', label: 'Jobs & Workers', icon: 'list', match: p => p === '/' || p.startsWith('/jobs') },
   { href: '/runs', label: 'Runs', icon: 'clock', match: p => p.startsWith('/runs') },
   { href: '/metrics', label: 'Metrics', icon: 'trending-up', match: p => p === '/metrics' },
   { href: '/settings', label: 'Settings', icon: 'settings', match: p => p === '/settings' },
@@ -200,7 +199,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <Link href="/" className="brand">
+        <Link href="/jobs" className="brand">
           <span className="brand-mark">
             <Icon name="terminal" size={14} strokeWidth={2.4} />
           </span>

@@ -35,13 +35,11 @@ export function updateDefinitionDraft(draft: Definition, changes: Partial<Defini
 }
 
 export function duplicateDefinition(definition: Definition): Definition {
-  return {
-    ...definition,
-    name: `${definition.name}-copy`,
-    revision: undefined,
-    definition_id: undefined,
-    source: undefined,
-    run_on_start: false,
-    schedule: definition.kind === 'worker' ? undefined : definition.schedule || '0 0 * * *',
-  };
+  const draft = structuredClone(definition);
+  draft.name = '';
+  delete draft.revision;
+  delete draft.definition_id;
+  delete draft.source;
+  delete draft.next_fire_at;
+  return draft;
 }

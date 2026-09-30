@@ -99,14 +99,17 @@ Browse to <http://127.0.0.1:7423> and paste the bearer token from step 3
 (lost it? `./minicrond token --rotate` and use the new one). The UI
 provides:
 
-- **Dashboard** — recent activity at a glance
-- **Jobs** — list, create, and edit job/worker definitions with schema-
+- **Jobs & Workers** — default page; list, create, clone, and edit definitions with schema-
   validated forms; enable/disable; trigger; start/stop/restart workers
 - **Runs** — searchable history with filters
 - **Run detail** — metadata plus live SSE log streaming (stdout/stderr
   tagged, ANSI rendered)
 - **Metrics** — run counts by outcome over 15m…30d windows
 - **Settings** — token fingerprint, schema version, diagnostics
+
+To clone a job or worker, choose **Clone** from its actions menu or editor.
+The editor copies its settings and leaves the name blank. Enter a unique name,
+adjust any settings, then click **Save** to create the new definition.
 
 The UI shell and its bundled assets are public; every `/api/` endpoint
 requires the bearer token.

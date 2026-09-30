@@ -5,14 +5,14 @@ import { Icon, type IconName } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
 import { api, errorText } from '../api';
 import { auth, useAuthState } from '../auth';
-import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useReloadDaemon } from '../queries';
+import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT } from '../queries';
 import { downloadFile } from '../lib/download';
 import { formatDayTime, formatSpan, formatUptime, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
 import type { Definition } from '../types';
 
-/** Tight badge sizing shared across settings panels (overview style). */
+/** Tight badge sizing shared across settings panels. */
 const BADGE = '!gap-1 !px-1.5 !py-0 !text-[0.68rem] font-medium';
 
 interface Check {
@@ -58,7 +58,7 @@ export default function Settings() {
     <div className="space-y-5">
       <PageHeader
         title="Settings & diagnostics"
-        subtitle="Security, storage, definition registry, and daemon diagnostics."
+        subtitle="Security, daemon diagnostics, and recent activity."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {/* Icon-only daemon health check; hover for details. */}
@@ -161,35 +161,9 @@ function StatusChip({ ok, detail }: { ok: boolean; detail?: string }) {
   );
 }
 
-/** One key/value row of the storage list (fits the narrow left column). */
-function StorageRow({
-  label,
-  value,
-  ok,
-  detail,
-  title,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  ok?: boolean;
-  detail?: string;
-  title?: string;
-  mono?: boolean;
-}) {
-  return (
-    <li className="flex items-center gap-2 py-2" title={title}>
-      <span className="shrink-0 text-sm muted">{label}</span>
-      <span className={`ml-auto truncate text-[0.8rem] ${mono ? 'num' : ''}`}>{value}</span>
-      {ok !== undefined && <StatusChip ok={ok} detail={detail} />}
-    </li>
-  );
-}
-
 function MainTab() {
   const { mode } = useAuthState();
-  const { daemon, runs, definitions, checks } = useDiagnostics();
-  const reload = useReloadDaemon();
+  const { daemon, runs, checks } = useDiagnostics();
   const client = useQueryClient();
   const [copied, setCopied] = useState(false);
   const [reveal, setReveal] = useState(false);
@@ -228,19 +202,8 @@ function MainTab() {
 
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-      {/* Left rail (4): storage, security, diagnostics. */}
+      {/* Left rail (4): security and diagnostics. */}
       <div className="flex min-w-0 flex-col gap-4 lg:col-span-4">
-        {/* Storage & retention */}
-        <Panel icon="hard-drive" title="Storage & retention">
-          <ul className="divide-y divide-[color-mix(in_srgb,var(--color-base-300)_55%,transparent)]">
-            <StorageRow label="Database" value="SQLite (WAL)" ok={!daemon.isError} detail={daemon.isError ? errorText(daemon.error) : 'API reachable'} />
-            <StorageRow label="Logs" value="Local filesystem" ok={!runs.isError} detail={runs.isError ? 'unavailable' : 'readable'} />
-            <StorageRow label="Schema" value={`v${daemon.data?.schema_version ?? '—'}`} mono ok={!daemon.isError} />
-            <StorageRow label="Retention" value="per definition" title="keep_runs / keep_for" />
-          </ul>
-          <p className="field-help mt-2">Health reflects API reachability from this session.</p>
-        </Panel>
-
         {/* Security */}
         {mode === 'token' ? <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>bearer</span>}>
           <label className="field-label" htmlFor="admin-token">Admin token</label>
@@ -329,7 +292,7 @@ function MainTab() {
         </Panel>
       </div>
 
-      {/* Right (8): recent activity and definition registry. */}
+      {/* Right (8): recent activity. */}
       <div className="flex min-w-0 flex-col gap-4 lg:col-span-8">
         {/* Activity tail (in place of a daemon log tail, which the API does not expose) */}
         <Panel
@@ -376,55 +339,6 @@ function MainTab() {
           </div>
           {/* Poll faster while live tail is on. */}
           {liveTail && <LiveRefresher />}
-        </Panel>
-
-        {/* Definition registry */}
-        <Panel
-          icon="file-text"
-          title="Definition registry"
-          badge={<span className={`chip chip-neutral ${BADGE}`}>{definitions.length} definitions</span>}
-          actions={
-            <button
-              type="button"
-              className="btn-sub !py-1.5 !px-2.5 !text-xs"
-              disabled={reload.isPending}
-              onClick={() => reload.mutate(undefined)}
-            >
-              <Icon name="refresh" size={12} className={reload.isPending ? 'spin' : ''} />
-              Reload settings & runtime
-            </button>
-          }
-        >
-          <div className="overflow-x-auto">
-            <table className="mc-table">
-              <thead>
-                <tr>
-                  <th>Registry</th>
-                  <th>Definitions</th>
-                  <th>Current status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">SQLite</td>
-                  <td className="num">{definitions.length}</td>
-                  <td>
-                    <span className={`chip chip-success ${BADGE}`}><Icon name="circle-check" size={11} /> Loaded</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          {reload.error ? (
-            <p role="alert" className="mt-2 flex items-center gap-1.5 text-xs text-red-400">
-              <Icon name="alert-circle" size={13} /> {errorText(reload.error)}
-            </p>
-          ) : (
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-green-400">
-              <Icon name="circle-check" size={13} /> Runtime matches the definition registry.
-              {reload.isSuccess && <span className="muted">Reloaded just now.</span>}
-            </p>
-          )}
         </Panel>
       </div>
     </div>

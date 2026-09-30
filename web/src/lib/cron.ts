@@ -1,6 +1,6 @@
 /**
  * Minimal five-field cron evaluator + @every descriptor support, used for
- * next-fire countdowns (dashboard "Up next"), the editor cron helper, and
+ * the editor cron helper and
  * humanized schedule descriptions. Mirrors the daemon's field semantics:
  * minute hour day-of-month month day-of-week, with the standard rule that a
  * restricted day-of-month OR day-of-week matches when the other is "*".

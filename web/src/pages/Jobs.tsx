@@ -263,7 +263,7 @@ export default function Jobs() {
                   onToggle={checked => setEnabled.mutate({ name: definition.name, enabled: checked })}
                   onExport={() => exportOne(definition)}
                   onEdit={() => navigate(jobPath(definition.name))}
-                  onDuplicate={() => navigate(`/jobs/new?from=${encodeURIComponent(definition.name)}`)}
+                  onClone={() => navigate(`/jobs/new?from=${encodeURIComponent(definition.name)}`)}
                   onDelete={() => {
                     if (window.confirm(`Delete definition "${definition.name}"? Past runs and logs are kept until retention cleans them.`)) {
                       remove.mutate(definition.name, { onError: err => setActionError(errorText(err)) });
@@ -309,7 +309,7 @@ function Row({
   onToggle,
   onExport,
   onEdit,
-  onDuplicate,
+  onClone,
   onDelete,
 }: {
   definition: Definition;
@@ -321,7 +321,7 @@ function Row({
   onToggle: (checked: boolean) => void;
   onExport: () => void;
   onEdit: () => void;
-  onDuplicate: () => void;
+  onClone: () => void;
   onDelete: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -497,10 +497,10 @@ function Row({
                 className="menu-item"
                 onClick={() => {
                   setMenuOpen(false);
-                  onDuplicate();
+                  onClone();
                 }}
               >
-                <Icon name="copy" size={14} /> Duplicate
+                <Icon name="copy" size={14} /> Clone
               </button>
               {definition.source !== 'config' && <button
                 type="button"

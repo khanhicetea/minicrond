@@ -6,7 +6,7 @@ import type { Run } from '../types';
 import { isActiveRun } from '../types';
 import { formatDayTime, formatIsoLocal, formatSpan, shortRunId } from '../lib/format';
 
-/** Max rows rendered in compact mode (dashboard). */
+/** Max rows rendered in compact mode (definition run history). */
 export const COMPACT_LIMIT = 12;
 
 /**

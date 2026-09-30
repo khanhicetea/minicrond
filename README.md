@@ -38,7 +38,7 @@ go build -o minicrond ./cmd/minicrond
 | Logs | stdout/stderr tagged frames, per-run `log_max` budget with `drop_old`/`drop_new`, live SSE streaming, ANSI-aware web viewer, raw download |
 | Storage | `minicron.db` (definitions, runs, audit) + `minicron-logs.db` (archive) with WAL; rolling age budget pruned daily; per-definition `keep_runs`/`keep_for` |
 | API | REST `/api/v1/*` + SSE log stream, OpenAPI 3.1 contract served at `/openapi.json`, `/healthz` + `/readyz` |
-| Web UI | Dashboard, definition editor (schema-validated), run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
+| Web UI | Jobs & Workers, definition editor (schema-validated) with cloning, run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
 | Alerts | Telegram channels defined in bootstrap config; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
 | CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `crontab` (interactive migration), `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
 

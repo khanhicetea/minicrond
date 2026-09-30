@@ -1,12 +1,11 @@
 import { Component, lazy, Suspense, type ReactNode } from 'react';
-import { Route, Switch, useLocation } from 'wouter';
+import { Redirect, Route, Switch, useLocation } from 'wouter';
 import { useAuthState } from './auth';
 import { RangeProvider } from './lib/range';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import { Icon } from './components/Icon';
 
-const Dashboard = lazy(() => import('./pages/Dashboard'));
 const JobEditor = lazy(() => import('./pages/JobEditor'));
 const Jobs = lazy(() => import('./pages/Jobs'));
 const Metrics = lazy(() => import('./pages/Metrics'));
@@ -62,7 +61,7 @@ export default function App() {
         <PageErrorBoundary key={location}>
           <Suspense fallback={<div className="skeleton h-64 w-full" aria-label="Loading page" />}>
             <Switch>
-              <Route path="/" component={Dashboard} />
+              <Route path="/"><Redirect to="/jobs" replace /></Route>
               <Route path="/jobs" component={Jobs} />
               <Route path="/jobs/new" component={JobEditor} />
               <Route path="/jobs/:name/*?" component={JobEditor} />
