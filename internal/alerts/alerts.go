@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
@@ -128,7 +130,7 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 		d.report(run.ID, name, "queued", 0, "")
 		d.pending.Add(1)
 		select {
-		case d.queue <- delivery{channel: channel, alert: Alert{Run: run}, name: name, window: d.windows[name]}:
+		case d.queue <- delivery{channel: channel, alert: Alert{Run: run.Clone()}, name: name, window: d.windows[name]}:
 		default:
 			d.pending.Add(-1)
 			d.report(run.ID, name, "dropped", 0, "alert queue is full")
@@ -137,14 +139,30 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 }
 
 func (d *Dispatcher) report(runID, name, status string, attempts int, reason string) {
-	if d.record == nil {
+	if d.record == nil || d.ctx.Err() != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
-	if err := d.record(ctx, runID, name, status, attempts, reason); err != nil {
-		slog.Error("recording alert delivery failed", "channel", name, "run", runID, "error", err)
+	if err := fault.Call(func() error { return d.record(ctx, runID, name, status, attempts, reason) }); err != nil && d.ctx.Err() == nil {
+		logFailure("recording alert delivery failed", err, "channel", name, "run", runID)
 	}
+}
+
+func logFailure(message string, err error, attrs ...any) {
+	attrs = append(attrs, "error", err)
+	var panicErr *fault.PanicError
+	if errors.As(err, &panicErr) {
+		attrs = append(attrs, "stack", string(panicErr.Stack))
+	}
+	slog.Error(message, attrs...)
+}
+
+// Non-comparable extension values cannot be safely tested for identity. Keep
+// their deliveries separate rather than risking a panic or mixed credentials.
+func sameChannel(a, b Channel) bool {
+	left, right := reflect.ValueOf(a), reflect.ValueOf(b)
+	return left.IsValid() && right.IsValid() && left.Type() == right.Type() && left.Comparable() && right.Comparable() && a == b
 }
 
 // batch starts a window on the first delivery to each channel. A reload
@@ -156,6 +174,13 @@ func (d *Dispatcher) batch() {
 		until time.Time
 	}
 	batches := make(map[string]pending)
+	enqueue := func(group []delivery) {
+		select {
+		case d.work <- group:
+		case <-d.ctx.Done():
+			d.pending.Add(-int64(len(group)))
+		}
+	}
 	flush := func(key string) {
 		p := batches[key]
 		delete(batches, key)
@@ -164,7 +189,7 @@ func (d *Dispatcher) batch() {
 		for _, item := range p.items {
 			n := len(formatTelegram(item.alert.Run)) + 2
 			if len(group) > 0 && length+n > 3500 {
-				d.work <- group
+				enqueue(group)
 				group = nil
 				length = len("minicrond alerts\n")
 			}
@@ -172,7 +197,7 @@ func (d *Dispatcher) batch() {
 			length += n
 		}
 		if len(group) > 0 {
-			d.work <- group
+			enqueue(group)
 		}
 	}
 	var timer *time.Timer
@@ -209,6 +234,15 @@ func (d *Dispatcher) batch() {
 	}
 	for {
 		select {
+		case <-d.ctx.Done():
+			for _, batch := range batches {
+				d.pending.Add(-int64(len(batch.items)))
+			}
+			// Close closes the producer queue before waiting for batch exit.
+			for range d.queue {
+				d.pending.Add(-1)
+			}
+			return
 		case item, ok := <-d.queue:
 			if !ok {
 				for key := range batches {
@@ -221,7 +255,7 @@ func (d *Dispatcher) batch() {
 				flush(item.name)
 				p = pending{}
 			}
-			if len(p.items) > 0 && p.items[0].channel != item.channel {
+			if len(p.items) > 0 && !sameChannel(p.items[0].channel, item.channel) {
 				flush(item.name)
 				p = pending{}
 			}
@@ -248,6 +282,10 @@ func (d *Dispatcher) batch() {
 
 func (d *Dispatcher) run() {
 	for batch := range d.work {
+		if d.ctx.Err() != nil {
+			d.pending.Add(-int64(len(batch)))
+			continue
+		}
 		alert := Alert{Runs: make([]model.Run, 0, len(batch))}
 		for _, item := range batch {
 			alert.Runs = append(alert.Runs, item.alert.Run)
@@ -255,14 +293,23 @@ func (d *Dispatcher) run() {
 		var err error
 		attempts := 0
 		for attempt := range 3 {
+			if d.ctx.Err() != nil {
+				err = d.ctx.Err()
+				break
+			}
 			attempts = attempt + 1
 			for _, item := range batch {
 				d.report(item.alert.Run.ID, item.name, "sending", attempts, "")
 			}
+			if d.ctx.Err() != nil {
+				err = d.ctx.Err()
+				break
+			}
 			ctx, cancel := context.WithTimeout(d.ctx, 15*time.Second)
-			err = batch[0].channel.Send(ctx, alert)
+			err = fault.Call(func() error { return batch[0].channel.Send(ctx, alert) })
 			cancel()
-			if err == nil || d.ctx.Err() != nil {
+			var panicErr *fault.PanicError
+			if err == nil || d.ctx.Err() != nil || errors.As(err, &panicErr) {
 				break
 			}
 			if attempt < 2 {
@@ -277,7 +324,9 @@ func (d *Dispatcher) run() {
 		status, reason := "sent", ""
 		if err != nil {
 			status, reason = "failed", err.Error()
-			slog.Error("sending alert failed after retries", "channel", batch[0].name, "runs", len(batch), "error", err)
+			if d.ctx.Err() == nil {
+				logFailure("sending alert failed", err, "channel", batch[0].name, "runs", len(batch), "attempts", attempts)
+			}
 		}
 		for _, item := range batch {
 			d.report(item.alert.Run.ID, item.name, status, attempts, reason)
@@ -303,12 +352,16 @@ func (d *Dispatcher) Test(ctx context.Context, name string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	return channel.Send(ctx, Alert{Run: model.Run{Job: "test", Status: "test", ID: "test"}})
+	return fault.Call(func() error { return channel.Send(ctx, Alert{Run: model.Run{Job: "test", Status: "test", ID: "test"}}) })
 }
 
 // Close drains queued deliveries. Call it only after alert producers stop.
 func (d *Dispatcher) Close(ctx context.Context) error {
 	defer d.cancel()
+	// Notify holds a read lock while recording the queued delivery. Cancel
+	// that operation even if Close is still waiting for the producer lock.
+	stopCancellation := context.AfterFunc(ctx, d.cancel)
+	defer stopCancellation()
 	d.mu.Lock()
 	if !d.closed {
 		d.closed = true

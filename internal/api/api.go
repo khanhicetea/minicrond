@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
@@ -47,6 +49,7 @@ type Server struct {
 	started   time.Time
 	version   string
 	ready     atomic.Bool
+	closing   atomic.Bool
 	// tokenHash holds the hex SHA-256 of the active bearer token; the raw
 	// token exists only at rotation time.
 	tokenHash       atomic.Pointer[string]
@@ -61,6 +64,7 @@ type Server struct {
 	jobDefaults     func() model.Definition
 	testAlert       func(context.Context, string) error
 	alertQueueDepth func() int
+	serveErrors     chan error
 }
 
 func (s *Server) currentTokenHash() string {
@@ -148,7 +152,22 @@ type apiError struct {
 }
 
 func New(st *store.Store, logs *logstore.Store, ex *executor.Service, sup *supervisor.Supervisor, reload, reconcile func(context.Context) error, version string) *Server {
-	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version, streamSlots: make(chan struct{}, 64), tcpEnabled: true}
+	return &Server{store: st, logs: logs, exec: ex, super: sup, reload: reload, reconcile: reconcile, started: time.Now(), version: version, streamSlots: make(chan struct{}, 64), tcpEnabled: true, serveErrors: make(chan error, 2)}
+}
+
+// Errors reports unexpected listener failures so the daemon can stop cleanly.
+func (s *Server) Errors() <-chan error { return s.serveErrors }
+
+func (s *Server) serveFailed(listener string, err error) {
+	s.ready.Store(false)
+	s.serveErrors <- fmt.Errorf("serve %s HTTP listener: %w", listener, err)
+}
+
+func (s *Server) serve(name string, server *http.Server, listener net.Listener) {
+	err := fault.Call(func() error { return server.Serve(listener) })
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.serveFailed(name, err)
+	}
 }
 
 // SetTCPEnabled must be called before InitializeToken or Start.
@@ -241,6 +260,13 @@ func (s *Server) RotateToken(ctx context.Context) (string, error) {
 	return token, nil
 }
 func (s *Server) SetReady(v bool) { s.ready.Store(v) }
+
+// BeginShutdown rejects new API operations while existing handlers finish.
+func (s *Server) BeginShutdown() {
+	s.closing.Store(true)
+	s.ready.Store(false)
+}
+
 func (s *Server) Start(bind, socket string) error {
 	if !s.tcpEnabled && socket == "" {
 		return errors.New("no HTTP listener enabled")
@@ -279,20 +305,10 @@ func (s *Server) Start(bind, socket string) error {
 			return fmt.Errorf("set Unix socket permissions: %w", err)
 		}
 		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
-		go func() {
-			if err := s.unix.Serve(peerListener{Listener: unixListener, uid: uint32(os.Geteuid())}); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("Unix HTTP server stopped", "error", err)
-				s.ready.Store(false)
-			}
-		}()
+		go s.serve("unix", s.unix, peerListener{Listener: unixListener, uid: uint32(os.Geteuid())})
 	}
 	if ln != nil {
-		go func() {
-			if err := s.tcp.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				slog.Error("TCP HTTP server stopped", "error", err)
-				s.ready.Store(false)
-			}
-		}()
+		go s.serve("tcp", s.tcp, ln)
 	}
 	return nil
 }
@@ -323,6 +339,7 @@ func removeStaleUnixSocket(path string) error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.BeginShutdown()
 	var errs []error
 	for _, server := range []*http.Server{s.tcp, s.unix} {
 		if server == nil {
@@ -338,6 +355,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := &trackedResponse{ResponseWriter: w}
+		if flusher, ok := w.(http.Flusher); ok {
+			w = &trackedFlushResponse{trackedResponse: response, flusher: flusher}
+		} else {
+			w = response
+		}
+		defer func() {
+			if value := recover(); value != nil {
+				if err, ok := value.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					panic(value)
+				}
+				err := &fault.PanicError{Value: value, Stack: debug.Stack()}
+				slog.Error("HTTP handler panicked", "method", r.Method, "path", r.URL.Path, "error", err, "stack", string(err.Stack))
+				if response.started {
+					panic(http.ErrAbortHandler)
+				}
+				writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+			}
+		}()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -370,6 +406,10 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		// (any UI path), bundled assets, and health probes are public: they
 		// contain no secrets, and the SPA authenticates its own API calls.
 		isAPI := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/openapi.json"
+		if isAPI && s.closing.Load() {
+			writeError(w, http.StatusServiceUnavailable, "not_ready", "daemon is shutting down")
+			return
+		}
 		if isAPI && !local {
 			provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			sum := sha256.Sum256([]byte(provided))
@@ -384,6 +424,34 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Unwrap preserves http.ResponseController support through response tracking.
+type trackedResponse struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (w *trackedResponse) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *trackedResponse) WriteHeader(status int) {
+	if status >= 200 || status == http.StatusSwitchingProtocols {
+		w.started = true
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *trackedResponse) Write(body []byte) (int, error) {
+	w.started = true
+	return w.ResponseWriter.Write(body)
+}
+
+type trackedFlushResponse struct {
+	*trackedResponse
+	flusher http.Flusher
+}
+
+func (w *trackedFlushResponse) Flush() {
+	w.started = true
+	w.flusher.Flush()
 }
 func (s *Server) routes() *http.ServeMux {
 	m := http.NewServeMux()
@@ -458,12 +526,12 @@ func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	defs, err := s.store.Definitions(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	nextByDefinition, err := s.store.ScheduleNextBatch(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	items := make([]jobListItem, 0, len(defs))
@@ -479,7 +547,7 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) workerStates(w http.ResponseWriter, r *http.Request) {
 	defs, err := s.store.Definitions(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	names := make([]string, 0, len(defs))
@@ -497,13 +565,18 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	w.Header().Set("ETag", strconv.FormatInt(d.Revision, 10))
 	response := map[string]any{"definition": d, "hash": hash, "active_runs": s.exec.Active(d.Name)}
 	if d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
-		if next, err := s.store.ScheduleNext(r.Context(), d.ID); err == nil && !next.IsZero() {
+		next, err := s.store.ScheduleNext(r.Context(), d.ID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			internal(w, r, fmt.Errorf("read definition %s next fire: %w", d.Name, err))
+			return
+		}
+		if err == nil && !next.IsZero() {
 			response["next_fire_at"] = next
 		}
 	}
@@ -569,12 +642,12 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrRevisionConflict):
 			writeError(w, 412, "revision_conflict", err.Error())
 		default:
-			writeError(w, 422, "validation_failed", err.Error())
+			internal(w, r, fmt.Errorf("save definition %s: %w", d.Name, err))
 		}
 		return
 	}
 	if err := s.reconcile(context.WithoutCancel(r.Context())); err != nil {
-		writeError(w, 500, "reconcile_failed", err.Error())
+		internal(w, r, fmt.Errorf("reconcile saved definition %s: %w", d.Name, err))
 		return
 	}
 	writeJSON(w, 200, saved)
@@ -585,11 +658,15 @@ func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 403, "read_only", err.Error())
 			return
 		}
-		writeError(w, 404, "not_found", err.Error())
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
+			writeError(w, 404, "not_found", "definition not found")
+		} else {
+			internal(w, r, fmt.Errorf("delete definition %s: %w", r.PathValue("name"), err))
+		}
 		return
 	}
 	if err := s.reconcile(context.WithoutCancel(r.Context())); err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"deleted": true})
@@ -602,11 +679,15 @@ func (s *Server) enable(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 403, "read_only", err.Error())
 			return
 		}
-		writeError(w, 404, "not_found", err.Error())
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
+			writeError(w, 404, "not_found", "definition not found")
+		} else {
+			internal(w, r, fmt.Errorf("set definition %s enabled=%t: %w", r.PathValue("name"), enabled, err))
+		}
 		return
 	}
 	if err := s.reconcile(context.WithoutCancel(r.Context())); err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"enabled": enabled})
@@ -618,6 +699,7 @@ type httpError struct {
 	status int
 	code   string
 	msg    string
+	cause  error
 }
 
 func (e *httpError) Error() string { return e.msg }
@@ -633,22 +715,27 @@ func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string
 		if id, err := s.store.IdempotentRun(ctx, "admin", "trigger", key, requestHash); err == nil {
 			existing, getErr := s.store.Run(ctx, id)
 			if getErr != nil {
-				return model.Run{}, false, &httpError{500, "internal_error", getErr.Error()}
+				return model.Run{}, false, triggerInternal(fmt.Errorf("read replayed run %s: %w", id, getErr))
 			}
 			return existing, true, nil
+		} else if errors.Is(err, store.ErrIdempotencyConflict) || errors.Is(err, store.ErrIdempotencyKeyExists) {
+			return model.Run{}, false, &httpError{status: 409, code: "idempotency_conflict", msg: err.Error()}
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return model.Run{}, false, &httpError{409, "idempotency_conflict", err.Error()}
+			return model.Run{}, false, triggerInternal(fmt.Errorf("read trigger idempotency key: %w", err))
 		}
 	}
 	d, hash, err := s.store.Definition(ctx, name)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
+		return model.Run{}, false, &httpError{status: 404, code: "not_found", msg: "definition not found"}
+	}
 	if err != nil {
-		return model.Run{}, false, &httpError{404, "not_found", "definition not found"}
+		return model.Run{}, false, triggerInternal(fmt.Errorf("read triggered definition %s: %w", name, err))
 	}
 	if d.Source == "config" {
-		return model.Run{}, false, &httpError{403, "read_only", "config-owned definition is view only"}
+		return model.Run{}, false, &httpError{status: 403, code: "read_only", msg: "config-owned definition is view only"}
 	}
 	if d.Kind == model.KindWorker {
-		return model.Run{}, false, &httpError{409, "trigger_rejected", "workers must be controlled through worker lifecycle endpoints"}
+		return model.Run{}, false, &httpError{status: 409, code: "trigger_rejected", msg: "workers must be controlled through worker lifecycle endpoints"}
 	}
 	if key != "" {
 		run, replayed, err = s.exec.TriggerIdempotent(ctx, d, hash, "manual", nil, executor.IdempotencyRequest{Principal: "admin", Operation: "trigger", Key: key, RequestHash: requestHash})
@@ -656,13 +743,22 @@ func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string
 		run, err = s.exec.Trigger(ctx, d, hash, "manual", nil)
 	}
 	if err != nil {
-		code := "trigger_rejected"
-		if strings.Contains(err.Error(), "idempotency") {
-			code = "idempotency_conflict"
+		switch {
+		case errors.Is(err, store.ErrIdempotencyConflict), errors.Is(err, store.ErrIdempotencyKeyExists):
+			return model.Run{}, false, &httpError{status: 409, code: "idempotency_conflict", msg: err.Error()}
+		case errors.Is(err, executor.ErrDisabled):
+			return model.Run{}, false, &httpError{status: 409, code: "trigger_rejected", msg: err.Error()}
+		case errors.Is(err, executor.ErrShutdown):
+			return model.Run{}, false, &httpError{status: 503, code: "not_ready", msg: "daemon is shutting down"}
+		default:
+			return model.Run{}, false, triggerInternal(fmt.Errorf("trigger definition %s: %w", name, err))
 		}
-		return model.Run{}, false, &httpError{409, code, err.Error()}
 	}
 	return run, replayed, nil
+}
+
+func triggerInternal(err error) *httpError {
+	return &httpError{status: 500, code: "internal_error", msg: "internal server error", cause: err}
 }
 
 func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
@@ -670,7 +766,11 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 	requestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(r.PathValue("name"))))
 	run, replayed, herr := s.beginTrigger(r.Context(), r.PathValue("name"), key, requestHash)
 	if herr != nil {
-		writeError(w, herr.status, herr.code, herr.msg)
+		if herr.cause != nil {
+			internal(w, r, herr.cause)
+		} else {
+			writeError(w, herr.status, herr.code, herr.msg)
+		}
 		return
 	}
 	if replayed {
@@ -705,12 +805,19 @@ func (s *Server) waitForRun(ctx context.Context, run model.Run, timeout time.Dur
 	if err == nil && model.Terminal(current.Status) {
 		return current
 	}
+	if err != nil && ctx.Err() == nil {
+		slog.Error("read completed trigger run failed", "run", run.ID, "error", err)
+	}
 	return run
 }
 func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
-	if err != nil || d.Kind != model.KindWorker {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) || (err == nil && d.Kind != model.KindWorker) {
 		writeError(w, 404, "not_found", "worker not found")
+		return
+	}
+	if err != nil {
+		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
 		return
 	}
 	if d.Source == "config" {
@@ -722,8 +829,12 @@ func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) workerStop(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
-	if err != nil || d.Kind != model.KindWorker {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) || (err == nil && d.Kind != model.KindWorker) {
 		writeError(w, 404, "not_found", "worker not found")
+		return
+	}
+	if err != nil {
+		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
 		return
 	}
 	if d.Source == "config" {
@@ -731,15 +842,19 @@ func (s *Server) workerStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.super.Stop(r.PathValue("name")); err != nil && !errors.Is(err, os.ErrNotExist) {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 202, map[string]bool{"held": true})
 }
 func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
-	if err != nil || d.Kind != model.KindWorker {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist) || (err == nil && d.Kind != model.KindWorker) {
 		writeError(w, 404, "not_found", "worker not found")
+		return
+	}
+	if err != nil {
+		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
 		return
 	}
 	if d.Source == "config" {
@@ -773,7 +888,8 @@ func (s *Server) testAlertChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.testAlert(r.Context(), name); err != nil {
-		writeError(w, 502, "delivery_failed", err.Error())
+		logHTTPFailure(r, fmt.Errorf("send test alert to channel %s: %w", name, err))
+		writeError(w, 502, "delivery_failed", "alert delivery failed")
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"sent": true})
@@ -784,13 +900,13 @@ func (s *Server) runAlerts(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found", "run not found")
 		} else {
-			internal(w, err)
+			internal(w, r, err)
 		}
 		return
 	}
 	items, err := s.store.RunAlerts(r.Context(), r.PathValue("id"))
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -799,7 +915,7 @@ func (s *Server) runAlerts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) alertMetrics(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.store.AlertMetrics(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	depth := 0
@@ -828,7 +944,7 @@ func (s *Server) runMetrics(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	stats, err := s.store.RunMetrics(r.Context(), now.Add(-window), now, buckets)
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, stats)
@@ -853,7 +969,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	nextBefore := ""
@@ -870,7 +986,7 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, run)
@@ -893,7 +1009,7 @@ func (s *Server) log(w http.ResponseWriter, r *http.Request) {
 	}
 	frames, err := s.logs.ReadContext(r.Context(), r.PathValue("id"), after, limit)
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": frames})
@@ -943,7 +1059,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	for {
 		backlog, err := reader.ReadContext(r.Context(), after, 5000)
 		if err != nil {
-			internal(w, err)
+			internal(w, r, err)
 			return
 		}
 		if len(backlog) == 0 {
@@ -1027,7 +1143,7 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := s.RotateToken(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]string{"token": token, "fingerprint": fingerprint(s.currentTokenHash())})
@@ -1035,7 +1151,7 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	defs, err := s.store.Definitions(r.Context())
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	editable := defs[:0]
@@ -1064,7 +1180,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := toml.Marshal(bundle)
 	if err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/toml")
@@ -1129,11 +1245,11 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 403, "read_only", err.Error())
 			return
 		}
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	if err = s.reconcile(r.Context()); err != nil {
-		internal(w, err)
+		internal(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"content_hash": actual, "applied": len(defs)})
@@ -1228,7 +1344,7 @@ func (s *Server) requireRun(w http.ResponseWriter, r *http.Request, id string) b
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found", "run not found")
 		} else {
-			internal(w, err)
+			internal(w, r, err)
 		}
 		return false
 	}
@@ -1239,12 +1355,25 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(value)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		slog.Error("write JSON response failed", "error", err)
+	}
 }
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, errorEnvelope{apiError{code, message, nil}})
 }
-func internal(w http.ResponseWriter, err error) { writeError(w, 500, "internal_error", err.Error()) }
+func internal(w http.ResponseWriter, r *http.Request, err error) {
+	logHTTPFailure(r, err)
+	writeError(w, 500, "internal_error", "internal server error")
+}
+
+func logHTTPFailure(r *http.Request, err error) {
+	attrs := []any{"method", r.Method, "path", r.URL.Path, "error", err}
+	if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {
+		attrs = append(attrs, "stack", string(panicErr.Stack))
+	}
+	slog.Error("HTTP request failed", attrs...)
+}
 func writeSSE(w io.Writer, event string, id uint64, value any) error {
 	if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: ", id, event); err != nil {
 		return err

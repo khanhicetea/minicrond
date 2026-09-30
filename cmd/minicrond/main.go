@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/daemon"
+	"github.com/khanhicetea/minicrond/internal/fault"
 )
 
 var version = "0.2.0-dev"
@@ -32,7 +34,11 @@ var configSchema []byte
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("command failed", "error", err)
+		attrs := []any{"error", err}
+		if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {
+			attrs = append(attrs, "stack", string(panicErr.Stack))
+		}
+		slog.Error("command failed", attrs...)
 		os.Exit(1)
 	}
 }
@@ -69,17 +75,13 @@ func run() error {
 	case "service":
 		return runService(args[1:])
 	case "schema":
-		_, _ = os.Stdout.Write(append(configSchema, '\n'))
-		return nil
+		return writeOutput("%s\n", configSchema)
 	case "version":
-		fmt.Printf("minicrond %s (%s) %s/%s\n", version, commit, runtime.GOOS, runtime.GOARCH)
-		return nil
+		return writeOutput("minicrond %s (%s) %s/%s\n", version, commit, runtime.GOOS, runtime.GOARCH)
 	case "help", "--help", "-h":
-		usage()
-		return nil
+		return usage()
 	default:
-		usage()
-		return fmt.Errorf("unknown command %q", args[0])
+		return errors.Join(fmt.Errorf("unknown command %q", args[0]), usage())
 	}
 }
 func runDaemon(args []string) error {
@@ -95,19 +97,39 @@ func runDaemon(args []string) error {
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	d := &daemon.Daemon{ConfigPath: *configPath, DataDir: *dataDir, Version: version}
+	reloadErrors := make(chan error, 1)
+	reloadDone := make(chan struct{})
 	go func() {
+		defer close(reloadDone)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-hup:
-				if err := d.Reload(context.Background()); err != nil {
+				if err := fault.Call(func() error { return d.Reload(ctx) }); err != nil {
+					if _, ok := errors.AsType[*fault.PanicError](err); ok {
+						reloadErrors <- fmt.Errorf("reload daemon: %w", err)
+						stop()
+						return
+					}
 					slog.Error("reload failed", "error", err)
 				}
 			}
 		}
 	}()
-	return d.Run(ctx)
+	defer func() {
+		stop()
+		<-reloadDone
+	}()
+	runErr := d.Run(ctx)
+	stop()
+	<-reloadDone
+	select {
+	case err := <-reloadErrors:
+		return errors.Join(runErr, err)
+	default:
+		return runErr
+	}
 }
 func initConfig(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -126,15 +148,11 @@ func initConfig(args []string) error {
 	if _, err = io.WriteString(f, content); err == nil {
 		err = f.Sync()
 	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
+	err = errors.Join(err, f.Close())
 	if err != nil {
-		_ = os.Remove(*path)
-		return err
+		return errors.Join(fmt.Errorf("write initial config: %w", err), os.Remove(*path))
 	}
-	fmt.Printf("created %s\n", *path)
-	return nil
+	return writeOutput("created %s\n", *path)
 }
 func defaultConfigTOML(bind string) string {
 	return fmt.Sprintf(`[server]
@@ -162,8 +180,7 @@ func validate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("valid configuration")
-	return nil
+	return writeOutput("valid configuration\n")
 }
 func trigger(args []string) error {
 	if len(args) == 0 {
@@ -204,11 +221,17 @@ func logs(args []string) error {
 			return err
 		}
 		for _, f := range response.Items {
-			b, _ := base64.StdEncoding.DecodeString(f.Payload)
-			if f.Stream == 2 {
-				fmt.Print("[err] ")
+			b, err := base64.StdEncoding.DecodeString(f.Payload)
+			if err != nil {
+				return fmt.Errorf("decode log frame %d: %w", f.Sequence, err)
 			}
-			fmt.Println(string(b))
+			prefix := ""
+			if f.Stream == 2 {
+				prefix = "[err] "
+			}
+			if err := writeOutput("%s%s\n", prefix, b); err != nil {
+				return err
+			}
 			after = f.Sequence
 		}
 		if len(response.Items) > 0 {
@@ -248,10 +271,9 @@ func importConfig(args []string) error {
 	if err := requestJSON("POST", "/api/v1/import/apply", request, &result); err != nil {
 		return err
 	}
-	fmt.Printf("imported %d definitions\n", result.Applied)
-	return nil
+	return writeOutput("imported %d definitions\n", result.Applied)
 }
-func exportConfig(args []string) error {
+func exportConfig(args []string) (err error) {
 	format := "toml"
 	for i, arg := range args {
 		if arg == "--format" && i+1 < len(args) {
@@ -261,22 +283,24 @@ func exportConfig(args []string) error {
 	base := apiBaseURL()
 	req, err := http.NewRequest("GET", base+"/api/v1/export?format="+format, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("create export request: %w", err)
 	}
 	if token := os.Getenv("MINICRON_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client().Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("send export request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp.Body, &err)
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return fmt.Errorf("HTTP %s: %s", resp.Status, string(b))
+		return responseError(resp)
 	}
 	_, err = io.Copy(os.Stdout, resp.Body)
-	return err
+	if err != nil {
+		return fmt.Errorf("write exported configuration: %w", err)
+	}
+	return nil
 }
 
 func getPrint(path string) error            { return requestPrint("GET", path, nil) }
@@ -286,23 +310,25 @@ func requestPrint(method, path string, body any) error {
 	if err := requestJSON(method, path, body, &out); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	fmt.Println(string(b))
-	return nil
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format response: %w", err)
+	}
+	return writeOutput("%s\n", b)
 }
-func requestJSON(method, path string, body, out any) error {
+func requestJSON(method, path string, body, out any) (err error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("encode request body: %w", err)
 		}
 		reader = bytes.NewReader(b)
 	}
 	base := apiBaseURL()
 	req, err := http.NewRequest(method, base+path, reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("create %s request: %w", method, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -313,14 +339,38 @@ func requestJSON(method, path string, body, out any) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("send %s request: %w", method, err)
 	}
-	defer resp.Body.Close()
+	defer closeResponse(resp.Body, &err)
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return fmt.Errorf("HTTP %s: %s", resp.Status, string(b))
+		return responseError(resp)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func closeResponse(body io.ReadCloser, result *error) {
+	if err := body.Close(); err != nil {
+		*result = errors.Join(*result, fmt.Errorf("close response body: %w", err))
+	}
+}
+
+func responseError(resp *http.Response) error {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	statusErr := fmt.Errorf("HTTP %s: %s", resp.Status, string(body))
+	if err != nil {
+		return errors.Join(statusErr, fmt.Errorf("read error response body: %w", err))
+	}
+	return statusErr
+}
+
+func writeOutput(format string, args ...any) error {
+	if _, err := fmt.Fprintf(os.Stdout, format, args...); err != nil {
+		return fmt.Errorf("write command output: %w", err)
+	}
+	return nil
 }
 func client() *http.Client {
 	if os.Getenv("MINICRON_URL") != "" {
@@ -348,7 +398,6 @@ func defaultDataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "minicron")
 }
-func usage() {
-	fmt.Println("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import crontab export status token service version")
-	fmt.Println("service: install/uninstall systemd units (root daemon or per-user daemons; run as root)")
+func usage() error {
+	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import crontab export status token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")
 }

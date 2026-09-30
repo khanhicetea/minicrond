@@ -78,8 +78,7 @@ func crontab(args []string) error {
 		entries[i].job.RunAs = *userName
 	}
 	if len(entries) == 0 {
-		fmt.Println("no active cron jobs to import")
-		return nil
+		return writeOutput("no active cron jobs to import\n")
 	}
 
 	// A generated name must never silently replace an existing definition.
@@ -113,18 +112,23 @@ func crontab(args []string) error {
 	if err := requestJSON("POST", "/api/v1/import/preview", request, &preview); err != nil {
 		return err
 	}
-	fmt.Printf("The following jobs will be imported into the selected daemon and commented out in %s's crontab:\n", cronOwner(*userName))
-	for _, entry := range entries {
-		fmt.Printf("  line %d -> %s: %s\n", entry.line, entry.job.Name, entry.text)
+	if err := writeOutput("The following jobs will be imported into the selected daemon and commented out in %s's crontab:\n", cronOwner(*userName)); err != nil {
+		return err
 	}
-	fmt.Print("Press Enter to import, or type anything to cancel: ")
+	for _, entry := range entries {
+		if err := writeOutput("  line %d -> %s: %s\n", entry.line, entry.job.Name, entry.text); err != nil {
+			return err
+		}
+	}
+	if err := writeOutput("Press Enter to import, or type anything to cancel: "); err != nil {
+		return err
+	}
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return fmt.Errorf("confirmation: %w", err)
 	}
 	if strings.TrimSpace(answer) != "" {
-		fmt.Println("cancelled; crontab unchanged")
-		return nil
+		return writeOutput("cancelled; crontab unchanged\n")
 	}
 	// Abort if another editor changed the crontab during the preview.
 	current, err := readCrontab(*userName)
@@ -145,8 +149,11 @@ func crontab(args []string) error {
 		return fmt.Errorf("daemon reported %d imported jobs, expected %d; crontab left unchanged", result.Applied, len(entries))
 	}
 	current, err = readCrontab(*userName)
-	if err != nil || !bytes.Equal(current, original) {
-		return fmt.Errorf("imported %d jobs, but crontab changed or could not be re-read; comment out the original entries manually (read error: %v)", result.Applied, err)
+	if err != nil {
+		return fmt.Errorf("imported %d jobs, but crontab could not be re-read; comment out the original entries manually: %w", result.Applied, err)
+	}
+	if !bytes.Equal(current, original) {
+		return fmt.Errorf("imported %d jobs, but crontab changed; comment out the original entries manually", result.Applied)
 	}
 	updated := commentCrontab(original, entries)
 	cmd := crontabCommand(*userName, "-")
@@ -154,8 +161,7 @@ func crontab(args []string) error {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("imported %d jobs, but failed to comment out crontab (jobs may run twice); edit it manually: %w: %s", result.Applied, err, strings.TrimSpace(string(output)))
 	}
-	fmt.Printf("imported %d jobs and commented out their crontab entries\n", result.Applied)
-	return nil
+	return writeOutput("imported %d jobs and commented out their crontab entries\n", result.Applied)
 }
 
 func cronOwner(userName string) string {

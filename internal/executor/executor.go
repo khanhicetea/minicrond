@@ -2,8 +2,7 @@ package executor
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +20,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
@@ -53,15 +53,19 @@ type Service struct {
 	active    map[string]*activeRun
 	byJob     map[string]int
 	retryStop chan struct{}
+	retryDone chan struct{}
 	retryWG   sync.WaitGroup
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
 	done   chan struct{}
 	pgid   int
+	force  chan struct{}
+	forced bool
 }
 
 var ErrStopped = errors.New("operator stop")
+var ErrDisabled = errors.New("definition is disabled")
 var ErrShutdown = errors.New("daemon shutdown")
 var lookupCurrentUser = user.Current
 
@@ -74,17 +78,15 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	}
 	bootID := kernelBootID()
 	if bootID == "" {
-		var b [16]byte
-		_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
-		bootID = hex.EncodeToString(b[:])
+		bootID = uuid.NewV7().String()
 	}
-	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), retryStop: make(chan struct{})}
+	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), retryStop: make(chan struct{}), retryDone: make(chan struct{})}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
 
-// Wait returns a channel that closes once the run reaches its terminal
-// state and its log sink is finalized. It returns nil when the run is
-// unknown or already finished; callers should then read the store directly.
+// Wait closes after process cleanup, log finalization, and terminal-state
+// persistence have been attempted. Persistence failures are logged; callers
+// must read the stored state. It returns nil for unknown or finished runs.
 func (s *Service) Wait(id string) <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,7 +111,14 @@ func (s *Service) TriggerIdempotent(ctx context.Context, d model.Definition, has
 
 func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest, attempt int, parent string) (model.Run, bool, error) {
 	s.admission.Lock()
-	defer s.admission.Unlock()
+	var failedStart *model.Run
+	defer func() {
+		s.admission.Unlock()
+		if failedStart != nil {
+			s.notifyFinished(*failedStart, d)
+			s.scheduleRetry(*failedStart, d)
+		}
+	}()
 	if s.closing {
 		return model.Run{}, false, ErrShutdown
 	}
@@ -117,7 +126,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		return model.Run{}, false, err
 	}
 	if !d.IsEnabled() {
-		return model.Run{}, false, fmt.Errorf("definition %s is disabled", d.Name)
+		return model.Run{}, false, fmt.Errorf("definition %s: %w", d.Name, ErrDisabled)
 	}
 	if d.Kind == model.KindJob && d.OnOverlap == "skip" && s.Active(d.Name) > 0 {
 		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
@@ -129,11 +138,16 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
 		}
 	}
+	capacityOwned := d.Kind == model.KindJob
 	releaseCapacity := func() {
-		if d.Kind == model.KindJob {
+		if capacityOwned {
 			<-s.capacity
+			capacityOwned = false
 		}
 	}
+	// Admission can be recovered by its caller; release its reservation
+	// during unwinding until execution takes ownership.
+	defer releaseCapacity()
 	id := uuid.NewV7()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "pending", Trigger: trigger, Attempt: attempt, ParentRunID: parent, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: time.Now().UTC(), LogRef: "file:" + id.String()}
 	if idem != nil && idem.Key != "" {
@@ -156,26 +170,28 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 		return r, false, err
 	}
+	d = d.Clone()
 	maxBytes := resolveLogMax(d.LogMax)
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
 		ended := time.Now().UTC()
-		if finishErr := s.store.FinishRun(ctx, r.ID, "failed", "start_error", nil, "", ended, 0, false); finishErr == nil {
+		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, 0, false); finishErr == nil {
 			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
-			s.notifyFinished(r, d)
-			// trigger holds admission until it returns; schedule outside it.
-			go s.scheduleRetry(r, d)
+			failedStart = &r
+		} else {
+			err = errors.Join(err, fmt.Errorf("persist failed start: %w", finishErr))
 		}
 		releaseCapacity()
-		return r, false, err
+		return r, false, fmt.Errorf("open run logs: %w", err)
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	a := &activeRun{cancel: cancel, done: make(chan struct{})}
+	a := &activeRun{cancel: cancel, done: make(chan struct{}), force: make(chan struct{})}
 	s.mu.Lock()
 	s.active[r.ID] = a
 	s.byJob[d.Name]++
 	s.mu.Unlock()
-	go s.execute(runCtx, r, d, writer, a)
+	capacityOwned = false // execute releases the slot after full cleanup.
+	go s.execute(runCtx, r.Clone(), d, writer, a)
 	return r, false, nil
 }
 func resolveLogMax(value int) int64 {
@@ -222,7 +238,7 @@ func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash str
 }
 func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, w *logstore.Writer, a *activeRun) {
 	defer func() {
-		s.logs.Close(r.ID)
+		a.cancel(nil)
 		s.mu.Lock()
 		delete(s.active, r.ID)
 		if s.byJob[d.Name] <= 1 {
@@ -236,6 +252,26 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		}
 		close(a.done)
 	}()
+	if err := fault.Call(func() error {
+		s.executeRun(ctx, r, d, w, a)
+		return nil
+	}); err != nil {
+		logFailure("run execution panicked", err, "run", r.ID, "job", d.Name)
+		bytes, truncated := w.Stats()
+		if closeErr := s.logs.Close(r.ID); closeErr != nil {
+			logFailure("finalizing panicked-run logs failed", closeErr, "run", r.ID)
+		}
+		ended := time.Now().UTC()
+		if finishErr := s.finishRun(r.ID, "failed", "internal_error", nil, "", ended, bytes, truncated); finishErr != nil {
+			logFailure("persisting panicked run failed", finishErr, "run", r.ID)
+			return
+		}
+		r.Status, r.EndReason, r.EndedAt = "failed", "internal_error", &ended
+		s.notifyFinished(r, d)
+	}
+}
+
+func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definition, w *logstore.Writer, a *activeRun) {
 	cmd, identity, err := buildCommand(d, r)
 	if err != nil {
 		s.finishStartError(r, d, w, err)
@@ -249,48 +285,64 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		s.finishStartError(r, d, w, err)
 		return
 	}
+	defer closePipe(stdoutR)
+	defer closePipe(stdoutW)
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
-		stdoutR.Close()
-		stdoutW.Close()
 		s.finishStartError(r, d, w, err)
 		return
 	}
+	defer closePipe(stderrR)
+	defer closePipe(stderrW)
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
 	if err = cmd.Start(); err != nil {
-		stdoutR.Close()
-		stdoutW.Close()
-		stderrR.Close()
-		stderrW.Close()
 		s.finishStartError(r, d, w, err)
 		return
 	}
 	// The child owns its duplicates now; drop the parent's write ends so EOF
 	// is reachable once every writer (including descendants) exits.
-	stdoutW.Close()
-	stderrW.Close()
+	closePipe(stdoutW)
+	closePipe(stderrW)
+	wait := make(chan error, 1)
+	go func() { wait <- cmd.Wait() }()
+	leaderDone := false
+	defer func() {
+		// Recovery must clean up descendants even if the leader has exited.
+		if !leaderDone || groupAlive(cmd.Process.Pid) {
+			killGroup(cmd.Process.Pid, syscall.SIGKILL)
+		}
+		if !leaderDone {
+			<-wait
+		}
+	}()
 	pgid := cmd.Process.Pid
+	s.mu.Lock()
+	a.pgid = pgid
+	s.mu.Unlock()
 	started := time.Now().UTC()
 	startID := processIdentity(cmd.Process.Pid)
 	if err = s.store.StartRun(context.Background(), r.ID, cmd.Process.Pid, pgid, startID, started); err != nil {
 		killGroup(pgid, syscall.SIGKILL)
-		cmd.Wait()
-		stdoutR.Close()
-		stderrR.Close()
+		<-wait
+		leaderDone = true
 		s.finishStartError(r, d, w, fmt.Errorf("persist running state: %w", err))
 		return
 	}
 	r.PID, r.PGID, r.ProcessStartID, r.StartedAt = cmd.Process.Pid, pgid, startID, &started
-	s.mu.Lock()
-	a.pgid = pgid
-	s.mu.Unlock()
-	_ = w.Write(logstore.System, []byte("process started as "+identity), 0)
+	writeSystem(w, r.ID, "process started as "+identity)
 	pumps := make(chan error, 2)
-	go func() { pumps <- w.Pipe(logstore.Stdout, stdoutR) }()
-	go func() { pumps <- w.Pipe(logstore.Stderr, stderrR) }()
-	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
+	pumpsRemaining := 2
+	defer func() {
+		closePipe(stdoutR)
+		closePipe(stderrR)
+		for pumpsRemaining > 0 {
+			<-pumps
+			pumpsRemaining--
+		}
+	}()
+	go func() { pumps <- fault.Call(func() error { return w.Pipe(logstore.Stdout, stdoutR) }) }()
+	go func() { pumps <- fault.Call(func() error { return w.Pipe(logstore.Stderr, stderrR) }) }()
 	timeout := time.Duration(d.Timeout) * time.Second
 	var timer <-chan time.Time
 	if timeout > 0 {
@@ -300,26 +352,30 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	}
 	var waitErr error
 	var cause error
-	pumpsRemaining := 2
-	select {
-	case waitErr = <-wait:
-	case pumpErr := <-pumps:
-		pumpsRemaining--
-		if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
-			cause = fmt.Errorf("log pump failed: %w", pumpErr)
-			_ = w.Write(logstore.System, []byte("log pump error; stopping process"), 0)
-			waitErr = stopGroup(pgid, d, wait)
-		} else {
-			waitErr = <-wait
+	for !leaderDone {
+		select {
+		case waitErr = <-wait:
+			leaderDone = true
+		case pumpErr := <-pumps:
+			pumpsRemaining--
+			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
+				cause = fmt.Errorf("log pump failed: %w", pumpErr)
+				logFailure("run log pump failed", cause, "run", r.ID)
+				writeSystem(w, r.ID, "log pump error; stopping process")
+				waitErr = stopGroup(pgid, d, wait, a.force)
+				leaderDone = true
+			}
+		case <-timer:
+			cause = context.DeadlineExceeded
+			writeSystem(w, r.ID, "timeout reached, stopping")
+			waitErr = stopGroup(pgid, d, wait, a.force)
+			leaderDone = true
+		case <-ctx.Done():
+			cause = context.Cause(ctx)
+			writeSystem(w, r.ID, "stop requested")
+			waitErr = stopGroup(pgid, d, wait, a.force)
+			leaderDone = true
 		}
-	case <-timer:
-		cause = context.DeadlineExceeded
-		_ = w.Write(logstore.System, []byte("timeout reached, stopping"), 0)
-		waitErr = stopGroup(pgid, d, wait)
-	case <-ctx.Done():
-		cause = context.Cause(ctx)
-		_ = w.Write(logstore.System, []byte("stop requested"), 0)
-		waitErr = stopGroup(pgid, d, wait)
 	}
 	// Drain remaining pipe bytes. A descendant that inherited the pipe can
 	// keep EOF unreachable; bound the wait, then force-close (the pumps then
@@ -331,16 +387,22 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		case pumpErr := <-pumps:
 			pumpsRemaining--
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
-				w.Write(logstore.System, []byte("log pump error: "+pumpErr.Error()), 0)
+				cause = errors.Join(cause, fmt.Errorf("log pump failed: %w", pumpErr))
+				logFailure("run log pump failed", pumpErr, "run", r.ID)
+				writeSystem(w, r.ID, "log pump error: "+pumpErr.Error())
 			}
 		case <-drainDeadline.C:
-			w.Write(logstore.System, []byte("log pipes still held by descendants; closing"), 0)
-			stdoutR.Close()
-			stderrR.Close()
+			writeSystem(w, r.ID, "log pipes still held by descendants; closing")
+			killGroup(pgid, syscall.SIGKILL)
+			closePipe(stdoutR)
+			closePipe(stderrR)
 		}
 	}
-	stdoutR.Close()
-	stderrR.Close()
+	closePipe(stdoutR)
+	closePipe(stderrR)
+	if groupAlive(pgid) {
+		killGroup(pgid, syscall.SIGKILL)
+	}
 	status, reason, code, signal := classify(waitErr, cause, d.SuccessCodes)
 	if cause != nil && !errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, ErrStopped) && !errors.Is(cause, ErrShutdown) {
 		status, reason = "failed", "log_error"
@@ -363,7 +425,8 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 }
 
 func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
-	w.Write(logstore.System, []byte("start error: "+err.Error()), 0)
+	logFailure("starting run failed", err, "run", r.ID, "job", d.Name)
+	writeSystem(w, r.ID, "start error: "+err.Error())
 	bytes, truncated := w.Stats()
 	if closeErr := s.logs.Close(r.ID); closeErr != nil {
 		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
@@ -393,48 +456,77 @@ func (s *Service) scheduleRetry(r model.Run, d model.Definition) {
 	s.admission.Unlock()
 	go func() {
 		defer s.retryWG.Done()
-		delay := d.RetryDelay
-		if delay <= 0 {
-			delay = 5
-		}
-		timer := time.NewTimer(time.Duration(delay) * time.Second)
-		defer timer.Stop()
-		select {
-		case <-s.retryStop:
-			return
-		case <-timer.C:
-		}
-		// Use the current definition: disabled, deleted, or reduced budgets
-		// must not launch a queued retry.
-		current, hash, err := s.store.Definition(context.Background(), d.Name)
-		if err != nil || current.ID != d.ID || current.Kind != model.KindJob || !current.IsEnabled() || r.Attempt > current.Retries {
-			return
-		}
-		if _, _, err := s.trigger(context.Background(), current, hash, "retry", r.ScheduledFor, nil, r.Attempt+1, r.ID); err != nil && !errors.Is(err, ErrShutdown) {
-			slog.Error("job retry trigger failed", "job", d.Name, "run", r.ID, "error", err)
+		if err := fault.Call(func() error {
+			s.retry(r, d)
+			return nil
+		}); err != nil {
+			logFailure("job retry panicked", err, "run", r.ID, "job", d.Name)
 		}
 	}()
 }
 
+func (s *Service) retry(r model.Run, d model.Definition) {
+	delay := d.RetryDelay
+	if delay <= 0 {
+		delay = 5
+	}
+	timer := time.NewTimer(time.Duration(delay) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-s.retryStop:
+		return
+	case <-timer.C:
+	}
+	// Use the current definition: disabled, deleted, or reduced budgets
+	// must not launch a queued retry.
+	current, hash, err := s.store.Definition(context.Background(), d.Name)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, sql.ErrNoRows) {
+			logFailure("reading retry definition failed", err, "job", d.Name, "run", r.ID)
+		}
+		return
+	}
+	if current.ID != d.ID || current.Kind != model.KindJob || !current.IsEnabled() || r.Attempt > current.Retries {
+		return
+	}
+	if _, _, err := s.trigger(context.Background(), current, hash, "retry", r.ScheduledFor, nil, r.Attempt+1, r.ID); err != nil && !errors.Is(err, ErrShutdown) {
+		slog.Error("job retry trigger failed", "job", d.Name, "run", r.ID, "error", err)
+	}
+}
+
 func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var err error
 	for attempt := range 5 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err = s.store.FinishRun(ctx, id, status, reason, code, signal, ended, bytes, truncated)
-		cancel()
 		if err == nil {
 			return nil
 		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("persist terminal run state: %w", err)
+		}
 		if attempt < 4 {
-			time.Sleep(time.Duration(1<<attempt) * 50 * time.Millisecond)
+			timer := time.NewTimer(time.Duration(1<<attempt) * 50 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("persist terminal run state: %w", errors.Join(err, ctx.Err()))
+			case <-timer.C:
+			}
 		}
 	}
-	return err
+	return fmt.Errorf("persist terminal run state: %w", err)
 }
 
 func (s *Service) notifyFinished(r model.Run, d model.Definition) {
 	if s.onFinished != nil {
-		s.onFinished(r, d)
+		if err := fault.Call(func() error {
+			s.onFinished(r.Clone(), d.Clone())
+			return nil
+		}); err != nil {
+			logFailure("run completion callback panicked", err, "run", r.ID, "job", d.Name)
+		}
 	}
 }
 func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
@@ -528,8 +620,14 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 			return nil, "", "", err
 		}
 	}
-	uid, _ := strconv.ParseUint(u.Uid, 10, 32)
-	gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse user uid: %w", err)
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("parse user gid: %w", err)
+	}
 	if groupName != "" {
 		g, gerr := user.LookupGroup(groupName)
 		if gerr != nil {
@@ -537,7 +635,10 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 				return nil, "", "", gerr
 			}
 		}
-		gid, _ = strconv.ParseUint(g.Gid, 10, 32)
+		gid, err = strconv.ParseUint(g.Gid, 10, 32)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("parse group gid: %w", err)
+		}
 	}
 	if os.Geteuid() == 0 || uint32(uid) != uint32(os.Geteuid()) {
 		cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
@@ -628,7 +729,7 @@ func resolveSecret(ref string) (string, error) {
 	}
 	return "", errors.New("invalid secret reference")
 }
-func stopGroup(pgid int, d model.Definition, wait <-chan error) error {
+func stopGroup(pgid int, d model.Definition, wait <-chan error, force <-chan struct{}) error {
 	grace := time.Duration(d.Grace) * time.Second
 	if grace <= 0 {
 		killGroup(pgid, syscall.SIGKILL)
@@ -652,6 +753,12 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error) error {
 			if leaderDone && !groupAlive(pgid) {
 				return leaderErr
 			}
+		case <-force:
+			killGroup(pgid, syscall.SIGKILL)
+			if leaderDone {
+				return leaderErr
+			}
+			return <-wait
 		case <-timer.C:
 			killGroup(pgid, syscall.SIGKILL)
 			if leaderDone {
@@ -666,7 +773,16 @@ func groupAlive(pgid int) bool {
 	err := syscall.Kill(-pgid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
-func killGroup(pgid int, sig syscall.Signal) { _ = syscall.Kill(-pgid, sig) }
+func killGroup(pgid int, sig syscall.Signal) {
+	// A zero/negative PGID can signal the daemon's own group or all processes.
+	if pgid <= 0 {
+		slog.Error("refusing invalid process group signal", "pgid", pgid, "signal", sig)
+		return
+	}
+	if err := syscall.Kill(-pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		slog.Error("signaling process group failed", "pgid", pgid, "signal", sig, "error", err)
+	}
+}
 func parseSignal(v string) syscall.Signal {
 	switch strings.TrimPrefix(v, "SIG") {
 	case "INT":
@@ -784,6 +900,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if !s.closing {
 		s.closing = true
 		close(s.retryStop)
+		go func() {
+			s.retryWG.Wait()
+			close(s.retryDone)
+		}()
 	}
 	s.mu.Lock()
 	runs := make([]*activeRun, 0, len(s.active))
@@ -797,14 +917,44 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		select {
 		case <-a.done:
 		case <-ctx.Done():
+			s.mu.Lock()
 			for _, remaining := range runs {
+				if !remaining.forced {
+					remaining.forced = true
+					close(remaining.force)
+				}
 				if remaining.pgid > 0 {
 					killGroup(remaining.pgid, syscall.SIGKILL)
 				}
 			}
+			s.mu.Unlock()
 			return ctx.Err()
 		}
 	}
-	s.retryWG.Wait()
-	return nil
+	select {
+	case <-s.retryDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func logFailure(message string, err error, attrs ...any) {
+	attrs = append(attrs, "error", err)
+	if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {
+		attrs = append(attrs, "stack", string(panicErr.Stack))
+	}
+	slog.Error(message, attrs...)
+}
+
+func writeSystem(w *logstore.Writer, runID, message string) {
+	if err := w.Write(logstore.System, []byte(message), 0); err != nil {
+		logFailure("writing run system log failed", err, "run", runID)
+	}
+}
+
+func closePipe(pipe *os.File) {
+	if err := pipe.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		slog.Error("closing process pipe failed", "error", err)
+	}
 }

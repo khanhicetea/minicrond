@@ -131,7 +131,7 @@ func serviceUninstall(args []string) error {
 		return fmt.Errorf("no unit file at %s", unitPath)
 	}
 	if err := systemctl("disable", "--now", unitName); err != nil {
-		fmt.Printf("warning: could not disable/stop %s: %v\n", unitName, err)
+		return fmt.Errorf("disable and stop service %s before removing unit: %w", unitName, err)
 	}
 	if err := os.Remove(unitPath); err != nil {
 		return err

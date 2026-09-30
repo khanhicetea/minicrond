@@ -3,9 +3,12 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
 )
@@ -74,13 +78,21 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 		if _, ok := s.running[defs[index].Name]; ok {
 			continue
 		}
-		d := defs[index]
+		d := defs[index].Clone()
 		runCtx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		s.running[d.Name] = scheduledLoop{def: d, cancel: cancel, done: done}
 		s.loops.Go(func() {
 			defer close(done)
-			s.loop(runCtx, d)
+			defer cancel()
+			if err := fault.Call(func() error {
+				s.loop(runCtx, d)
+				return nil
+			}); err != nil {
+				if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {
+					slog.Error("scheduler loop panicked", "job", d.Name, "error", err, "stack", string(panicErr.Stack))
+				}
+			}
 		})
 	}
 	return nil
@@ -106,6 +118,10 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	hash := hex.EncodeToString(hashBytes[:])
 	anchor, last, persistedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
 	if ctx.Err() != nil {
+		return
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Error("scheduler: reading schedule state failed", "job", d.Name, "error", err)
 		return
 	}
 	persistedLast := last
@@ -140,19 +156,34 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	}
 	if !last.IsZero() && last.Before(now) {
 		next, err := schedule.nextFireDistinct(last, anchor, last)
-		if err == nil && next.Before(now) {
+		if err != nil {
+			slog.Error("scheduler: calculating initial catch-up fire failed", "job", d.Name, "error", err)
+			return
+		}
+		if next.Before(now) {
 			count := 0
 			cursor := next
 			latest := next
 			if schedule.interval > 0 {
 				steps := now.Sub(next) / schedule.interval
 				latest = next.Add(steps * schedule.interval)
-				count = int(steps + 1)
+				// Saturate before the addition and conversion. Nanosecond
+				// intervals can exceed an int's count over a long downtime.
+				if steps >= time.Duration(math.MaxInt) {
+					count = math.MaxInt
+				} else {
+					count = int(steps) + 1
+				}
 			} else {
 				for !cursor.After(now) && count < 10000 {
 					latest = cursor
 					count++
-					cursor, _ = schedule.nextFireDistinct(cursor, anchor, latest)
+					following, nextErr := schedule.nextFireDistinct(cursor, anchor, latest)
+					if nextErr != nil {
+						slog.Error("scheduler: calculating catch-up fire failed", "job", d.Name, "error", nextErr)
+						break
+					}
+					cursor = following
 				}
 				if count == 10000 && !cursor.After(now) {
 					slog.Warn("scheduler: cron catch-up summarized at safety bound", "job", d.Name, "count", count)
@@ -184,6 +215,7 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	for ctx.Err() == nil {
 		next, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
+			slog.Error("scheduler: calculating next fire failed", "job", d.Name, "error", err)
 			return
 		}
 		// Keep the pending fire in durable state so API clients can display
@@ -211,6 +243,7 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			}
 			recomputed, err := schedule.nextFireDistinct(maxTime(last, now), anchor, last)
 			if err != nil {
+				slog.Error("scheduler: recalculating next fire failed", "job", d.Name, "error", err)
 				return
 			}
 			next = recomputed
@@ -239,6 +272,7 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		// the next scheduler iteration is being prepared.
 		following, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
+			slog.Error("scheduler: calculating following fire failed", "job", d.Name, "error", err)
 			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
 				slog.Error("scheduler: persist watermark failed", "job", d.Name, "error", stateErr)
 			}
@@ -315,8 +349,15 @@ func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
 		if after.Before(anchor) {
 			return anchor.Add(c.interval), nil
 		}
-		steps := after.Sub(anchor)/c.interval + 1
-		return anchor.Add(steps * c.interval), nil
+		periods := after.Sub(anchor) / c.interval
+		if periods >= time.Duration(math.MaxInt64)/c.interval {
+			return time.Time{}, fmt.Errorf("schedule interval exceeds supported time range: %q", c.raw)
+		}
+		candidate := anchor.Add((periods + 1) * c.interval)
+		if !candidate.After(after) {
+			return time.Time{}, fmt.Errorf("schedule does not advance beyond current time: %q", c.raw)
+		}
+		return candidate, nil
 	}
 	candidate := c.cron.Next(after.In(c.loc)).UTC()
 	if candidate.IsZero() {

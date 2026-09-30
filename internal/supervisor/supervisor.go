@@ -2,12 +2,15 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
 )
@@ -23,6 +26,7 @@ type Supervisor struct {
 	mu            sync.Mutex
 	cancel        context.CancelFunc
 	ctx           context.Context
+	closing       bool
 	holds         map[string]bool
 	failures      map[string]int
 	active        map[string]string
@@ -51,6 +55,7 @@ func New(st *store.Store, ex *executor.Service) *Supervisor {
 }
 
 func (s *Supervisor) startLocked(d model.Definition) workerLoop {
+	d = d.Clone()
 	ctx, cancel := context.WithCancel(s.ctx)
 	s.workerCancels[d.Name] = cancel
 	s.workerDone[d.Name] = make(chan struct{})
@@ -60,7 +65,13 @@ func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 
 func (s *Supervisor) launch(worker workerLoop) {
 	s.loops.Go(func() {
-		s.loop(worker.ctx, worker.def)
+		if err := fault.Call(func() error {
+			s.loop(worker.ctx, worker.def)
+			return nil
+		}); err != nil {
+			panicErr, _ := errors.AsType[*fault.PanicError](err)
+			slog.Error("worker supervision panicked", "worker", worker.def.Name, "error", err, "stack", string(panicErr.Stack))
+		}
 	})
 }
 
@@ -74,6 +85,10 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 		}
 	}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
 	if s.ctx == nil {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 	}
@@ -94,6 +109,10 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 		<-done
 	}
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
 	workers := make([]workerLoop, 0, len(desired))
 	for _, d := range desired {
 		workers = append(workers, s.startLocked(d))
@@ -107,6 +126,16 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 	defer func() {
 		s.mu.Lock()
+		id := s.active[d.Name]
+		s.mu.Unlock()
+		if id != "" {
+			s.stopRun(id)
+			if done := s.exec.Wait(id); done != nil {
+				<-done
+			}
+		}
+		s.mu.Lock()
+		delete(s.active, d.Name)
 		delete(s.workerCancels, d.Name)
 		delete(s.workerDefs, d.Name)
 		if done := s.workerDone[d.Name]; done != nil {
@@ -127,18 +156,32 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		}
 		r, err := s.exec.Trigger(ctx, d, hash, "startup", nil)
 		if err != nil {
-			return
+			if ctx.Err() != nil || errors.Is(err, executor.ErrShutdown) || s.held(d.Name) {
+				return
+			}
+			slog.Error("starting supervised worker failed", "worker", d.Name, "run", r.ID, "error", err)
+			// A failed log open may already have persisted a terminal run.
+			// Admission failures still consume the failed-start budget.
+			if !model.Terminal(r.Status) {
+				if d.Restart == "never" || !s.restartAfter(ctx, d, false) {
+					return
+				}
+				continue
+			}
 		}
 		s.mu.Lock()
 		s.active[d.Name] = r.ID
+		held := s.holds[d.Name]
 		s.mu.Unlock()
-		// Wait on the executor's done channel instead of polling the store:
-		// the channel closes only after the terminal state is persisted, so a
-		// single read is current. nil means the run already finished.
+		if held {
+			s.stopRun(r.ID)
+		}
+		// Wait for process cleanup and the attempted terminal transition,
+		// then verify the persisted state before restarting.
 		if done := s.exec.Wait(r.ID); done != nil {
 			select {
 			case <-ctx.Done():
-				_ = s.exec.Stop(r.ID)
+				s.stopRun(r.ID)
 				<-done
 				s.mu.Lock()
 				if s.active[d.Name] == r.ID {
@@ -169,31 +212,39 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			return
 		}
 		healthy := current.StartedAt != nil && current.EndedAt != nil && current.EndedAt.Sub(*current.StartedAt) >= healthyAfter
-		s.mu.Lock()
-		if healthy {
-			s.failures[d.Name] = 0
-		} else {
-			s.failures[d.Name]++
-		}
-		failures := s.failures[d.Name]
-		s.mu.Unlock()
-		if failures >= d.MaxRestartAttempts {
-			slog.Warn("worker fatal: restart attempts exhausted", "worker", d.Name, "attempts", failures)
+		if !s.restartAfter(ctx, d, healthy) {
 			return
 		}
-		delay := time.Duration(d.RestartDelay) * time.Second
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
-		case <-timer.C:
-		}
+	}
+}
+
+// restartAfter accounts for both admission failures and unhealthy lifetimes.
+func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healthy bool) bool {
+	s.mu.Lock()
+	if healthy {
+		s.failures[d.Name] = 0
+	} else {
+		s.failures[d.Name]++
+	}
+	failures := s.failures[d.Name]
+	s.mu.Unlock()
+	if failures >= d.MaxRestartAttempts {
+		slog.Warn("worker fatal: restart attempts exhausted", "worker", d.Name, "attempts", failures)
+		return false
+	}
+	timer := time.NewTimer(time.Duration(d.RestartDelay) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return !s.held(d.Name)
+	}
+}
+
+func (s *Supervisor) stopRun(id string) {
+	if err := s.exec.Stop(id); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("stopping supervised worker failed", "run", id, "error", err)
 	}
 }
 
@@ -229,7 +280,7 @@ func (s *Supervisor) StartDefinition(d model.Definition) {
 	s.failures[d.Name] = 0
 	_, reserved := s.workerCancels[d.Name]
 	var worker workerLoop
-	if s.ctx != nil && !reserved && d.Kind == model.KindWorker && d.IsEnabled() {
+	if !s.closing && s.ctx != nil && !reserved && d.Kind == model.KindWorker && d.IsEnabled() {
 		worker = s.startLocked(d)
 	}
 	s.mu.Unlock()
@@ -243,30 +294,54 @@ func (s *Supervisor) Start(name string) { s.mu.Lock(); delete(s.holds, name); s.
 // Restart stops the current lifetime and starts its replacement only after the
 // old supervisor loop and process have fully completed.
 func (s *Supervisor) Restart(d model.Definition) {
-	s.mu.Lock()
-	done := s.workerDone[d.Name]
-	cancel := s.workerCancels[d.Name]
-	s.mu.Unlock()
-	_ = s.Stop(d.Name)
-	if cancel != nil {
-		cancel()
-	}
-	go func() {
-		if done != nil {
-			<-done
-		}
-		s.StartDefinition(d)
-	}()
-}
-
-func (s *Supervisor) Shutdown() {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	d = d.Clone()
+	done := s.workerDone[d.Name]
+	cancel := s.workerCancels[d.Name]
+	s.mu.Unlock()
+	if err := s.Stop(d.Name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("stopping worker for restart failed", "worker", d.Name, "error", err)
+	}
+	if cancel != nil {
+		cancel()
+	}
+	s.loops.Go(func() {
+		if done != nil {
+			<-done
+		}
+		// Closing suppresses a replacement when shutdown interrupts restart.
+		s.mu.Lock()
+		closing := s.closing
+		s.mu.Unlock()
+		if !closing {
+			s.StartDefinition(d)
+		}
+	})
+}
+
+// BeginShutdown stops admission and cancels supervision before the executor
+// spends its shutdown budget. Joining is separate so grace periods are bounded
+// by the daemon's executor deadline.
+func (s *Supervisor) BeginShutdown() {
+	s.mu.Lock()
+	s.closing = true
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.mu.Unlock()
+}
+
+func (s *Supervisor) Shutdown() {
+	s.BeginShutdown()
+	// Join any admission already in progress before waiting on the group.
+	s.lifecycle.Lock()
+	s.lifecycle.Unlock()
 	s.loops.Wait()
 }
 

@@ -248,6 +248,7 @@ type Writer struct {
 	header       [24]byte
 	closed       bool
 	closeErr     error
+	chunkErr     error // finalization failures leave the stream unusable
 }
 
 func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
@@ -281,15 +282,22 @@ func (w *Writer) sealForArchive() (int, error) {
 }
 
 func (w *Writer) rotate() error {
+	if w.chunkErr != nil {
+		return w.chunkErr
+	}
+	// Acquire the replacement before closing the current stream. A full disk,
+	// permission error, or conflicting path must leave the current chunk usable.
+	next := w.chunk + 1
+	path := w.chunkPath(next)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("open log chunk %d: %w", next, err)
+	}
 	if w.enc != nil {
 		if err := w.finishChunk(); err != nil {
-			return err
+			w.chunkErr = errors.Join(err, f.Close(), os.Remove(path))
+			return w.chunkErr
 		}
-	}
-	w.chunk++
-	f, err := os.OpenFile(w.chunkPath(w.chunk), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
 	}
 	enc := w.enc
 	if enc == nil {
@@ -310,29 +318,37 @@ func (w *Writer) rotate() error {
 			zstd.WithLowerEncoderMem(true),
 		)
 		if err != nil {
-			f.Close()
-			return err
+			return errors.Join(fmt.Errorf("create log encoder: %w", err), f.Close(), os.Remove(path))
 		}
 	} else {
 		// Close seals the old stream; Reset starts an independent chunk while
 		// retaining the encoder's match window and compression buffers.
 		enc.Reset(f)
 	}
+	w.chunk = next
 	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
 	return nil
 }
 func (w *Writer) finishChunk() error {
+	if w.file == nil {
+		return w.chunkErr
+	}
 	encErr := w.enc.Close()
 	syncErr := w.file.Sync()
 	info, statErr := w.file.Stat()
 	closeErr := w.file.Close()
+	w.file = nil
 	if err := errors.Join(encErr, syncErr, statErr, closeErr); err != nil {
-		return err
+		w.chunkErr = fmt.Errorf("finalize log chunk %d: %w", w.chunk, err)
+		return w.chunkErr
 	}
 	if w.seq >= w.chunkFirst {
 		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.seq, info.Size(), int64(w.chunkRaw), false})
 	}
-	return w.writeIndex()
+	if err := w.writeIndex(); err != nil {
+		w.chunkErr = fmt.Errorf("index log chunk %d: %w", w.chunk, err)
+	}
+	return w.chunkErr
 }
 func (w *Writer) writeIndex() error {
 	w.idx.Job, w.idx.Kind = w.job, w.kind
@@ -376,6 +392,9 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	defer w.mu.Unlock()
 	if w.closed {
 		return errors.New("log writer closed")
+	}
+	if w.chunkErr != nil {
+		return w.chunkErr
 	}
 	if len(payload) > w.maxLine && w.maxLine > 0 {
 		payload = payload[:w.maxLine]

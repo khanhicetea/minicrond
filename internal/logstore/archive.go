@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -87,11 +88,25 @@ func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 func (s *Store) archiveOrphan(runID, dir string) error {
 	sealed := make(map[int]chunkMeta)
 	var idx index
-	if b, err := os.ReadFile(filepath.Join(dir, "index.json")); err == nil {
-		if json.Unmarshal(b, &idx) == nil {
-			for _, m := range idx.Chunks {
-				sealed[m.Number] = m
+	b, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read orphan log index: %w", err)
+	}
+	if err == nil {
+		if err := json.Unmarshal(b, &idx); err != nil {
+			return fmt.Errorf("decode orphan log index: %w", err)
+		}
+		if idx.Version != int(Version) {
+			return fmt.Errorf("unsupported orphan log index version %d", idx.Version)
+		}
+		for _, m := range idx.Chunks {
+			if m.Number <= 0 || m.First == 0 || m.Last < m.First || m.Bytes < 0 || m.Raw < 0 {
+				return fmt.Errorf("invalid orphan log chunk %d metadata", m.Number)
 			}
+			if _, exists := sealed[m.Number]; exists {
+				return fmt.Errorf("duplicate orphan log chunk %d", m.Number)
+			}
+			sealed[m.Number] = m
 		}
 	}
 	files, err := chunkFiles(dir)

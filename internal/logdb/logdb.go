@@ -35,22 +35,20 @@ type LogDB struct{ db *sql.DB }
 // Open creates or opens <dataDir>/minicron-logs.db and applies migrations.
 func Open(dataDir string) (*LogDB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create log database directory: %w", err)
 	}
 	path := filepath.Join(dataDir, "minicron-logs.db")
 	db, err := sqlite.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open log database: %w", err)
 	}
 	l := &LogDB{db: db}
 	if err := l.migrate(context.Background()); err != nil {
-		db.Close()
-		return nil, err
+		return nil, errors.Join(fmt.Errorf("migrate log database: %w", err), db.Close())
 	}
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-			db.Close()
-			return nil, err
+			return nil, errors.Join(fmt.Errorf("set log database permissions: %w", err), db.Close())
 		}
 	}
 	return l, nil

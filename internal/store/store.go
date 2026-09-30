@@ -24,6 +24,8 @@ const SchemaVersion = 8
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
 var ErrReadOnly = errors.New("config-owned definition is read-only")
+var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+var ErrIdempotencyKeyExists = errors.New("active idempotency key already exists")
 
 type Store struct{ db *sql.DB }
 
@@ -60,25 +62,23 @@ type RunMetricBucket struct {
 
 func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create metadata directory: %w", err)
 	}
 	if err := os.Chmod(dataDir, 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("set metadata directory permissions: %w", err)
 	}
 	path := filepath.Join(dataDir, "minicron.db")
 	db, err := sqlite.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
-		db.Close()
-		return nil, err
+		return nil, errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close())
 	}
 	for _, dbPath := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(dbPath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-			db.Close()
-			return nil, err
+			return nil, errors.Join(fmt.Errorf("set metadata database permissions: %w", err), db.Close())
 		}
 	}
 	return s, nil
@@ -333,7 +333,10 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 			if execErr != nil {
 				return execErr
 			}
-			id, _ = res.LastInsertId()
+			id, err = res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("read imported definition id: %w", err)
+			}
 			rev = 1
 		} else if err != nil {
 			return err
@@ -379,7 +382,10 @@ func (s *Store) SyncConfigDefinitions(ctx context.Context, defs []model.Definiti
 			if err != nil {
 				return err
 			}
-			id, _ = res.LastInsertId()
+			id, err = res.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("read config definition id: %w", err)
+			}
 			rev = 1
 		} else if err != nil {
 			return err
@@ -522,7 +528,10 @@ func (s *Store) putDefinition(ctx context.Context, d model.Definition, expected 
 		if e != nil {
 			return d, e
 		}
-		id, _ = res.LastInsertId()
+		id, err = res.LastInsertId()
+		if err != nil {
+			return d, fmt.Errorf("read definition id: %w", err)
+		}
 		rev = 1
 	} else if err != nil {
 		return d, err
@@ -559,10 +568,10 @@ func (s *Store) IdempotentRun(ctx context.Context, principal, operation, key, re
 	var runID, existingHash string
 	err := s.db.QueryRowContext(ctx, "SELECT run_id,request_hash FROM idempotency WHERE principal=? AND operation=? AND key=? AND created_us>?", principal, operation, key, time.Now().Add(-24*time.Hour).UnixMicro()).Scan(&runID, &existingHash)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read idempotency reservation: %w", err)
 	}
 	if existingHash != requestHash {
-		return "", errors.New("idempotency key reused with different request")
+		return "", fmt.Errorf("read idempotency reservation: %w", ErrIdempotencyConflict)
 	}
 	return runID, nil
 }
@@ -572,17 +581,24 @@ func (s *Store) SaveIdempotency(ctx context.Context, principal, operation, key, 
 		ON CONFLICT(principal,operation,key) DO UPDATE SET request_hash=excluded.request_hash,run_id=excluded.run_id,created_us=excluded.created_us
 		WHERE idempotency.created_us<=?`, principal, operation, key, requestHash, runID, now.UnixMicro(), now.Add(-24*time.Hour).UnixMicro())
 	if err != nil {
-		return err
+		return fmt.Errorf("save idempotency reservation: %w", err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errors.New("active idempotency key already exists")
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read idempotency reservation result: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("save idempotency reservation: %w", ErrIdempotencyKeyExists)
 	}
 	return nil
 }
 
 func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
 	_, err := s.db.ExecContext(ctx, createRunSQL, runArgs(r)...)
-	return err
+	if err != nil {
+		return fmt.Errorf("create run %s: %w", r.ID, err)
+	}
+	return nil
 }
 
 const createRunSQL = `INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,end_reason,trigger,attempt,parent_run_id,scheduled_for_us,missed_count,boot_id,queued_us,ended_us,log_ref) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -605,7 +621,7 @@ func (s *Store) AdmitIdempotentRun(ctx context.Context, r model.Run, principal, 
 	err = tx.QueryRowContext(ctx, "SELECT run_id,request_hash,created_us FROM idempotency WHERE principal=? AND operation=? AND key=?", principal, operation, key).Scan(&existingID, &existingHash, &created)
 	if err == nil && created > now.Add(-24*time.Hour).UnixMicro() {
 		if existingHash != requestHash {
-			return "", errors.New("idempotency key reused with different request")
+			return "", fmt.Errorf("admit idempotent run: %w", ErrIdempotencyConflict)
 		}
 		return existingID, nil
 	}
@@ -628,9 +644,13 @@ func (s *Store) AdmitIdempotentRun(ctx context.Context, r model.Run, principal, 
 func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID string, at time.Time) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
 	if err != nil {
-		return err
+		return fmt.Errorf("start run %s: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read start result for run %s: %w", id, err)
+	}
+	if n != 1 {
 		return fmt.Errorf("start run %s: invalid state transition", id)
 	}
 	return nil
@@ -638,9 +658,13 @@ func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID 
 func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, id, status)
 	if err != nil {
-		return err
+		return fmt.Errorf("finish run %s: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read finish result for run %s: %w", id, err)
+	}
+	if n != 1 {
 		return fmt.Errorf("finish run %s: invalid state transition", id)
 	}
 	return nil

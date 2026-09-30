@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"maps"
+	"slices"
+	"time"
+)
 
 //go:generate sh -c "cd ../.. && go tool tygo generate --config tygo.yaml"
 
@@ -59,6 +63,30 @@ type Definition struct {
 	NextFireAt *time.Time `json:"next_fire_at,omitzero" toml:"-"`
 }
 
+// Clone creates an independent snapshot of a definition's mutable fields.
+// Callers can retain the snapshot while another owner updates the original.
+func (d Definition) Clone() Definition {
+	d.Argv = slices.Clone(d.Argv)
+	d.SuccessCodes = slices.Clone(d.SuccessCodes)
+	d.Alerts = slices.Clone(d.Alerts)
+	d.Env = maps.Clone(d.Env)
+	d.SecretEnv = maps.Clone(d.SecretEnv)
+	d.Labels = maps.Clone(d.Labels)
+	if d.Enabled != nil {
+		value := *d.Enabled
+		d.Enabled = &value
+	}
+	if d.Autostart != nil {
+		value := *d.Autostart
+		d.Autostart = &value
+	}
+	if d.NextFireAt != nil {
+		value := *d.NextFireAt
+		d.NextFireAt = &value
+	}
+	return d
+}
+
 func (d Definition) IsEnabled() bool     { return d.Enabled == nil || *d.Enabled }
 func (d Definition) DoesAutostart() bool { return d.Autostart == nil || *d.Autostart }
 
@@ -88,6 +116,27 @@ type Run struct {
 	LogRef         string     `json:"log_ref,omitempty"`
 	LogBytes       int64      `json:"log_bytes"`
 	LogTruncated   bool       `json:"log_truncated"`
+}
+
+// Clone creates an independent snapshot of a run's optional values.
+func (r Run) Clone() Run {
+	if r.ScheduledFor != nil {
+		value := *r.ScheduledFor
+		r.ScheduledFor = &value
+	}
+	if r.ExitCode != nil {
+		value := *r.ExitCode
+		r.ExitCode = &value
+	}
+	if r.StartedAt != nil {
+		value := *r.StartedAt
+		r.StartedAt = &value
+	}
+	if r.EndedAt != nil {
+		value := *r.EndedAt
+		r.EndedAt = &value
+	}
+	return r
 }
 
 // TerminalStatuses reports whether a run status is final. Run transitions

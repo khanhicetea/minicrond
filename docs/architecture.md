@@ -33,6 +33,7 @@ directory (enforced by an flock on `minicron.lock`).
 | `internal/logstore` | Live-tier tagged, zstd-compressed chunk files with fsync-before-ack |
 | `internal/logdb` | Archive tier: separate SQLite log database, retention sweeps |
 | `internal/api` | HTTP API, SSE streaming, embedded SPA assets, auth (bearer + unix peer) |
+| `internal/fault` | Panic errors with stack traces at explicit operation boundaries |
 | `internal/alerts` | Async, bounded, best-effort alert dispatch (Telegram; interface for more) |
 | `cmd/minicrond` | CLI + daemon entrypoint; embeds the config JSON Schema |
 | `cmd/openapi-gen` | Regenerates the checked-in OpenAPI contract |
@@ -52,6 +53,35 @@ pending ──▶ running ──▶ succeeded | failed | timeout | stopped | int
   operator stop stays `stopped`.
 - Lifecycle rows commit **before** spawning (or before returning success),
   so history never loses a run the daemon actually started.
+
+## Failure handling
+
+Expected failures return errors with operation context and preserved causes.
+The owning CLI, HTTP, or background-operation boundary records diagnostics;
+HTTP internal failures return a generic response. Database result and cleanup
+errors are checked instead of silently treating failed operations as success.
+
+Panic recovery is scoped to owned operations. An execution panic closes pipes,
+reaps the child, finalizes its logs, and attempts to persist `failed` with
+`internal_error`. Completion and alert callback panics retain stack traces;
+a completion callback failure does not prevent job retries. A failed scheduling
+or supervision loop stops and logs its stack. Maintenance panics and unexpected
+HTTP listener failures cause the daemon to shut down and return an error.
+Recovery cannot repair corrupt state or stop a callback that ignores its context.
+
+Timeouts and stop requests remain active after a child closes either output
+stream. The executor owns the process group for the run's lifetime and kills
+remaining descendants before completing the run. Descendants holding output
+pipes get at most five seconds to drain. Shutdown blocks new API work and worker
+starts, cancels scheduled retries, and forces termination when its run deadline
+expires, even if the definition has a longer grace period. Terminal persistence
+retries share a five-second budget; failures are logged and callers must verify
+the stored status before treating a run as terminal.
+
+Definitions and run records are copied at asynchronous ownership boundaries.
+Configuration rejects durations that would overflow, and invalid UID/GID values
+cannot silently become a different execution identity. Failed log finalization
+and invalid orphan indexes preserve buffers for repair or another archive attempt.
 
 ## Definitions: SQLite is the authority
 

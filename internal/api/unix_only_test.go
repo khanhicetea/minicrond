@@ -81,6 +81,9 @@ func TestUnixOnlyListenerAndTokenTransition(t *testing.T) {
 
 	// Re-enabling TCP issues a token once. A later Unix-only interval retains
 	// its hash, so re-enabling again does not silently replace that token.
+	// A shutdown server rejects new requests; use a fresh instance to model
+	// the daemon restart required when its listener configuration changes.
+	s = New(st, nil, nil, nil, nil, nil, "test")
 	s.SetTCPEnabled(true)
 	token, err := s.InitializeToken(t.Context())
 	if err != nil || token == "" {

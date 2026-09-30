@@ -134,7 +134,11 @@ func (c *Config) Definitions() []model.Definition {
 	defs := make([]model.Definition, 0, len(c.Init)+len(c.Jobs)+len(c.Workers))
 	defs = append(defs, c.Init...)
 	defs = append(defs, c.Jobs...)
-	return append(defs, c.Workers...)
+	defs = append(defs, c.Workers...)
+	for i := range defs {
+		defs[i] = defs[i].Clone()
+	}
+	return defs
 }
 
 func ParseImport(content []byte, jobDefaults ...model.Definition) ([]model.Definition, error) {
@@ -238,6 +242,7 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 
 // mergeDefinitionDefaults fills omitted fields without applying built-in values.
 func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition) {
+	defaults = defaults.Clone()
 	d.Shell = cmp.Or(d.Shell, defaults.Shell)
 	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
 	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp)
@@ -309,6 +314,9 @@ func validateConfig(c *Config) error {
 	if c.Storage.KeepForDefault < 1 {
 		return errors.New("storage.keep_for_default: must be a positive number of days")
 	}
+	if err := validateDuration("storage.keep_for_default", c.Storage.KeepForDefault, 24*time.Hour); err != nil {
+		return err
+	}
 	if _, err := time.LoadLocation(c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("scheduler.timezone: %w", err)
 	}
@@ -321,8 +329,14 @@ func validateConfig(c *Config) error {
 	if c.Logs.WorkerFlushInterval < 1 {
 		return errors.New("logs.worker_flush_interval: must be a positive number of minutes")
 	}
+	if err := validateDuration("logs.worker_flush_interval", c.Logs.WorkerFlushInterval, time.Minute); err != nil {
+		return err
+	}
 	if c.Logs.DBKeepFor < 1 {
 		return errors.New("logs.db_keep_for: must be a positive number of days")
+	}
+	if err := validateDuration("logs.db_keep_for", c.Logs.DBKeepFor, 24*time.Hour); err != nil {
+		return err
 	}
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
@@ -370,6 +384,15 @@ func validateConfig(c *Config) error {
 	return nil
 }
 
+// validateDuration checks before converting configuration units to nanoseconds.
+// Multiplication of a time.Duration otherwise wraps without reporting an error.
+func validateDuration(field string, value int, unit time.Duration) error {
+	if int64(value) > int64((time.Duration(1<<63-1))/unit) {
+		return fmt.Errorf("%s: duration exceeds supported range", field)
+	}
+	return nil
+}
+
 func validateDefinitions(definitions []model.Definition, schedulerTimezone string) error {
 	seen := make(map[string]bool)
 	for i := range definitions {
@@ -387,6 +410,9 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		for field, value := range map[string]int{"timeout": d.Timeout, "grace": d.Grace, "restart_delay": d.RestartDelay, "healthy_after": d.HealthyAfter} {
 			if value < 0 || (field != "timeout" && value == 0) {
 				return fmt.Errorf("%s.%s: must be positive seconds (timeout may be zero)", d.Name, field)
+			}
+			if err := validateDuration(d.Name+"."+field, value, time.Second); err != nil {
+				return err
 			}
 		}
 		if d.EnvBase != "clean" && d.EnvBase != "inherit" {
@@ -449,6 +475,9 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		}
 		if d.KeepFor < 0 {
 			return fmt.Errorf("%s.keep_for must be a nonnegative number of days", d.Name)
+		}
+		if err := validateDuration(d.Name+".keep_for", d.KeepFor, 24*time.Hour); err != nil {
+			return err
 		}
 		if d.LogMax < 0 || d.LogMax > 1<<20 {
 			return fmt.Errorf("%s.log_max must be between 0 and 1048576 MiB (0 uses default)", d.Name)

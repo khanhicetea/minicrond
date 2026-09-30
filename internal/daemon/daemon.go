@@ -17,6 +17,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/api"
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/logdb"
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
@@ -42,11 +43,15 @@ type Daemon struct {
 	alerts                       *alerts.Dispatcher
 }
 
-func (d *Daemon) Run(ctx context.Context) (runErr error) {
+func (d *Daemon) Run(ctx context.Context) error {
+	return fault.Call(func() error { return d.run(ctx) })
+}
+
+func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err := d.acquireLock(); err != nil {
 		return err
 	}
-	defer d.releaseLock()
+	defer func() { runErr = errors.Join(runErr, d.releaseLock()) }()
 	cfg, err := config.Load(d.ConfigPath)
 	if err != nil {
 		return err
@@ -61,7 +66,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.store = st
 	d.mu.Unlock()
-	defer st.Close()
+	defer func() { runErr = errors.Join(runErr, st.Close()) }()
 	if err := st.InterruptAlerts(ctx); err != nil {
 		return fmt.Errorf("mark interrupted alerts: %w", err)
 	}
@@ -76,7 +81,7 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	defer ldb.Close()
+	defer func() { runErr = errors.Join(runErr, ldb.Close()) }()
 	d.mu.Lock()
 	d.ldb = ldb
 	d.logs = logs
@@ -183,16 +188,17 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	// Use the same shutdown path for startup failures and normal cancellation.
 	// Producers and HTTP handlers must stop before the databases close.
 	defer func() {
-		apiServer.SetReady(false)
+		apiServer.BeginShutdown()
 		d.mu.Lock()
 		d.stopping = true
 		d.running = false
 		d.mu.Unlock()
 		sched.Stop()
-		super.Shutdown()
+		super.BeginShutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		runErr = errors.Join(runErr, execService.Shutdown(shutdownCtx))
+		super.Shutdown()
 		alertCtx, cancelAlerts := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelAlerts()
 		runErr = errors.Join(runErr, dispatcher.Close(alertCtx))
@@ -245,9 +251,15 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 	apiServer.SetReady(true)
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	var maintenance sync.WaitGroup
-	for _, loop := range []func(context.Context){d.retentionLoop, d.workerFlushLoop, d.logPruneLoop} {
+	maintenanceErrors := make(chan error, 3)
+	for name, loop := range map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop} {
 		maintenance.Go(func() {
-			loop(maintenanceCtx)
+			if err := fault.Call(func() error {
+				loop(maintenanceCtx)
+				return nil
+			}); err != nil {
+				maintenanceErrors <- fmt.Errorf("%s loop: %w", name, err)
+			}
 		})
 	}
 	defer func() {
@@ -255,8 +267,14 @@ func (d *Daemon) Run(ctx context.Context) (runErr error) {
 		maintenance.Wait()
 	}()
 	slog.Info("minicron ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
-	<-ctx.Done()
-	return nil
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-apiServer.Errors():
+		return fmt.Errorf("HTTP service failed: %w", err)
+	case err := <-maintenanceErrors:
+		return err
+	}
 }
 func (d *Daemon) Reload(ctx context.Context) error {
 	d.mu.Lock()
@@ -542,18 +560,36 @@ func (d *Daemon) acquireLock() error {
 		return err
 	}
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return fmt.Errorf("data directory is locked by another daemon: %w", err)
+		return errors.Join(fmt.Errorf("data directory is locked by another daemon: %w", err), f.Close())
 	}
-	f.Truncate(0)
-	fmt.Fprintf(f, "%d\n", os.Getpid())
-	f.Sync()
+	if err := writeLockPID(f); err != nil {
+		return errors.Join(err, f.Close()) // Closing releases the advisory lock.
+	}
 	d.lock = f
 	return nil
 }
-func (d *Daemon) releaseLock() {
-	if d.lock != nil {
-		syscall.Flock(int(d.lock.Fd()), syscall.LOCK_UN)
-		d.lock.Close()
+func writeLockPID(f *os.File) error {
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate daemon lock: %w", err)
 	}
+	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
+		return fmt.Errorf("write daemon lock pid: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync daemon lock: %w", err)
+	}
+	return nil
+}
+
+func (d *Daemon) releaseLock() error {
+	if d.lock == nil {
+		return nil
+	}
+	f := d.lock
+	d.lock = nil
+	var unlockErr error
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		unlockErr = fmt.Errorf("unlock daemon data directory: %w", err)
+	}
+	return errors.Join(unlockErr, f.Close())
 }
