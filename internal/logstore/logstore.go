@@ -291,25 +291,32 @@ func (w *Writer) rotate() error {
 	if err != nil {
 		return err
 	}
-	// Most chunks are at most 1 MiB. Reserve a larger match window only
-	// when the configured line limit permits an oversized single frame.
-	window := chunkLimit
-	if w.maxLine <= 0 || w.maxLine > 8<<20 {
-		window = 8 << 20
-	} else {
-		for window < w.maxLine {
-			window *= 2
+	enc := w.enc
+	if enc == nil {
+		// Most chunks are at most 1 MiB. Reserve a larger match window only
+		// when the configured line limit permits an oversized single frame.
+		window := chunkLimit
+		if w.maxLine <= 0 || w.maxLine > 8<<20 {
+			window = 8 << 20
+		} else {
+			for window < w.maxLine {
+				window *= 2
+			}
 		}
-	}
-	enc, err := zstd.NewWriter(f,
-		zstd.WithEncoderLevel(zstd.SpeedFastest),
-		zstd.WithEncoderConcurrency(1),
-		zstd.WithWindowSize(window),
-		zstd.WithLowerEncoderMem(true),
-	)
-	if err != nil {
-		f.Close()
-		return err
+		enc, err = zstd.NewWriter(f,
+			zstd.WithEncoderLevel(zstd.SpeedFastest),
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithWindowSize(window),
+			zstd.WithLowerEncoderMem(true),
+		)
+		if err != nil {
+			f.Close()
+			return err
+		}
+	} else {
+		// Close seals the old stream; Reset starts an independent chunk while
+		// retaining the encoder's match window and compression buffers.
+		enc.Reset(f)
 	}
 	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
 	return nil
@@ -652,9 +659,13 @@ func decode(src io.Reader) (Frame, error) {
 }
 
 func decodeHeader(src io.Reader) (Frame, int, error) {
-	var f Frame
 	var h [24]byte
-	if _, err := io.ReadFull(src, h[:]); err != nil {
+	return decodeHeaderWithBuffer(src, h[:])
+}
+
+func decodeHeaderWithBuffer(src io.Reader, h []byte) (Frame, int, error) {
+	var f Frame
+	if _, err := io.ReadFull(src, h); err != nil {
 		return f, 0, err
 	}
 	if h[0] != Version {
@@ -786,6 +797,10 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 		last = frame.Sequence
 		return len(out) < limit && responseBytes < maxResponseBytes
 	}
+	// io.ReadFull passes its buffer through an interface. Reusing one header
+	// per page avoids a heap allocation for every decoded or skipped frame.
+	var header [24]byte
+	var skipped io.LimitedReader
 	consume := func(src io.Reader) (bool, error) {
 		if *decoder == nil {
 			var err error
@@ -800,7 +815,7 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
-			frame, payloadSize, err := decodeHeader(*decoder)
+			frame, payloadSize, err := decodeHeaderWithBuffer(*decoder, header[:])
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return true, nil
 			}
@@ -808,7 +823,15 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 				return false, err
 			}
 			if frame.Sequence <= last {
-				_, err = io.CopyN(io.Discard, *decoder, int64(payloadSize))
+				// Cursor paging can skip many frames in its first chunk. Reuse
+				// CopyN's limiting reader instead of allocating one per skip.
+				skipped.R, skipped.N = *decoder, int64(payloadSize)
+				_, err = io.Copy(io.Discard, &skipped)
+				if skipped.N == 0 {
+					err = nil
+				} else if err == nil {
+					err = io.EOF
+				}
 				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 					return true, nil
 				}
@@ -903,6 +926,8 @@ func (s *Store) Raw(runID string, w io.Writer) error {
 func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error {
 	reader := s.newStreamReader(runID, 4<<20)
 	defer reader.Close()
+	// Reuse the separator instead of allocating a byte slice for each frame.
+	newline := []byte{'\n'}
 	var after uint64
 	for {
 		frames, err := reader.ReadContext(ctx, after, 5000)
@@ -923,7 +948,7 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 			if _, err := w.Write(f.Payload); err != nil {
 				return err
 			}
-			if _, err := w.Write([]byte{'\n'}); err != nil {
+			if _, err := w.Write(newline); err != nil {
 				return err
 			}
 			after = f.Sequence

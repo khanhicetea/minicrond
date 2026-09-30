@@ -46,6 +46,43 @@ func TestFramesSurviveChunkStorage(t *testing.T) {
 	}
 }
 
+func TestRotatedChunksDecodeIndependently(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Open("rotation", "test", model.KindJob, WriterOptions{MaxLine: chunkLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close("rotation")
+	for i := range 3 {
+		payload := bytes.Repeat([]byte{byte('a' + i)}, 600<<10)
+		if err := w.Write(Stdout, payload, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close("rotation"); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.idx.Chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(w.idx.Chunks))
+	}
+	// A chunk must not depend on the encoder history of earlier files: older
+	// chunks can be archived or pruned before this one is read.
+	for i, chunk := range w.idx.Chunks {
+		blob, err := os.ReadFile(w.chunkPath(chunk.Number))
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames := salvageFrames(blob)
+		if len(frames) != 1 || frames[0].Sequence != uint64(i+1) ||
+			!bytes.Equal(frames[0].Payload, bytes.Repeat([]byte{byte('a' + i)}, 600<<10)) {
+			t.Fatalf("chunk %d did not decode independently", chunk.Number)
+		}
+	}
+}
+
 func TestBacklogToLiveSubscriptionHasStableSequence(t *testing.T) {
 	s, _ := New(t.TempDir())
 	w, _ := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1 << 20, MaxLine: 1024})

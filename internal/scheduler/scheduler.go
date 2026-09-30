@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -44,16 +43,19 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	wanted := make(map[string]model.Definition, len(defs))
-	for _, d := range defs {
+	// Keep indexes into defs: copying these large definitions into map values
+	// allocates once per job, even when every scheduling loop is unchanged.
+	wanted := make(map[string]int, len(defs))
+	for i := range defs {
+		d := &defs[i]
 		if d.Kind == model.KindJob && d.IsEnabled() && (d.Schedule != "") {
-			wanted[d.Name] = d
+			wanted[d.Name] = i
 		}
 	}
 	// Join changed loops before their replacements start. This preserves the
 	// one-loop-per-job rule near a scheduled fire.
 	for name, old := range s.running {
-		if d, ok := wanted[name]; ok && reflect.DeepEqual(old.def, d) {
+		if i, ok := wanted[name]; ok && sameDefinition(&old.def, &defs[i]) {
 			select {
 			case <-old.done: // An exited loop needs a fresh attempt.
 			default:
@@ -64,14 +66,15 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 		<-old.done
 		delete(s.running, name)
 	}
-	for _, d := range defs {
-		if _, ok := wanted[d.Name]; !ok {
+	for i := range defs {
+		index, ok := wanted[defs[i].Name]
+		if !ok {
 			continue
 		}
-		d = wanted[d.Name]
-		if _, ok := s.running[d.Name]; ok {
+		if _, ok := s.running[defs[index].Name]; ok {
 			continue
 		}
+		d := defs[index]
 		runCtx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		s.running[d.Name] = scheduledLoop{def: d, cancel: cancel, done: done}

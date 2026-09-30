@@ -1,6 +1,6 @@
 # Performance measurements and tradeoffs
 
-Review and benchmarks, 2026-09-26–27. The older [v0.1 measurement](docs/releases/v0.1-measurements.md) recorded 15,417,344 bytes idle RSS on Linux/arm64; it is not a measurement of the current tree. The measurements below use a Linux/amd64 QEMU host. The default Go temporary directory on this host is `/tmp`, a `tmpfs`; benchmarks using `b.TempDir()` there measure CPU and memory but do not measure real storage latency. Disk-backed reruns set `TMPDIR=/home/kitdev/Code` on ext4 and are labeled explicitly.
+Review and benchmarks, 2026-09-26–27, with an additional optimization pass on 2026-09-30. The older [v0.1 measurement](docs/releases/v0.1-measurements.md) recorded 15,417,344 bytes idle RSS on Linux/arm64; it is not a measurement of the current tree. The measurements below use a Linux/amd64 QEMU host. The default Go temporary directory on this host is `/tmp`, a `tmpfs`; benchmarks using `b.TempDir()` there measure CPU and memory but do not measure real storage latency. Disk-backed reruns set `TMPDIR=/home/kitdev/Code` on ext4 and are labeled explicitly.
 
 The implemented changes preserve the current API, UI refresh behavior, exact run metrics, schedule semantics, log retention, and the guarantee that each accepted log frame is durable when `Writer.Write` returns.
 
@@ -11,6 +11,39 @@ The implemented changes preserve the current API, UI refresh behavior, exact run
 | 3 (implemented) | Large run history with the dashboard or metrics page open | Index end time for the metrics scan and retain one compact duration sample per run | Less query CPU and temporary memory |
 | 4 (implemented) | Idle daemon or long-running alert batches | Replace the alert poll ticker with a deadline timer | Fewer idle wakeups |
 | 5 (implemented) | Large retained history | Select candidates in bounded pages and batch main-store and archive deletion | Lower sweep memory, commits, and storage writes |
+
+### Go performance pass, 2026-09-30
+
+Applied the [golang-performance skill from skills.sh](https://www.skills.sh/samber/cc-skills-golang/golang-performance) to baseline commit `0e20d3c`. CPU and allocation profiles identified reflective definition comparison and temporary definition copies in scheduler reloads, repeated zstd encoder buffer allocation at chunk rotation, and frame-header allocation during archive reads.
+
+`Scheduler.Reload` now stores indexes into its input definitions rather than large copied map values, and compares settings directly with typed slice/map comparisons. Nil and empty collections remain distinct, optional booleans compare by value, and API-only timestamps retain their previous full comparison. Regression tests check every definition field, so adding a field without updating the comparison fails a test.
+
+Each log writer now resets its existing zstd encoder after sealing a chunk, retaining compression buffers while creating an independent compressed stream. Log readers reuse one header and limiting reader per page; raw downloads reuse their newline separator. Accepted frames still flush and fsync before `Write` returns. Tests decode rotated chunks independently and exercise archive/file pagination, recovery, and payload ownership.
+
+The final comparison used Go 1.27.0, Linux/amd64, QEMU Virtual CPU, eight Go processors, and `/tmp` on tmpfs. Baseline binaries were compiled before edits. Baseline and final benchmarks ran sequentially with six samples and `-benchtime=300ms`, with profiling disabled for both. Values below are medians; allocation bytes are rounded.
+
+| Benchmark | Time before → after | Bytes allocated before → after | Allocations before → after |
+| --- | --- | --- | --- |
+| Reload 100 unchanged jobs | 110.27 → 10.95 µs | 208,296 → 3,496 | 403 → 3 |
+| Reload 100 changed jobs | 715.15 → 615.21 µs | 533,208 → 375,615 | 4,917 → 4,541 |
+| Encode 1 KiB repeated frame | 2.781 → 2.827 µs | 2,623 → 1,081 | 2 → 2 |
+| Encode 1 KiB frame without tail | 3.055 → 2.526 µs | 1,595 → 48 | 1 → 1 |
+| Encode 1 KiB random frame | 1.910 → 1.651 µs | 2,612 → 1,078 | 2 → 2 |
+| Replay 5,000 archived frames | 11.20 → 11.20 ms | 27,510,877 → 27,355,882 | 14,264 → 7,747 |
+| Raw download, repeated payload | 10.33 → 10.71 ms | 27,292,868 → 27,156,201 | 16,877 → 6,503 |
+| Raw download, random payload | 20.37 → 20.26 ms | 76,503,410 → 76,370,379 | 16,758 → 6,387 |
+
+`benchstat` found significant time improvements for unchanged reloads (90.07%), changed reloads (13.97%), no-tail encoding (17.30%), and random encoding (13.54%), with p ≤ 0.004. Other timing differences were not statistically significant. Retained-tail encoding allocated about 59% fewer bytes, archive replay made about 46% fewer allocations, and raw downloads made about 61–62% fewer allocations. Repeated and random frames retained their compressed sizes of about 19.6 and 1,051 bytes respectively. These measurements describe these fixtures on this host; storage latency and whole-daemon throughput require their own measurements.
+
+Reproduce the benchmark selection on each revision, save the output, and compare with `benchstat`:
+
+```sh
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkReload(Unchanged|Changed)$' -benchmem -count=6 -benchtime=300ms
+go test ./internal/logstore -run '^$' -bench 'Benchmark(FrameEncoding(NoTail|Random)?|ArchivedStreamBacklog|ArchivedRawDownload(Incompressible)?)$' -benchmem -count=6 -benchtime=300ms
+benchstat before.txt after.txt
+```
+
+Raw outputs for this pass are `/tmp/minicrond-final-{scheduler,logs}-{before,after}.txt`; the logging comparison is `/tmp/minicrond-final-logs-comparison.txt`. Initial profiles are `/tmp/minicrond-{reload,logs}-before.{cpu,mem}`. Validation passed: `go test ./...`, `go test -race ./internal/scheduler ./internal/logstore`, and `go vet ./...`.
 
 ### Loaded daemon measurements
 
