@@ -1,0 +1,29 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logstore
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkArchivedStreamPage-2                  	     306	    772273 ns/op	 6638545 B/op	     412 allocs/op
+BenchmarkArchivedStreamPage-2                  	     253	    957789 ns/op	 6635725 B/op	     410 allocs/op
+BenchmarkArchivedStreamPage-2                  	     294	    783528 ns/op	 6636125 B/op	     410 allocs/op
+BenchmarkArchivedStreamPage-2                  	     237	   1008206 ns/op	 6635263 B/op	     409 allocs/op
+BenchmarkArchivedStreamPage-2                  	     247	    995001 ns/op	 6635976 B/op	     410 allocs/op
+BenchmarkArchivedStreamPage-2                  	     252	    929500 ns/op	 6637445 B/op	     412 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      21	  10338873 ns/op	27245822 B/op	    7709 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      21	  10395480 ns/op	27253010 B/op	    7707 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      24	  10981391 ns/op	27233641 B/op	    7698 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      22	  10617839 ns/op	27238831 B/op	    7704 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      22	  10598457 ns/op	27240706 B/op	    7702 allocs/op
+BenchmarkArchivedStreamBacklog-2               	      22	  10664765 ns/op	27241965 B/op	    7705 allocs/op
+BenchmarkArchivedRawDownload-2                 	      27	   9478343 ns/op	27062807 B/op	    6464 allocs/op
+BenchmarkArchivedRawDownload-2                 	      26	   8710194 ns/op	27061922 B/op	    6465 allocs/op
+BenchmarkArchivedRawDownload-2                 	      26	   9243908 ns/op	27065210 B/op	    6463 allocs/op
+BenchmarkArchivedRawDownload-2                 	      25	   8892806 ns/op	27062621 B/op	    6463 allocs/op
+BenchmarkArchivedRawDownload-2                 	      26	   9419511 ns/op	27063148 B/op	    6462 allocs/op
+BenchmarkArchivedRawDownload-2                 	      24	   9623438 ns/op	27063065 B/op	    6463 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      15	  16826563 ns/op	1246.33 MB/s	76363562 B/op	    6383 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      12	  17906630 ns/op	1171.16 MB/s	76364365 B/op	    6384 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      14	  17379354 ns/op	1206.69 MB/s	76362627 B/op	    6383 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      12	  16804516 ns/op	1247.97 MB/s	76363018 B/op	    6383 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      13	  16755585 ns/op	1251.61 MB/s	76361563 B/op	    6383 allocs/op
+BenchmarkArchivedRawDownloadIncompressible-2   	      13	  16474551 ns/op	1272.96 MB/s	76363006 B/op	    6385 allocs/op
+PASS

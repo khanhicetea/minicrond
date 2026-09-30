@@ -1,0 +1,62 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+                                        │ logdb-before.txt │ logdb-after.txt │
+                                        │                  sec/op                  │     sec/op       vs base                │
+PutChunks/insert/chunks_1/blob_128-2                                  44.68µ ±  8%      43.80µ ± 12%        ~ (p=0.912 n=10)
+PutChunks/replay/chunks_1/blob_128-2                                  29.76µ ±  7%      27.28µ ±  3%   -8.32% (p=0.002 n=10)
+PutChunks/insert/chunks_16/blob_128-2                                 218.6µ ± 13%      126.4µ ±  7%  -42.19% (p=0.000 n=10)
+PutChunks/replay/chunks_16/blob_128-2                                174.96µ ±  6%      74.10µ ±  7%  -57.65% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_128-2                                 735.6µ ±  8%      339.2µ ±  5%  -53.89% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_128-2                                 636.0µ ±  8%      223.3µ ± 17%  -64.88% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_65536-2                               4.271m ± 10%      3.625m ±  5%  -15.13% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_65536-2                               1.591m ±  8%      1.026m ±  4%  -35.52% (p=0.000 n=10)
+Stats-2                                                               79.23µ ±  7%      77.61µ ±  6%        ~ (p=0.529 n=10)
+DeleteRunWithChunk-2                                                  48.33µ ±  6%      44.67µ ±  9%   -7.56% (p=0.011 n=10)
+geomean                                                               239.4µ            159.9µ        -33.21%
+
+                                        │ logdb-before.txt │ logdb-after.txt │
+                                        │                   B/s                    │      B/s        vs base                 │
+PutChunks/insert/chunks_1/blob_128-2                                 2.732Mi ±  7%    2.789Mi ± 11%         ~ (p=0.956 n=10)
+PutChunks/replay/chunks_1/blob_128-2                                 4.101Mi ±  7%    4.473Mi ±  3%    +9.07% (p=0.002 n=10)
+PutChunks/insert/chunks_16/blob_128-2                                8.936Mi ± 11%   15.454Mi ±  7%   +72.95% (p=0.000 n=10)
+PutChunks/replay/chunks_16/blob_128-2                                11.16Mi ±  6%    26.37Mi ±  7%  +136.27% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_128-2                                10.62Mi ±  7%    23.03Mi ±  5%  +116.88% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_128-2                                12.29Mi ±  7%    34.98Mi ± 14%  +184.67% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_65536-2                              937.3Mi ±  9%   1103.6Mi ±  5%   +17.75% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_65536-2                              2.455Gi ±  8%    3.809Gi ±  4%   +55.12% (p=0.000 n=10)
+geomean                                                              27.67Mi          45.27Mi         +63.60%
+
+                                        │ logdb-before.txt │ logdb-after.txt │
+                                        │                   B/op                   │      B/op        vs base                │
+PutChunks/insert/chunks_1/blob_128-2                                  1.909Ki ± 0%      1.907Ki ± 1%        ~ (p=0.228 n=10)
+PutChunks/replay/chunks_1/blob_128-2                                  1.883Ki ± 0%      1.883Ki ± 0%        ~ (p=0.791 n=10)
+PutChunks/insert/chunks_16/blob_128-2                                 11.74Ki ± 0%      11.63Ki ± 0%   -0.92% (p=0.000 n=10)
+PutChunks/replay/chunks_16/blob_128-2                                 11.73Ki ± 0%      11.62Ki ± 0%   -0.93% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_128-2                                 43.24Ki ± 0%      42.01Ki ± 0%   -2.85% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_128-2                                 43.23Ki ± 1%      41.99Ki ± 0%   -2.86% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_65536-2                               43.75Ki ± 0%      42.51Ki ± 0%   -2.83% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_65536-2                               43.73Ki ± 0%      42.49Ki ± 0%   -2.82% (p=0.000 n=10)
+Stats-2                                                               2.524Ki ± 0%      1.017Ki ± 0%  -59.73% (p=0.000 n=10)
+DeleteRunWithChunk-2                                                    751.0 ± 0%       1479.0 ± 0%  +96.94% (p=0.000 n=10)
+geomean                                                               8.944Ki           8.622Ki        -3.60%
+
+                                        │ logdb-before.txt │ logdb-after.txt │
+                                        │                allocs/op                 │   allocs/op    vs base                  │
+PutChunks/insert/chunks_1/blob_128-2                                    46.00 ± 0%      46.00 ± 2%        ~ (p=1.000 n=10)
+PutChunks/replay/chunks_1/blob_128-2                                    45.00 ± 0%      45.00 ± 0%        ~ (p=1.000 n=10) ¹
+PutChunks/insert/chunks_16/blob_128-2                                   271.0 ± 0%      260.0 ± 0%   -4.06% (p=0.000 n=10)
+PutChunks/replay/chunks_16/blob_128-2                                   270.0 ± 0%      259.0 ± 0%   -4.07% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_128-2                                   991.0 ± 0%      932.0 ± 0%   -5.95% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_128-2                                   990.0 ± 0%      931.0 ± 0%   -5.96% (p=0.000 n=10)
+PutChunks/insert/chunks_64/blob_65536-2                                1055.0 ± 0%      996.0 ± 0%   -5.59% (p=0.000 n=10)
+PutChunks/replay/chunks_64/blob_65536-2                                1054.0 ± 0%      995.0 ± 0%   -5.60% (p=0.000 n=10)
+Stats-2                                                                 64.00 ± 0%      26.00 ± 0%  -59.38% (p=0.000 n=10)
+DeleteRunWithChunk-2                                                    23.00 ± 0%      38.00 ± 0%  +65.22% (p=0.000 n=10)
+geomean                                                                 218.1           202.9        -6.94%
+¹ all samples are equal
+
+                     │ logdb-before.txt │ logdb-after.txt │
+                     │                 wal-B/op                 │     wal-B/op      vs base               │
+DeleteRunWithChunk-2                               29.20Ki ± 0%       29.17Ki ± 0%  -0.10% (p=0.000 n=10)

@@ -1,0 +1,20 @@
+File: logdb-before.test
+Build ID: 046fde8aa2d46c0a03f59328aea4a4d36c9d0ea6
+Type: alloc_objects
+Time: 2026-09-30 08:42:55 +07
+Showing nodes accounting for 4222953, 99.54% of 4242651 total
+Dropped 34 nodes (cum <= 21213)
+Showing top 12 nodes out of 25
+      flat  flat%   sum%        cum   cum%
+   1055663 24.88% 24.88%    1055663 24.88%  modernc.org/sqlite.interruptOnDone
+    873828 20.60% 45.48%    4229507 99.69%  github.com/khanhicetea/minicrond/internal/logdb.(*LogDB).PutChunks
+    475142 11.20% 56.68%     475142 11.20%  modernc.org/sqlite.(*conn).bind
+    393225  9.27% 65.95%     393225  9.27%  modernc.org/sqlite.newStmt
+    327685  7.72% 73.67%     327685  7.72%  database/sql.(*Tx).grabConn
+    320065  7.54% 81.21%     320065  7.54%  database/sql.driverArgsConnLocked
+    294916  6.95% 88.16%     294916  6.95%  modernc.org/sqlite.newResult
+    278536  6.57% 94.73%    3001285 70.74%  database/sql.(*DB).execDC
+    196611  4.63% 99.36%    2009459 47.36%  modernc.org/sqlite.(*stmt).exec
+      7282  0.17% 99.54%      26709  0.63%  database/sql.(*DB).beginDC
+         0     0% 99.54%      26709  0.63%  database/sql.(*DB).BeginTx
+         0     0% 99.54%      26709  0.63%  database/sql.(*DB).BeginTx.func1

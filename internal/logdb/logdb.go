@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
 const SchemaVersion = 2
@@ -38,11 +38,10 @@ func Open(dataDir string) (*LogDB, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "minicron-logs.db")
-	db, err := sql.Open("sqlite", path)
+	db, err := sqlite.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 	l := &LogDB{db: db}
 	if err := l.migrate(context.Background()); err != nil {
 		db.Close()
@@ -62,10 +61,8 @@ func (l *LogDB) Close() error { return l.db.Close() }
 func (l *LogDB) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 
 func (l *LogDB) migrate(ctx context.Context) error {
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
-		if _, err := l.db.ExecContext(ctx, q); err != nil {
-			return err
-		}
+	if _, err := l.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
+		return err
 	}
 	var version int
 	if err := l.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -140,9 +137,27 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
 		return err
 	}
-	for _, c := range chunks {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob) VALUES(?,?,?,?,?,?,?)
-			ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob`,
+	const putChunk = `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob) VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob`
+	// Preparing once per multi-chunk batch avoids repeated SQLite parsing while
+	// keeping statement lifetime and memory bounded by this transaction.
+	if len(chunks) > 1 {
+		stmt, err := tx.PrepareContext(ctx, putChunk)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, c := range chunks {
+			if _, err := stmt.ExecContext(ctx, runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
+				return err
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			return err
+		}
+	} else {
+		c := chunks[0]
+		if _, err := tx.ExecContext(ctx, putChunk,
 			runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
 			return err
 		}
@@ -180,12 +195,7 @@ func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn fu
 
 // DeleteRun removes a run and all of its archived chunks.
 func (l *LogDB) DeleteRun(ctx context.Context, runID string) error {
-	_, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE run_id=?", runID)
-	if err != nil {
-		return err
-	}
-	_, err = l.db.ExecContext(ctx, "DELETE FROM log_runs WHERE run_id=?", runID)
-	return err
+	return l.DeleteRuns(ctx, []string{runID})
 }
 
 // DeleteRuns removes up to a page of archived runs in one transaction. Both
@@ -240,10 +250,8 @@ func (l *LogDB) Prune(ctx context.Context, before time.Time) (int64, error) {
 
 // Stats reports archive totals for logging and diagnostics.
 func (l *LogDB) Stats(ctx context.Context) (runs, chunks, blobBytes int64, err error) {
-	err = errors.Join(
-		l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM log_runs").Scan(&runs),
-		l.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM log_chunks").Scan(&chunks),
-		l.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(LENGTH(blob)),0) FROM log_chunks").Scan(&blobBytes),
-	)
+	// One snapshot and one chunk-table scan keep counts consistent with sizes.
+	err = l.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM log_runs), COUNT(*), COALESCE(SUM(LENGTH(blob)),0)
+		FROM log_chunks`).Scan(&runs, &chunks, &blobBytes)
 	return runs, chunks, blobBytes, err
 }

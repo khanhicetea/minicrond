@@ -1,0 +1,72 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31029098220 ns/op	         0.03071 cpu-ms/s	         0.4057 heap-MiB	        17.45 rss-MiB	         0 wal-B	      64 B/op	       1 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31001041845 ns/op	         0.07177 cpu-ms/s	         0.7844 heap-MiB	        22.94 rss-MiB	         0 wal-B	   26848 B/op	     304 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31027271944 ns/op	         0.03129 cpu-ms/s	         0.4057 heap-MiB	        17.33 rss-MiB	         0 wal-B	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31000249343 ns/op	         0.07826 cpu-ms/s	         0.7829 heap-MiB	        22.52 rss-MiB	         0 wal-B	   26848 B/op	     304 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31029348138 ns/op	         0.03323 cpu-ms/s	         0.4057 heap-MiB	        17.20 rss-MiB	         0 wal-B	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31000265274 ns/op	         0.08600 cpu-ms/s	         0.7862 heap-MiB	        23.07 rss-MiB	         0 wal-B	   26720 B/op	     303 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31009315375 ns/op	         0.01639 cpu-ms/s	         0.4054 heap-MiB	        17.33 rss-MiB	         0 wal-B	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31000197311 ns/op	         0.07610 cpu-ms/s	         0.7785 heap-MiB	        23.07 rss-MiB	         0 wal-B	   26848 B/op	     304 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31029754266 ns/op	         0.01629 cpu-ms/s	         0.4056 heap-MiB	        17.20 rss-MiB	         0 wal-B	       0 B/op	       0 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31000451939 ns/op	         0.06994 cpu-ms/s	         0.7845 heap-MiB	        22.93 rss-MiB	         0 wal-B	   26848 B/op	     304 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_0-2         	       1	31000159969 ns/op	         0.006581 cpu-ms/s	         0.4057 heap-MiB	        17.33 rss-MiB	         0 wal-B	      64 B/op	       1 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonIdle/jobs_100-2         	       1	31000759867 ns/op	         0.09619 cpu-ms/s	         0.7854 heap-MiB	        22.95 rss-MiB	         0 wal-B	   24800 B/op	     300 allocs/op
+PASS

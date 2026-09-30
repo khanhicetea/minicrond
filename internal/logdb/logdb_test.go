@@ -154,3 +154,80 @@ func TestDeleteRunsRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("archive remains after batch: runs=%d chunks=%d err=%v", runs, chunks, err)
 	}
 }
+
+func TestDeleteRunRollsBackOnFailure(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := l.PutChunks(t.Context(), "blocked", "job", "job", time.Now(), []Chunk{chunk(1, 1, 1, []byte("blob"))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.ExecContext(t.Context(), `CREATE TRIGGER block_single_delete BEFORE DELETE ON log_runs
+		BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.DeleteRun(t.Context(), "blocked"); err == nil {
+		t.Fatal("delete should fail")
+	}
+	runs, chunks, size, err := l.Stats(t.Context())
+	if err != nil || runs != 1 || chunks != 1 || size != 4 {
+		t.Fatalf("failed delete lost archive: %d/%d/%d: %v", runs, chunks, size, err)
+	}
+}
+
+func TestConnectionSettingsSurviveReplacement(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	l.db.SetMaxIdleConns(0) // Drop the initialized connection.
+	l.db.SetMaxIdleConns(1)
+	for _, setting := range []struct {
+		name string
+		want int
+	}{{"foreign_keys", 1}, {"synchronous", 2}, {"busy_timeout", 5000}} {
+		var got int
+		if err := l.db.QueryRowContext(t.Context(), "PRAGMA "+setting.name).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != setting.want {
+			t.Errorf("replacement connection %s = %d, want %d", setting.name, got, setting.want)
+		}
+	}
+}
+
+func TestPutChunksRollsBackOnFailure(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if err := l.PutChunks(t.Context(), "run", "original", "job", time.Now(), []Chunk{chunk(1, 1, 1, []byte("original"))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.ExecContext(t.Context(), `CREATE TRIGGER block_chunk BEFORE INSERT ON log_chunks
+		WHEN NEW.number=2 BEGIN SELECT RAISE(ABORT, 'injected chunk failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.PutChunks(t.Context(), "run", "changed", "worker", time.Now(),
+		[]Chunk{chunk(1, 1, 1, []byte("changed")), chunk(2, 2, 2, []byte("new"))}); err == nil {
+		t.Fatal("batch should fail")
+	}
+	var job string
+	if err := l.db.QueryRowContext(t.Context(), "SELECT job FROM log_runs WHERE run_id='run'").Scan(&job); err != nil || job != "original" {
+		t.Fatalf("failed batch changed metadata: %q: %v", job, err)
+	}
+	var blobs [][]byte
+	if err := l.EachChunk(t.Context(), "run", 0, func(c Chunk) (bool, error) {
+		blobs = append(blobs, c.Blob)
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(blobs) != 1 || !bytes.Equal(blobs[0], []byte("original")) {
+		t.Fatalf("failed batch changed chunks: %q", blobs)
+	}
+}

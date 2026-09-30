@@ -1,0 +1,154 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/store
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkRunMetricsHistory-2   	     408	    585674 ns/op	   94881 B/op	    6058 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsHistory-2   	     426	    565984 ns/op	   94881 B/op	    6058 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsHistory-2   	     430	    579659 ns/op	   94880 B/op	    6058 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsHistory-2   	     334	    635206 ns/op	   94880 B/op	    6057 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsHistory-2   	     415	    576109 ns/op	   94880 B/op	    6058 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsHistory-2   	     433	    567879 ns/op	   94880 B/op	    6057 allocs/op
+--- BENCH: BenchmarkRunMetricsHistory-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  31637197 ns/op	 6986349 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  32132368 ns/op	 6986342 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  30781634 ns/op	 6986356 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  34493467 ns/op	 6986349 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  32338061 ns/op	 6986352 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+BenchmarkRunMetricsWindow-2    	       7	  30735452 ns/op	 6986347 B/op	  360104 allocs/op
+--- BENCH: BenchmarkRunMetricsWindow-2
+    store_bench_test.go:148: MULTI-INDEX OR
+    store_bench_test.go:148: INDEX 1
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_time (queued_us>?)
+    store_bench_test.go:148: INDEX 2
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_end_time (ended_us>?)
+    store_bench_test.go:148: INDEX 3
+    store_bench_test.go:148: SEARCH runs USING INDEX idx_runs_active (status=?)
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/store
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDeleteRunsPage/individual-2         	     100	  11368171 ns/op	     30357 wal-B/run	   52292 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/individual-2         	     100	  10994960 ns/op	     30357 wal-B/run	   52247 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/individual-2         	     100	  11393431 ns/op	     30357 wal-B/run	   52224 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/individual-2         	     100	  11686148 ns/op	     30357 wal-B/run	   52257 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/individual-2         	     100	  11588897 ns/op	     30357 wal-B/run	   52226 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/individual-2         	     100	  10947658 ns/op	     30357 wal-B/run	   52246 B/op	    1536 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    789640 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    812151 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    784155 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    794274 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    772533 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkDeleteRunsPage/batch-2              	     100	    805378 ns/op	       932.5 wal-B/run	   12776 B/op	     149 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	    108029 ns/op	        81.92 db-B/run	    2329 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	     73503 ns/op	        81.92 db-B/run	    2329 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	    121511 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	    131380 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	     72083 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/without_end_index-2         	     100	     74039 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     78041 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     67782 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     73909 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     64284 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     71906 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionIndexCost/with_end_index-2            	     100	     65425 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     57292 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     60432 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     55402 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     55751 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     62518 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/without_retention_index-2         	     100	     55628 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	     71208 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	     79516 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	    116065 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	     65256 ns/op	        81.92 db-B/run	    2329 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	     72943 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+BenchmarkRunTransitionRetentionIndexCost/with_retention_index-2            	     100	     73391 ns/op	        81.92 db-B/run	    2328 B/op	      39 allocs/op
+PASS

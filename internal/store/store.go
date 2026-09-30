@@ -14,10 +14,9 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/model"
+	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
 const SchemaVersion = 8
@@ -67,11 +66,10 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "minicron.db")
-	db, err := sql.Open("sqlite", path)
+	db, err := sqlite.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
@@ -103,10 +101,8 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	for _, q := range []string{"PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			return err
-		}
+	if _, err := s.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
+		return err
 	}
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {

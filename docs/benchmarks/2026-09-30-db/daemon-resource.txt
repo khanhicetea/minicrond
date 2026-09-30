@@ -1,0 +1,35 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkDaemonLoaded-2                 	       1	 175258090 ns/op	      1758 cpu-ms/s	         0.7539 heap-MiB	         2.707 list-p95-ms	         2.694 metrics-p95-ms	        29.06 rss-MiB	        15.29 run-p95-ms	       730.2 runs/s	     62251 wal-B/run	262122640 B/op	  258689 allocs/op
+BenchmarkDaemonLoaded-2                 	       1	 180477054 ns/op	      1788 cpu-ms/s	         0.7522 heap-MiB	         3.252 list-p95-ms	         2.817 metrics-p95-ms	        29.84 rss-MiB	        14.97 run-p95-ms	       709.1 runs/s	     62186 wal-B/run	261305592 B/op	  257035 allocs/op
+BenchmarkDaemonLoaded-2                 	       1	 196433592 ns/op	      1745 cpu-ms/s	         0.7883 heap-MiB	         3.079 list-p95-ms	         2.864 metrics-p95-ms	        29.91 rss-MiB	        17.02 run-p95-ms	       651.5 runs/s	     62090 wal-B/run	261949120 B/op	  266180 allocs/op
+BenchmarkDaemonLoaded-2                 	       1	 204423793 ns/op	      1805 cpu-ms/s	         0.7477 heap-MiB	         3.333 list-p95-ms	         2.652 metrics-p95-ms	        29.96 rss-MiB	        19.05 run-p95-ms	       626.0 runs/s	     62090 wal-B/run	261147760 B/op	  261125 allocs/op
+BenchmarkDaemonLoaded-2                 	       1	 172352520 ns/op	      1724 cpu-ms/s	         0.7708 heap-MiB	         2.257 list-p95-ms	         2.461 metrics-p95-ms	        30.74 rss-MiB	        15.03 run-p95-ms	       742.5 runs/s	     62154 wal-B/run	262144584 B/op	  255901 allocs/op
+BenchmarkDaemonLoaded-2                 	       1	 199287743 ns/op	      1746 cpu-ms/s	         0.7684 heap-MiB	         3.051 list-p95-ms	         2.565 metrics-p95-ms	        31.72 rss-MiB	        17.94 run-p95-ms	       642.0 runs/s	     62186 wal-B/run	261642776 B/op	  258841 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 216137994 ns/op	      1649 cpu-ms/s	         0.7679 heap-MiB	         2.389 list-p95-ms	         2.869 metrics-p95-ms	        33.57 rss-MiB	        19.14 run-p95-ms	       592.1 runs/s	     30868 wal-B/run	267930440 B/op	  610302 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 223158158 ns/op	      1668 cpu-ms/s	         0.7715 heap-MiB	         3.080 list-p95-ms	         2.980 metrics-p95-ms	        34.46 rss-MiB	        20.41 run-p95-ms	       573.5 runs/s	     30868 wal-B/run	267413760 B/op	  613026 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 223656176 ns/op	      1670 cpu-ms/s	         0.7678 heap-MiB	         3.024 list-p95-ms	         2.431 metrics-p95-ms	        35.19 rss-MiB	        20.61 run-p95-ms	       572.2 runs/s	     30868 wal-B/run	266798200 B/op	  614558 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 214538874 ns/op	      1678 cpu-ms/s	         0.7654 heap-MiB	         1.965 list-p95-ms	         2.394 metrics-p95-ms	        35.19 rss-MiB	        17.98 run-p95-ms	       596.5 runs/s	     30868 wal-B/run	265944736 B/op	  602020 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 232302011 ns/op	      1664 cpu-ms/s	         0.7742 heap-MiB	         2.259 list-p95-ms	         3.061 metrics-p95-ms	        35.66 rss-MiB	        20.82 run-p95-ms	       550.9 runs/s	     30868 wal-B/run	267183208 B/op	  605983 allocs/op
+BenchmarkDaemonLoadedHistory-2          	       1	 209286196 ns/op	      1662 cpu-ms/s	         0.7785 heap-MiB	         2.105 list-p95-ms	         2.440 metrics-p95-ms	        36.12 rss-MiB	        18.22 run-p95-ms	       611.5 runs/s	     30868 wal-B/run	265743112 B/op	  605877 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  28274685 ns/op	   0.71 MB/s	         6.183 wal-B/run	 1743320 B/op	   23849 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  30914144 ns/op	   0.65 MB/s	         6.183 wal-B/run	 1743320 B/op	   23849 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  35074996 ns/op	   0.57 MB/s	         6.183 wal-B/run	 1743208 B/op	   23848 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  31260907 ns/op	   0.64 MB/s	         6.183 wal-B/run	 1679352 B/op	   23849 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  27521939 ns/op	   0.73 MB/s	         6.183 wal-B/run	 1679352 B/op	   23849 allocs/op
+BenchmarkSweepRetentionArchived-2       	       1	  29457161 ns/op	   0.68 MB/s	         6.183 wal-B/run	 1743208 B/op	   23848 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  19976204 ns/op	6666.39 MB/s	       356.9 wal-B/run	  128040 B/op	    1595 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  18730969 ns/op	7109.57 MB/s	       356.9 wal-B/run	  128040 B/op	    1595 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  19436818 ns/op	6851.39 MB/s	       356.9 wal-B/run	  133288 B/op	    1607 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  19594786 ns/op	6796.15 MB/s	       356.9 wal-B/run	  128040 B/op	    1595 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  16984342 ns/op	7840.70 MB/s	       356.9 wal-B/run	  128040 B/op	    1595 allocs/op
+BenchmarkSweepRetentionLargeArchive-2   	       1	  19078715 ns/op	6979.99 MB/s	       356.9 wal-B/run	  128040 B/op	    1595 allocs/op
+BenchmarkSweepRetention-2               	       1	  19622048 ns/op	 1350088 B/op	   21215 allocs/op
+BenchmarkSweepRetention-2               	       1	  19964863 ns/op	 1355216 B/op	   21226 allocs/op
+BenchmarkSweepRetention-2               	       1	  20283181 ns/op	 1355112 B/op	   21225 allocs/op
+BenchmarkSweepRetention-2               	       1	  20305284 ns/op	 1355224 B/op	   21226 allocs/op
+BenchmarkSweepRetention-2               	       1	  19989277 ns/op	 1355224 B/op	   21226 allocs/op
+BenchmarkSweepRetention-2               	       1	  19646885 ns/op	 1355224 B/op	   21226 allocs/op
+PASS

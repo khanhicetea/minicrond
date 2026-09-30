@@ -1,0 +1,25 @@
+File: logdb-before.test
+Build ID: 046fde8aa2d46c0a03f59328aea4a4d36c9d0ea6
+Type: cpu
+Time: 2026-09-30 08:42:51 +07
+Duration: 3.82s, Total samples = 4560ms (119.23%)
+Showing nodes accounting for 1600ms, 35.09% of 4560ms total
+Dropped 266 nodes (cum <= 22.80ms)
+Showing top 16 nodes out of 220
+      flat  flat%   sum%        cum   cum%
+     180ms  3.95%  3.95%      180ms  3.95%  internal/runtime/syscall/linux.Syscall6
+     160ms  3.51%  7.46%     1490ms 32.68%  modernc.org/sqlite/lib._sqlite3VdbeExec
+     160ms  3.51% 10.96%     1730ms 37.94%  modernc.org/sqlite/lib._yy_reduce
+     130ms  2.85% 13.82%      190ms  4.17%  modernc.org/sqlite/lib.Xsqlite3_str_vappendf
+     110ms  2.41% 16.23%      110ms  2.41%  modernc.org/libc.(*TLS).Alloc
+     100ms  2.19% 18.42%      430ms  9.43%  modernc.org/sqlite/lib._sqlite3BtreeIndexMoveto
+     100ms  2.19% 20.61%      100ms  2.19%  runtime.memmove
+      90ms  1.97% 22.59%       90ms  1.97%  modernc.org/sqlite/lib._walChecksumBytes
+      90ms  1.97% 24.56%      110ms  2.41%  modernc.org/sqlite/lib._yy_find_shift_action
+      80ms  1.75% 26.32%       80ms  1.75%  modernc.org/libc.Int32FromUint16 (inline)
+      80ms  1.75% 28.07%     1960ms 42.98%  modernc.org/sqlite/lib._sqlite3Parser
+      70ms  1.54% 29.61%       70ms  1.54%  modernc.org/libc.(*TLS).Free
+      70ms  1.54% 31.14%      150ms  3.29%  modernc.org/sqlite/lib._balance_nonroot
+      70ms  1.54% 32.68%       70ms  1.54%  runtime.usleep
+      60ms  1.32% 33.99%      120ms  2.63%  modernc.org/sqlite/lib._tokenExpr
+      50ms  1.10% 35.09%       50ms  1.10%  internal/sync.(*Mutex).Unlock (inline)

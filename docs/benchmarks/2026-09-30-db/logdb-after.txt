@@ -1,0 +1,150 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5581	     45741 ns/op	   2.80 MB/s	    1952 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8667	     26675 ns/op	   4.80 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2161	    128549 ns/op	  15.93 MB/s	   11913 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3453	     80473 ns/op	  25.45 MB/s	   11898 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     804	    312219 ns/op	  26.24 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1141	    219321 ns/op	  37.35 MB/s	   43097 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      64	   3597585 ns/op	1165.87 MB/s	   43541 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     228	   1000830 ns/op	4190.83 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3150	     81685 ns/op	    1040 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    6111	     44765 ns/op	     29867 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5473	     42106 ns/op	   3.04 MB/s	    1953 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8850	     27436 ns/op	   4.67 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    1665	    138582 ns/op	  14.78 MB/s	   11912 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3496	     79323 ns/op	  25.82 MB/s	   11900 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     613	    374391 ns/op	  21.88 MB/s	   43024 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1003	    223770 ns/op	  36.61 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      68	   3514262 ns/op	1193.51 MB/s	   43532 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     240	   1008235 ns/op	4160.05 MB/s	   43517 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3129	     77589 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    7189	     42462 ns/op	     29874 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5760	     46245 ns/op	   2.77 MB/s	    1951 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8587	     26458 ns/op	   4.84 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2348	    126187 ns/op	  16.23 MB/s	   11977 B/op	     261 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3157	     77222 ns/op	  26.52 MB/s	   11896 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     625	    357857 ns/op	  22.89 MB/s	   43017 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1114	    222100 ns/op	  36.88 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      66	   3569822 ns/op	1174.93 MB/s	   43535 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     225	   1043628 ns/op	4018.96 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    2673	     80511 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    7106	     44582 ns/op	     29869 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5516	     44024 ns/op	   2.91 MB/s	    1953 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    9079	     26564 ns/op	   4.82 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2119	    113366 ns/op	  18.07 MB/s	   11912 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3468	     71439 ns/op	  28.67 MB/s	   11897 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     750	    339641 ns/op	  24.12 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1104	    213893 ns/op	  38.30 MB/s	   43258 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      66	   3664030 ns/op	1144.72 MB/s	   43535 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     213	   1064850 ns/op	3938.87 MB/s	   43515 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3280	     77144 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    4316	     51421 ns/op	     29839 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    4846	     42998 ns/op	   2.98 MB/s	    1954 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    7371	     29745 ns/op	   4.30 MB/s	    1929 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2294	    119727 ns/op	  17.11 MB/s	   11912 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3282	     69494 ns/op	  29.47 MB/s	   11934 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     762	    324902 ns/op	  25.21 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	     855	    260733 ns/op	  31.42 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      57	   3804331 ns/op	1102.51 MB/s	   43534 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     244	    978976 ns/op	4284.38 MB/s	   43515 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3146	     72316 ns/op	    1040 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    6802	     45701 ns/op	     29876 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5792	     43219 ns/op	   2.96 MB/s	    1952 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    9428	     27327 ns/op	   4.68 MB/s	    1932 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    1975	    117980 ns/op	  17.36 MB/s	   11959 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3477	     70066 ns/op	  29.23 MB/s	   11896 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     699	    338786 ns/op	  24.18 MB/s	   43019 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	     936	    244070 ns/op	  33.56 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      69	   3541597 ns/op	1184.30 MB/s	   43534 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     243	   1068367 ns/op	3925.90 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3114	     75859 ns/op	    1040 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    5182	     46216 ns/op	     29849 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5694	     41467 ns/op	   3.09 MB/s	    1967 B/op	      47 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8560	     27240 ns/op	   4.70 MB/s	    1932 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2371	    119522 ns/op	  17.13 MB/s	   11912 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3716	     71824 ns/op	  28.51 MB/s	   11896 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     812	    330836 ns/op	  24.76 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	     993	    225129 ns/op	  36.39 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      64	   3661597 ns/op	1145.48 MB/s	   43533 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     232	   1074677 ns/op	3902.85 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3031	     79064 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    5420	     40244 ns/op	     29869 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    4710	     49013 ns/op	   2.61 MB/s	    1976 B/op	      47 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    7940	     27916 ns/op	   4.59 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    1957	    126762 ns/op	  16.16 MB/s	   11913 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3104	     78806 ns/op	  25.99 MB/s	   11896 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     674	    353399 ns/op	  23.18 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	     986	    222888 ns/op	  36.75 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      62	   3832862 ns/op	1094.30 MB/s	   43536 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     237	    986909 ns/op	4249.94 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3056	     77625 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    6936	     40448 ns/op	     29867 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5337	     43568 ns/op	   2.94 MB/s	    1953 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8883	     27224 ns/op	   4.70 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2256	    126775 ns/op	  16.15 MB/s	   11944 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3699	     72369 ns/op	  28.30 MB/s	   11896 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     806	    330388 ns/op	  24.80 MB/s	   43018 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1128	    219200 ns/op	  37.37 MB/s	   43001 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      68	   3488531 ns/op	1202.31 MB/s	   43542 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     229	   1000788 ns/op	4191.00 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3088	     81140 ns/op	    1041 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    5456	     43107 ns/op	     29863 wal-B/op	    1479 B/op	      38 allocs/op
+PASS
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: QEMU Virtual CPU version 2.5+
+BenchmarkPutChunks/insert/chunks_1/blob_128-2         	    5277	     58650 ns/op	   2.18 MB/s	    1953 B/op	      46 allocs/op
+BenchmarkPutChunks/replay/chunks_1/blob_128-2         	    8200	     27858 ns/op	   4.59 MB/s	    1928 B/op	      45 allocs/op
+BenchmarkPutChunks/insert/chunks_16/blob_128-2        	    2134	    126581 ns/op	  16.18 MB/s	   11915 B/op	     260 allocs/op
+BenchmarkPutChunks/replay/chunks_16/blob_128-2        	    3156	     75824 ns/op	  27.01 MB/s	   11905 B/op	     259 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_128-2        	     811	    351847 ns/op	  23.28 MB/s	   43017 B/op	     932 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_128-2        	    1021	    263421 ns/op	  31.10 MB/s	   43000 B/op	     931 allocs/op
+BenchmarkPutChunks/insert/chunks_64/blob_65536-2      	      56	   3651788 ns/op	1148.56 MB/s	   43538 B/op	     996 allocs/op
+BenchmarkPutChunks/replay/chunks_64/blob_65536-2      	     217	   1045624 ns/op	4011.29 MB/s	   43512 B/op	     995 allocs/op
+BenchmarkStats-2                                      	    3164	     73181 ns/op	    1040 B/op	      26 allocs/op
+BenchmarkDeleteRunWithChunk-2                         	    6130	     46306 ns/op	     29871 wal-B/op	    1479 B/op	      38 allocs/op
+PASS

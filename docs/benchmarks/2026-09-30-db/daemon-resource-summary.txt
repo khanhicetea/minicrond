@@ -1,0 +1,86 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/daemon
+cpu: QEMU Virtual CPU version 2.5+
+                             │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                             │                      sec/op                       │
+DaemonLoaded-2                                                      188.5m ±  9%
+DaemonLoadedHistory-2                                               219.6m ±  6%
+SweepRetentionArchived-2                                            30.19m ± 16%
+SweepRetentionLargeArchive-2                                        19.26m ± 12%
+SweepRetention-2                                                    19.98m ±  2%
+geomean                                                             54.50m
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                     cpu-ms/s                      │
+DaemonLoaded-2                                                1.752k ± 3%
+DaemonLoadedHistory-2                                         1.666k ± 1%
+geomean                                                       1.708k
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                     heap-MiB                      │
+DaemonLoaded-2                                                761.1m ± 4%
+DaemonLoadedHistory-2                                         769.7m ± 1%
+geomean                                                       765.4m
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                    list-p95-ms                    │
+DaemonLoaded-2                                                3.065 ± 26%
+DaemonLoadedHistory-2                                         2.324 ± 33%
+geomean                                                       2.669
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                  metrics-p95-ms                   │
+DaemonLoaded-2                                                2.673 ±  8%
+DaemonLoadedHistory-2                                         2.655 ± 15%
+geomean                                                       2.664
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                      rss-MiB                      │
+DaemonLoaded-2                                                 29.94 ± 6%
+DaemonLoadedHistory-2                                          35.19 ± 5%
+geomean                                                        32.46
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                    run-p95-ms                     │
+DaemonLoaded-2                                                16.16 ± 18%
+DaemonLoadedHistory-2                                         19.77 ±  9%
+geomean                                                       17.87
+
+                      │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                      │                      runs/s                       │
+DaemonLoaded-2                                                 680.3 ± 9%
+DaemonLoadedHistory-2                                          582.8 ± 5%
+geomean                                                        629.7
+
+                             │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                             │                     wal-B/run                     │
+DaemonLoaded-2                                                      60.71Ki ± 0%
+DaemonLoadedHistory-2                                               30.14Ki ± 0%
+SweepRetentionArchived-2                                              6.183 ± 0%
+SweepRetentionLargeArchive-2                                          356.9 ± 0%
+geomean                                                             1.401Ki
+
+                             │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                             │                       B/op                        │
+DaemonLoaded-2                                                      249.7Mi ± 0%
+DaemonLoadedHistory-2                                               254.6Mi ± 0%
+SweepRetentionArchived-2                                            1.662Mi ± 4%
+SweepRetentionLargeArchive-2                                        125.0Ki ± 4%
+SweepRetention-2                                                    1.292Mi ± 0%
+geomean                                                             6.989Mi
+
+                             │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                             │                     allocs/op                     │
+DaemonLoaded-2                                                       258.8k ± 3%
+DaemonLoadedHistory-2                                                608.1k ± 1%
+SweepRetentionArchived-2                                             23.85k ± 0%
+SweepRetentionLargeArchive-2                                         1.595k ± 1%
+SweepRetention-2                                                     21.23k ± 0%
+geomean                                                              41.76k
+
+                             │ docs/benchmarks/2026-09-30-db/daemon-resource.txt │
+                             │                        B/s                        │
+SweepRetentionArchived-2                                           649.4Ki ± 14%
+SweepRetentionLargeArchive-2                                       6.441Gi ± 13%
+geomean                                                            64.67Mi

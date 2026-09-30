@@ -12,6 +12,7 @@ embedded web UI. Linux is the supported platform.
 | [http-api.md](http-api.md) | HTTP API surface, auth model, SSE log streaming, OpenAPI |
 | [operations.md](operations.md) | Runbook: data layout, hybrid log storage, backup/restore, retention, tokens, security, troubleshooting |
 | [architecture.md](architecture.md) | Components, run lifecycle, storage design, design decisions |
+| [database-performance-audit.md](database-performance-audit.md) | Database reliability findings, benchmark evidence, and performance priorities |
 | [adr/](adr/) | Accepted architecture decision records |
 | [releases/](releases/) | Release notes and supporting acceptance tables / measurements |
 
