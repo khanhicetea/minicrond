@@ -11,8 +11,9 @@ separate SQLite database, `data/minicron-logs.db` (never `minicron.db`), is the
 long-term archive:
 
 1. **Cron job logs** stay in the file buffer while the run executes; when the
-   run finishes the executor's store close archives every chunk into the log
-   database and removes the buffer directory. Output written before a crash is
+   run finishes the executor seals the buffer and a background archiver moves
+   every chunk into the log database and removes the buffer directory. Run
+   completion does not wait for the archive. Output written before a crash is
    therefore already durable in files.
 2. **Worker logs** (long-running, too large to buffer or hold in memory) are
    checkpointed: every `logs.worker_flush_interval` (default 15m) the daemon
@@ -32,7 +33,8 @@ Chunk rows are upserted keyed by `(run_id, number)`, so a crash between the
 database write and the file cleanup replays safely. `logs.backend = "file"`
 remains the only backend value: the file buffer is still the only write path;
 the archive is an additional durable tier, not a replacement. Transfers use
-serialized, byte- and count-bounded batches; per-run read locks prevent tier
+byte- and count-bounded batches, with at most two in flight and one owner per
+run; per-run read locks prevent tier
 migration from skipping frames. Replaying a chunk preserves its archive age.
 
 ## Consequences

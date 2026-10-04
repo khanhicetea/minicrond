@@ -25,15 +25,18 @@ const (
 )
 
 // archiveWriter archives only chunks sealed at the start of the checkpoint.
-// Callers hold archiveMu. Release the run and writer locks between batches so
-// a busy worker can continue writing and readers can make progress.
+// Callers own the run. Release the archive slot and the run and writer locks
+// between batches so a busy worker can continue writing, readers can make
+// progress, and one large checkpoint cannot hold up other runs' archival.
 func (s *Store) archiveWriter(w *Writer, through int) error {
 	for {
+		s.archiveSlots <- struct{}{}
 		lock := s.lockRun(w.runID, true)
 		w.mu.Lock()
 		more, err := s.archiveBatchLocked(w, through)
 		w.mu.Unlock()
 		s.unlockRun(w.runID, lock, true)
+		<-s.archiveSlots
 		if err != nil || !more {
 			return err
 		}
@@ -42,7 +45,8 @@ func (s *Store) archiveWriter(w *Writer, through int) error {
 
 // archiveBatchLocked commits before unlinking. Only successfully removed
 // files release buffer capacity; a failed removal is retried idempotently.
-// Callers hold archiveMu, the exclusive run lock, and w.mu.
+// Callers own the run and hold an archive slot, the exclusive run lock, and
+// w.mu.
 func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 	var pending []logdb.Chunk
 	var size int64
@@ -85,8 +89,8 @@ func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 // problems with a buffer's own files.
 var errArchiveDB = errors.New("archive database")
 
-// archiveOrphan recovers an inactive buffer while holding archiveMu and its
-// exclusive run lock. Indexed chunks are copied verbatim; unindexed chunks
+// archiveOrphan recovers an inactive buffer. Callers own the run and hold an
+// archive slot and its exclusive run lock. Indexed chunks are copied verbatim; unindexed chunks
 // are salvaged up to the last intact frame. Every committed batch is removed
 // before loading the next one, including during startup recovery.
 func (s *Store) archiveOrphan(runID, dir string) error {
@@ -123,6 +127,9 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 	flush := func() error {
 		if len(chunks) == 0 {
 			return nil
+		}
+		if s.archiver.abort.Load() {
+			return fmt.Errorf("%w: archiver stopped", errArchiveDB)
 		}
 		if err := s.db.PutChunks(context.Background(), runID, idx.Job, idx.Kind, time.Now(), chunks); err != nil {
 			return fmt.Errorf("%w: %w", errArchiveDB, err)

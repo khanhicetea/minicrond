@@ -104,11 +104,18 @@ Two SQLite databases, never merged:
 - `minicron.db` — definitions, runs, audit. Schema-versioned; binaries
   refuse newer schemas.
 - `minicron-logs.db` — the long-term log archive with a rolling age budget
-  (`logs.db_keep_for`), pruned daily at `logs.db_prune_at`.
+  (`logs.db_keep_for`) and optional size budget (`logs.db_max_size`), pruned
+  daily at `logs.db_prune_at`.
+
+Each database has one writer connection (transactions use `BEGIN IMMEDIATE`)
+and a small read-only pool. Run listings, metrics and log reads use the pool,
+so they never queue behind run transitions or archival.
 
 Live logs take the fast path: every accepted frame is a tagged, zstd-
-compressed chunk file write, fsynced before `Write` returns (crash-safe).
-Finished runs archive into the log DB and buffers are deleted; workers
+compressed chunk file write before the next line is read (daemon-crash-safe);
+fsyncs are grouped while output keeps arriving unless
+`logs.durability = "frame"`. Finished runs are sealed and archived into the
+log DB in the background, off the completion path, and buffers are deleted; workers
 checkpoint every `logs.worker_flush_interval`. Crash-orphaned buffers are
 salvaged at startup up to the last intact frame. Reads merge all tiers
 plus a byte-bounded in-memory tail (ADR-6).

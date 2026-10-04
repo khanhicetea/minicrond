@@ -368,13 +368,13 @@ func TestArchiveBatchBounds(t *testing.T) {
 				w.idx.Chunks = append(w.idx.Chunks, chunkMeta{Number: i, First: uint64(i), Last: uint64(i), Bytes: int64(len(blob)), Raw: raw})
 				w.buffered += raw
 			}
-			s.archiveMu.Lock()
+			s.claimWait("run")
 			lock := s.lockRun("run", true)
 			w.mu.Lock()
 			more, err := s.archiveBatchLocked(w, tc.count)
 			w.mu.Unlock()
 			s.unlockRun("run", lock, true)
-			s.archiveMu.Unlock()
+			s.release("run")
 			if err != nil || !more {
 				t.Fatalf("first batch: more=%v, error=%v", more, err)
 			}

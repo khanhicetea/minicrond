@@ -31,7 +31,10 @@ var ErrIdempotencyKeyExists = errors.New("active idempotency key already exists"
 // the run is missing or already in an incompatible state. Retrying cannot help.
 var ErrInvalidTransition = errors.New("invalid state transition")
 
-type Store struct{ db *sql.DB }
+// Store owns the metadata database. db is the single writer connection; rdb
+// is a small read-only pool for API listings and metrics, so a slow read can
+// never hold up run transitions or schedule state.
+type Store struct{ db, rdb *sql.DB }
 
 type RunMetrics struct {
 	Total         int               `json:"total"`
@@ -64,7 +67,7 @@ type RunMetricBucket struct {
 	DurationP95MS *int64 `json:"duration_p95_ms,omitempty"`
 }
 
-func Open(ctx context.Context, dataDir string) (*Store, error) {
+func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create metadata directory: %w", err)
 	}
@@ -72,7 +75,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("set metadata directory permissions: %w", err)
 	}
 	path := filepath.Join(dataDir, "minicron.db")
-	db, err := sqlite.Open(path)
+	db, err := sqlite.Open(path, opt...)
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
@@ -80,15 +83,23 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err := s.migrate(ctx); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close())
 	}
+	if s.rdb, err = sqlite.OpenReader(path); err != nil {
+		return nil, errors.Join(fmt.Errorf("open metadata read pool: %w", err), db.Close())
+	}
 	for _, dbPath := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(dbPath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, errors.Join(fmt.Errorf("set metadata database permissions: %w", err), db.Close())
+			return nil, errors.Join(fmt.Errorf("set metadata database permissions: %w", err), s.Close())
 		}
 	}
 	return s, nil
 }
-func (s *Store) Close() error                   { return s.db.Close() }
+func (s *Store) Close() error                   { return errors.Join(s.rdb.Close(), s.db.Close()) }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// PoolStats reports how long callers waited for the writer connection and
+// the read pool. Rising waits mean the database is the bottleneck.
+func (s *Store) PoolStats() (writer, reader sql.DBStats) { return s.db.Stats(), s.rdb.Stats() }
+
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var version int
 	err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
@@ -721,7 +732,7 @@ func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, fil
 	}
 	if before != "" {
 		var queued int64
-		if err := s.db.QueryRowContext(ctx, "SELECT queued_us FROM runs WHERE run_id=?", before).Scan(&queued); err != nil {
+		if err := s.rdb.QueryRowContext(ctx, "SELECT queued_us FROM runs WHERE run_id=?", before).Scan(&queued); err != nil {
 			return nil, err
 		}
 		conditions = append(conditions, "(queued_us < ? OR (queued_us = ? AND run_id < ?))")
@@ -732,7 +743,7 @@ func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, fil
 	}
 	q += " ORDER BY queued_us DESC, run_id DESC LIMIT ?"
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.rdb.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -798,7 +809,7 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		return jobs[index]
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('pending','running')`, startUS, startUS)
+	rows, err := s.rdb.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('pending','running')`, startUS, startUS)
 	if err != nil {
 		return out, err
 	}
@@ -1080,7 +1091,7 @@ func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, 
 	return anchor, last, next, hash, nil
 }
 func (s *Store) ScheduleNextBatch(ctx context.Context) (map[int64]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,next_fire_us FROM schedule_state WHERE next_fire_us IS NOT NULL")
+	rows, err := s.rdb.QueryContext(ctx, "SELECT definition_id,next_fire_us FROM schedule_state WHERE next_fire_us IS NOT NULL")
 	if err != nil {
 		return nil, err
 	}
@@ -1137,7 +1148,9 @@ func (s *Store) PruneMetadata(ctx context.Context, auditKeep int) error {
 	if _, err = tx.ExecContext(ctx, "DELETE FROM idempotency WHERE created_us<=?", time.Now().Add(-24*time.Hour).UnixMicro()); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, "DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT ?)", auditKeep); err != nil {
+	// One index seek finds the oldest retained id; NOT IN would materialize
+	// every retained id on each sweep.
+	if _, err = tx.ExecContext(ctx, "DELETE FROM audit WHERE id <= (SELECT id FROM audit ORDER BY id DESC LIMIT 1 OFFSET ?)", auditKeep); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM definition_revisions WHERE (definition_id,revision) NOT IN (

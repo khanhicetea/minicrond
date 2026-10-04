@@ -54,6 +54,10 @@ type Storage struct {
 	// KeepForDefault is measured in days.
 	KeepForDefault int `toml:"keep_for_default" json:"keep_for_default"`
 	AuditKeep      int `toml:"audit_keep" json:"audit_keep"`
+	// Synchronous is the SQLite synchronous mode for both databases: "full"
+	// (the default) or "normal". In WAL mode "normal" survives a daemon crash
+	// but can lose the last commits on power loss.
+	Synchronous string `toml:"synchronous" json:"synchronous"`
 }
 type AlertChannel struct {
 	Name                string `toml:"name" json:"name"`
@@ -75,6 +79,13 @@ type Logs struct {
 	DBKeepFor int `toml:"db_keep_for" json:"db_keep_for"`
 	// DBPruneAt is the daily local time ("HH:MM") the prune sweep runs.
 	DBPruneAt string `toml:"db_prune_at" json:"db_prune_at"`
+	// DBMaxSize is measured in MiB. When the log archive holds more, the
+	// daily prune also removes the oldest chunks. 0 disables the size budget.
+	DBMaxSize int `toml:"db_max_size" json:"db_max_size"`
+	// Durability selects when accepted log lines are fsynced: "batch" (the
+	// default) groups syncs while output keeps arriving; "frame" syncs every
+	// line, which caps throughput at the disk's fsync rate.
+	Durability string `toml:"durability" json:"durability"`
 }
 
 type importBundle struct {
@@ -217,6 +228,12 @@ func applyConfigDefaults(c *Config) {
 	if c.Logs.DBPruneAt == "" {
 		c.Logs.DBPruneAt = "03:30"
 	}
+	if c.Logs.Durability == "" {
+		c.Logs.Durability = "batch"
+	}
+	if c.Storage.Synchronous == "" {
+		c.Storage.Synchronous = "full"
+	}
 }
 func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 	mergeDefinitionDefaults(d, defaults)
@@ -340,6 +357,15 @@ func validateConfig(c *Config) error {
 	}
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
+	}
+	if c.Logs.DBMaxSize < 0 {
+		return errors.New("logs.db_max_size: must be zero (no size budget) or a positive number of MiB")
+	}
+	if c.Logs.Durability != "batch" && c.Logs.Durability != "frame" {
+		return errors.New(`logs.durability: must be "batch" or "frame"`)
+	}
+	if c.Storage.Synchronous != "full" && c.Storage.Synchronous != "normal" {
+		return errors.New(`storage.synchronous: must be "full" or "normal"`)
 	}
 	if c.Defaults.Name != "" || c.Defaults.Command != "" || len(c.Defaults.Argv) > 0 || c.Defaults.Schedule != "" ||
 		c.Defaults.Autostart != nil || c.Defaults.Restart != "" || c.Defaults.RestartDelay != 0 ||

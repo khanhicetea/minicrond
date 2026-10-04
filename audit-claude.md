@@ -15,7 +15,20 @@ Overall the codebase is careful. It has guarded state transitions, panic boundar
 > **Status (2026-10-04):** findings 1–8 are fixed on `main`. Each fix has a
 > regression test that fails on the original code (#7 and the supervisor part
 > of #3 are covered by review only). Still open from #3: exposing loop health
-> through the API and `/readyz`. Findings 9–14 are not started.
+> through the API and `/readyz`.
+>
+> **Status (2026-10-04, performance):** findings 9–13 and the smaller
+> performance items are fixed on `main`, except the scheduler min-heap, which
+> is deliberately deferred (see "Smaller performance items"). Highlights: logs
+> use grouped fsync by default (`logs.durability`), finished runs are sealed
+> and archived in the background with at most two transfers at once and no
+> global mutex, each database has a read-only pool and `BEGIN IMMEDIATE`
+> writes, the log archive prunes in batches with incremental vacuum, WAL
+> truncation and an optional `logs.db_max_size`, alert bookkeeping is one
+> transaction per batch transition and off `Notify`, and
+> `storage.synchronous` is configurable. Pool waits and the archive backlog
+> are in `GET /api/v1/daemon` under `diagnostics`. Findings 14 and the
+> testing gaps outside performance are not started.
 
 ---
 
@@ -269,7 +282,7 @@ Measure first by logging `db.Stats().WaitDuration` and `WaitCount`. They are alr
 
 ### Smaller performance items
 
-- **Scheduler wakeups.** There is one goroutine per scheduled job, and each wakes at least every 30 s (`scheduler.go:227-235`). At 1,000 jobs that is about 33 wakeups/s while idle. A single min-heap timer plus a 30 s wall-clock recheck would scale better, but it isn't urgent at current sizes.
+- **Scheduler wakeups.** There is one goroutine per scheduled job, and each wakes at least every 30 s (`scheduler.go:227-235`). At 1,000 jobs that is about 33 wakeups/s while idle. A single min-heap timer plus a 30 s wall-clock recheck would scale better, but it isn't urgent at current sizes. *Deferred:* `perf.md` measured 0.07 CPU-ms/s idle for 100 jobs, and replacing per-job loops would rework catch-up, overlap and retry-on-error handling that was just made self-healing (#3).
 - **`PruneMetadata` audit trim.** `DELETE FROM audit WHERE id NOT IN (SELECT id … LIMIT ?)` (`store.go:1136`) builds a set of 10 k ids every hour. `DELETE FROM audit WHERE id <= (SELECT id FROM audit ORDER BY id DESC LIMIT 1 OFFSET ?)` is a single index seek.
 - **UI polling.** The Runs page polls every 2 s even when nothing is active, and several views overlap. A single SSE "events" endpoint for run-state changes (the infrastructure already exists for logs) would remove most of this load and make the UI update instantly. At minimum, apply the existing "only poll while something is active" rule to the Runs page.
 - **`synchronous(FULL)` + WAL** costs an extra fsync per commit compared with `NORMAL`. `NORMAL` stays crash-safe for process crashes and loses only the last commits on power loss. Keeping `FULL` fits the product's "trustworthy" positioning. Note that a run's lifecycle is 4+ commits (`CreateRun`, `StartRun`, `FinishRun`, schedule state), plus alerts. Consider making this a documented knob instead of a constant.

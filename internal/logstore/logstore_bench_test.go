@@ -379,3 +379,37 @@ func BenchmarkLiveTailEviction(b *testing.B) {
 		w.appendHistory(Frame{Sequence: seq, Payload: payload})
 	}
 }
+
+// BenchmarkPipeThroughput pumps a burst of short lines, as a chatty child
+// would write them. Run with TMPDIR on a real disk: on tmpfs fsync is free.
+func BenchmarkPipeThroughput(b *testing.B) {
+	const lines = 5000
+	input := bytes.Repeat([]byte("a typical log line of moderate length, about sixty bytes\n"), lines)
+	for _, mode := range []struct {
+		name  string
+		frame bool
+	}{{"batch", false}, {"frame", true}} {
+		b.Run(mode.name, func(b *testing.B) {
+			s, err := New(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			s.SetFrameSync(mode.frame)
+			b.ResetTimer()
+			for i := range b.N {
+				runID := fmt.Sprintf("run-%d", i)
+				w, err := s.Open(runID, "bench", model.KindJob, WriterOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := w.Pipe(Stdout, bytes.NewReader(input)); err != nil {
+					b.Fatal(err)
+				}
+				if err := s.Close(runID); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(lines*b.N)/b.Elapsed().Seconds(), "lines/s")
+		})
+	}
+}

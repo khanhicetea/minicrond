@@ -23,6 +23,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/scheduler"
+	"github.com/khanhicetea/minicrond/internal/sqlite"
 	"github.com/khanhicetea/minicrond/internal/store"
 	"github.com/khanhicetea/minicrond/internal/supervisor"
 )
@@ -66,7 +67,8 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.cfg = cfg
 	d.mu.Unlock()
-	st, err := store.Open(ctx, d.DataDir)
+	dbOptions := sqlite.Options{Synchronous: cfg.Storage.Synchronous}
+	st, err := store.Open(ctx, d.DataDir, dbOptions)
 	if err != nil {
 		return err
 	}
@@ -84,7 +86,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	// Long-term logs live in their own SQLite file, separate from minicron.db:
 	// the file buffer stays the crash-safe hot path, the archive is the
 	// durable, prunable history.
-	ldb, err := logdb.Open(d.DataDir)
+	ldb, err := logdb.Open(d.DataDir, dbOptions)
 	if err != nil {
 		return err
 	}
@@ -94,6 +96,18 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.logs = logs
 	d.mu.Unlock()
 	logs.AttachDB(ldb)
+	logs.SetFrameSync(cfg.Logs.Durability == "frame")
+	// Finished runs are archived in the background. Stop the archiver after
+	// the executor (deferred calls run in reverse) and before the archive
+	// database closes; anything still queued is swept at the next start.
+	logs.StartArchiver()
+	defer func() {
+		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := logs.StopArchiver(archiveCtx); err != nil {
+			slog.Warn("log archival interrupted at shutdown; the next start will finish it", "error", err)
+		}
+	}()
 	maxLine := int64(cfg.Logs.MaxLine) << 10
 	execService := executor.New(st, logs, executor.Options{
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
@@ -178,7 +192,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err := validateAlertReferences(defs, cfg.AlertChannels); err != nil {
 		return err
 	}
-	dispatcher, err := alerts.New(cfg.AlertChannels, st.RecordAlert)
+	dispatcher, err := alerts.New(cfg.AlertChannels, func(ctx context.Context, records []alerts.Record) error {
+		updates := make([]store.AlertUpdate, len(records))
+		for i, r := range records {
+			updates[i] = store.AlertUpdate{RunID: r.RunID, Channel: r.Channel, Status: r.Status, Attempts: r.Attempts, LastError: r.Reason}
+		}
+		return st.RecordAlerts(ctx, updates)
+	})
 	if err != nil {
 		return err
 	}
@@ -294,6 +314,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if cfg.Scheduler.MaxConcurrentRuns != current.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != current.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
 	}
+	if cfg.Storage.Synchronous != current.Storage.Synchronous {
+		return errors.New("storage.synchronous requires daemon restart")
+	}
 	defs, err := d.store.Definitions(ctx)
 	if err != nil {
 		return err
@@ -322,6 +345,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	d.mu.Lock()
 	d.cfg = cfg
 	d.mu.Unlock()
+	d.logs.SetFrameSync(cfg.Logs.Durability == "frame")
 	return d.reconcile(ctx)
 }
 
@@ -520,7 +544,13 @@ func (d *Daemon) logPruneLoop(ctx context.Context) {
 func (d *Daemon) pruneLogs(ctx context.Context) {
 	d.mu.Lock()
 	keepFor := d.cfg.Logs.DBKeepFor
+	maxSize := int64(d.cfg.Logs.DBMaxSize) << 20
 	d.mu.Unlock()
+	defer func() {
+		if err := d.ldb.Compact(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("log archive compaction failed", "error", err)
+		}
+	}()
 	duration := time.Duration(keepFor) * 24 * time.Hour
 	if duration <= 0 {
 		slog.Error("log prune skipped: invalid logs.db_keep_for", "value", keepFor)
@@ -533,6 +563,17 @@ func (d *Daemon) pruneLogs(ctx context.Context) {
 	}
 	if n > 0 {
 		slog.Info("pruned archived logs", "runs", n, "keep_for", keepFor)
+	}
+	if maxSize <= 0 {
+		return
+	}
+	n, err = d.ldb.PruneToSize(ctx, maxSize)
+	if err != nil {
+		slog.Error("log size prune failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Warn("pruned oldest archived logs to fit logs.db_max_size", "runs", n, "max_size_mib", maxSize>>20)
 	}
 }
 

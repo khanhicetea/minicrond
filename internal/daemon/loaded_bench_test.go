@@ -224,7 +224,14 @@ func benchmarkDaemonLoaded(b *testing.B, olderRuns int) {
 	if len(latencies["run"]) != 128 || len(latencies["metrics"]) != 64 || len(latencies["list"]) != 64 {
 		b.Fatalf("incomplete samples: %v", latencies)
 	}
-	runs, chunks, _, err := d.ldb.Stats(b.Context())
+	// Finished runs are archived in the background.
+	var runs, chunks int64
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		runs, chunks, _, err = d.ldb.Stats(b.Context())
+		if err != nil || runs == 128 || time.Now().After(deadline) {
+			break
+		}
+	}
 	if err != nil || runs != 128 || chunks < 128 {
 		b.Fatalf("archive has %d runs and %d chunks: %v", runs, chunks, err)
 	}

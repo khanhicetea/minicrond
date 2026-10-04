@@ -271,7 +271,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 	}); err != nil {
 		logFailure("run execution panicked", err, "run", r.ID, "job", d.Name)
 		bytes, truncated := w.Stats()
-		if closeErr := s.logs.Close(r.ID); closeErr != nil {
+		if closeErr := s.logs.Seal(r.ID); closeErr != nil {
 			logFailure("finalizing panicked-run logs failed", closeErr, "run", r.ID)
 		}
 		s.complete(r, d, terminal{status: "failed", reason: "internal_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated})
@@ -419,7 +419,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// Close the log sink before the terminal transition so a wait=true
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
-	if err := s.logs.Close(r.ID); err != nil {
+	if err := s.logs.Seal(r.ID); err != nil {
 		slog.Error("finalizing run logs failed", "run", r.ID, "error", err)
 		status, reason = "failed", "log_error"
 	}
@@ -430,7 +430,7 @@ func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.
 	logFailure("starting run failed", err, "run", r.ID, "job", d.Name)
 	writeSystem(w, r.ID, "start error: "+err.Error())
 	bytes, truncated := w.Stats()
-	if closeErr := s.logs.Close(r.ID); closeErr != nil {
+	if closeErr := s.logs.Seal(r.ID); closeErr != nil {
 		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
 	}
 	s.complete(r, d, terminal{status: "failed", reason: "start_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})

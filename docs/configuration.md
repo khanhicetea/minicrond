@@ -35,6 +35,7 @@ max_concurrent_runs = 32       # global gate across all definitions
 keep_runs_default = 10000      # default per-definition run history length
 keep_for_default = 7           # default per-definition run age retention, days
 audit_keep = 10000             # audit-log rows kept
+synchronous = "full"           # SQLite fsync policy: "full" or "normal" (restart)
 
 [logs]
 backend = "file"               # only "file" in v0.1
@@ -42,6 +43,8 @@ max_line = 256                 # single log line cap in KiB (1..16384)
 worker_flush_interval = 15     # seal+archive cadence for running workers, minutes
 db_keep_for = 30               # log-archive age budget, days (rolling)
 db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
+db_max_size = 0                # log-archive size budget, MiB (0 = none)
+durability = "batch"           # log fsync policy: "batch" or "frame"
 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
@@ -107,7 +110,26 @@ and `max_concurrent_runs` are unitless.
   handled.
 - `logs.db_keep_for` / `logs.db_prune_at` — the SQLite log archive has a
   rolling age budget; chunks older than `db_keep_for` are pruned once a day
-  at `db_prune_at` (scheduler timezone).
+  at `db_prune_at` (scheduler timezone). Pruning deletes in small batches,
+  then returns the freed space to the filesystem and truncates the WAL.
+  Job runs, logs included, are also deleted by run retention
+  (`keep_for`/`storage.keep_for_default`), so a job's logs are kept for the
+  shorter of the two budgets.
+- `logs.db_max_size` — optional size budget for the log archive, in MiB. When
+  the archive's used space exceeds it after the age prune, the oldest chunks
+  are removed until it fits. `0` (the default) disables the budget.
+- `logs.durability` — `"batch"` (the default) writes every log line to the
+  buffer file before accepting the next one, so a daemon crash loses nothing,
+  but fsyncs as a group: when the child's pipe has no more buffered output, or
+  after 256 KiB or 50 ms of output. An OS crash or power loss can lose at most
+  that window. `"frame"` fsyncs every line; a child that prints faster than
+  the disk can sync (a few hundred lines per second on many disks) is then
+  slowed down, because it blocks writing to its full pipe. Reloadable; applies
+  to runs started afterwards.
+- `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
+  `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
+  saves one fsync per commit and stays consistent after a crash, but can lose
+  the most recent commits on power loss. Requires a daemon restart.
 - `[[alert_channel]].bot_token` — must be `env:NAME` or
   `file:/absolute/path`. The daemon resolves it at startup/reload and fails
   to start if the reference cannot be resolved. Tokens are never stored in

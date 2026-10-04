@@ -49,9 +49,11 @@ export default function Runs() {
     initialPageParam: '',
     getNextPageParam: page => page.next_before || undefined,
     enabled: Boolean(selectedJob),
-    // Refresh even when no run is active so scheduled and externally triggered
-    // runs appear without navigating away. React Query stops on unmount.
-    refetchInterval: 2_000,
+    // Poll quickly only while a listed run is active. When idle, a slower
+    // refresh still picks up scheduled and externally triggered runs; this
+    // page's own triggers navigate to the new run immediately.
+    refetchInterval: query => (query.state.data?.pages.some(page => page.items?.some(isActiveRun)) ? 2_000 : 15_000),
+    refetchIntervalInBackground: false,
   });
   const filtered = history.data?.pages.flatMap(page => page.items ?? []) ?? [];
   const runId = requestedRun || filtered[0]?.run_id || '';

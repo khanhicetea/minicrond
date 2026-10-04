@@ -35,6 +35,19 @@ type Alert struct {
 	Runs []model.Run // populated for batched delivery
 }
 
+// Record is one observed change in an alert delivery's status.
+type Record struct {
+	RunID    string
+	Channel  string
+	Status   string
+	Attempts int
+	Reason   string
+}
+
+// RecordFunc persists a group of delivery observations, ideally in one
+// transaction. Observations for one delivery arrive in order.
+type RecordFunc func(context.Context, []Record) error
+
 type delivery struct {
 	channel Channel
 	alert   Alert
@@ -51,7 +64,7 @@ type Dispatcher struct {
 	windows  map[string]time.Duration
 	queue    chan delivery
 	work     chan []delivery
-	record   func(context.Context, string, string, string, int, string) error
+	record   RecordFunc
 	closed   bool
 	pending  atomic.Int64
 	wg       sync.WaitGroup
@@ -60,7 +73,7 @@ type Dispatcher struct {
 }
 
 // New creates a dispatcher and validates/resolves channel credentials.
-func New(channels []config.AlertChannel, record func(context.Context, string, string, string, int, string) error) (*Dispatcher, error) {
+func New(channels []config.AlertChannel, record RecordFunc) (*Dispatcher, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), work: make(chan []delivery, 256), record: record, ctx: ctx, cancel: cancel}
 	if err := d.Reload(channels); err != nil {
@@ -134,7 +147,9 @@ func (d *Dispatcher) Apply(registry *Registry) error {
 }
 
 // Notify queues alerts for failed and timed-out runs. Definitions opt in by
-// naming channels in their alerts field.
+// naming channels in their alerts field. It runs on the run-completion path,
+// so it writes to the database only to record a dropped alert; the batch
+// goroutine records queued deliveries.
 func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	if run.Status != "failed" && run.Status != "timeout" {
 		return
@@ -150,7 +165,6 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 			d.report(run.ID, name, "dropped", 0, "alert channel is unavailable")
 			continue
 		}
-		d.report(run.ID, name, "queued", 0, "")
 		d.pending.Add(1)
 		select {
 		case d.queue <- delivery{channel: channel, alert: Alert{Run: run.Clone()}, name: name, window: d.windows[name]}:
@@ -162,14 +176,28 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 }
 
 func (d *Dispatcher) report(runID, name, status string, attempts int, reason string) {
-	if d.record == nil || d.ctx.Err() != nil {
+	d.reportAll([]Record{{RunID: runID, Channel: name, Status: status, Attempts: attempts, Reason: reason}})
+}
+
+// reportAll records a group of observations in one call.
+func (d *Dispatcher) reportAll(records []Record) {
+	if d.record == nil || len(records) == 0 || d.ctx.Err() != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
-	if err := fault.Call(func() error { return d.record(ctx, runID, name, status, attempts, reason) }); err != nil && d.ctx.Err() == nil {
-		logFailure("recording alert delivery failed", err, "channel", name, "run", runID)
+	if err := fault.Call(func() error { return d.record(ctx, records) }); err != nil && d.ctx.Err() == nil {
+		logFailure("recording alert delivery failed", err, "channel", records[0].Channel, "run", records[0].RunID, "records", len(records))
 	}
+}
+
+// statusRecords describes one transition of every delivery in a batch.
+func statusRecords(batch []delivery, status string, attempts int, reason string) []Record {
+	records := make([]Record, len(batch))
+	for i, item := range batch {
+		records[i] = Record{RunID: item.alert.Run.ID, Channel: item.name, Status: status, Attempts: attempts, Reason: reason}
+	}
+	return records
 }
 
 func logFailure(message string, err error, attrs ...any) {
@@ -223,6 +251,25 @@ func (d *Dispatcher) batch() {
 			enqueue(group)
 		}
 	}
+	add := func(item delivery) {
+		p := batches[item.name]
+		if len(p.items) > 0 && !time.Now().Before(p.until) {
+			flush(item.name)
+			p = pending{}
+		}
+		if len(p.items) > 0 && !sameChannel(p.items[0].channel, item.channel) {
+			flush(item.name)
+			p = pending{}
+		}
+		if len(p.items) == 0 {
+			p.until = time.Now().Add(item.window)
+		}
+		p.items = append(p.items, item)
+		batches[item.name] = p
+		if len(p.items) >= 256 {
+			flush(item.name)
+		}
+	}
 	var timer *time.Timer
 	var deadline <-chan time.Time
 	defer func() {
@@ -273,22 +320,24 @@ func (d *Dispatcher) batch() {
 				}
 				return
 			}
-			p := batches[item.name]
-			if len(p.items) > 0 && !time.Now().Before(p.until) {
-				flush(item.name)
-				p = pending{}
+			// Take whatever else is already waiting, so a burst of failures is
+			// recorded as queued in one transaction.
+			items := []delivery{item}
+		drain:
+			for len(items) < 256 {
+				select {
+				case next, ok := <-d.queue:
+					if !ok {
+						break drain
+					}
+					items = append(items, next)
+				default:
+					break drain
+				}
 			}
-			if len(p.items) > 0 && !sameChannel(p.items[0].channel, item.channel) {
-				flush(item.name)
-				p = pending{}
-			}
-			if len(p.items) == 0 {
-				p.until = time.Now().Add(item.window)
-			}
-			p.items = append(p.items, item)
-			batches[item.name] = p
-			if len(p.items) >= 256 {
-				flush(item.name)
+			d.reportAll(statusRecords(items, "queued", 0, ""))
+			for _, item := range items {
+				add(item)
 			}
 			resetDeadline()
 		case <-deadline:
@@ -321,9 +370,7 @@ func (d *Dispatcher) run() {
 				break
 			}
 			attempts = attempt + 1
-			for _, item := range batch {
-				d.report(item.alert.Run.ID, item.name, "sending", attempts, "")
-			}
+			d.reportAll(statusRecords(batch, "sending", attempts, ""))
 			if d.ctx.Err() != nil {
 				err = d.ctx.Err()
 				break
@@ -351,10 +398,8 @@ func (d *Dispatcher) run() {
 				logFailure("sending alert failed", err, "channel", batch[0].name, "runs", len(batch), "attempts", attempts)
 			}
 		}
-		for _, item := range batch {
-			d.report(item.alert.Run.ID, item.name, status, attempts, reason)
-			d.pending.Add(-1)
-		}
+		d.reportAll(statusRecords(batch, status, attempts, reason))
+		d.pending.Add(-int64(len(batch)))
 	}
 }
 
@@ -381,7 +426,7 @@ func (d *Dispatcher) Test(ctx context.Context, name string) error {
 // Close drains queued deliveries. Call it only after alert producers stop.
 func (d *Dispatcher) Close(ctx context.Context) error {
 	defer d.cancel()
-	// Notify holds a read lock while recording the queued delivery. Cancel
+	// Notify can hold a read lock while recording a dropped delivery. Cancel
 	// that operation even if Close is still waiting for the producer lock.
 	stopCancellation := context.AfterFunc(ctx, d.cancel)
 	defer stopCancellation()

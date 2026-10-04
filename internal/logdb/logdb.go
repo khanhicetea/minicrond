@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // Chunk is one sealed, compressed stream of log frames as produced by the
 // logstore file writer. Blobs are stored verbatim so archived chunks decode
@@ -30,15 +31,18 @@ type Chunk struct {
 	Blob     []byte // compressed frame stream
 }
 
-type LogDB struct{ db *sql.DB }
+// LogDB is the archive. db is the single writer connection; rdb is a
+// read-only pool so log pages and downloads never queue behind archival or
+// pruning, and vice versa.
+type LogDB struct{ db, rdb *sql.DB }
 
 // Open creates or opens <dataDir>/minicron-logs.db and applies migrations.
-func Open(dataDir string) (*LogDB, error) {
+func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log database directory: %w", err)
 	}
 	path := filepath.Join(dataDir, "minicron-logs.db")
-	db, err := sqlite.Open(path)
+	db, err := sqlite.Open(path, opt...)
 	if err != nil {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
@@ -46,19 +50,31 @@ func Open(dataDir string) (*LogDB, error) {
 	if err := l.migrate(context.Background()); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate log database: %w", err), db.Close())
 	}
+	if l.rdb, err = sqlite.OpenReader(path); err != nil {
+		return nil, errors.Join(fmt.Errorf("open log database read pool: %w", err), db.Close())
+	}
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, errors.Join(fmt.Errorf("set log database permissions: %w", err), db.Close())
+			return nil, errors.Join(fmt.Errorf("set log database permissions: %w", err), l.Close())
 		}
 	}
 	return l, nil
 }
 
-func (l *LogDB) Close() error { return l.db.Close() }
+func (l *LogDB) Close() error { return errors.Join(l.rdb.Close(), l.db.Close()) }
+
+// PoolStats reports connection waits for the writer and the read pool.
+func (l *LogDB) PoolStats() (writer, reader sql.DBStats) { return l.db.Stats(), l.rdb.Stats() }
 
 func (l *LogDB) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 
 func (l *LogDB) migrate(ctx context.Context) error {
+	// Incremental auto-vacuum must be chosen before the file has a header,
+	// which switching to WAL writes. On an existing file this only records
+	// the wish; migration 3 applies it with VACUUM.
+	if _, err := l.db.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return err
+	}
 	if _, err := l.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
@@ -78,6 +94,22 @@ func (l *LogDB) migrate(ctx context.Context) error {
 	if version == 1 {
 		if _, err := l.db.ExecContext(ctx, migration2); err != nil {
 			return fmt.Errorf("log database migration 2: %w", err)
+		}
+		version = 2
+	}
+	if version == 2 {
+		// Existing files were created without auto-vacuum, so pruned space was
+		// never returned to the filesystem. Switching modes needs one VACUUM,
+		// which rewrites the file and temporarily needs as much free space.
+		slog.Info("enabling incremental vacuum on the log archive; this rewrites the file once")
+		if _, err := l.db.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+			return fmt.Errorf("log database migration 3: %w", err)
+		}
+		if _, err := l.db.ExecContext(ctx, "VACUUM"); err != nil {
+			return fmt.Errorf("log database migration 3: %w", err)
+		}
+		if _, err := l.db.ExecContext(ctx, "PRAGMA user_version=3"); err != nil {
+			return fmt.Errorf("log database migration 3: %w", err)
 		}
 	}
 	return nil
@@ -105,7 +137,7 @@ CREATE TABLE log_chunks (
 CREATE INDEX idx_log_runs_time ON log_runs(created_us);
 CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
 CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 COMMIT;`
 
 const migration2 = `
@@ -172,7 +204,7 @@ func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn fu
 		// Fetch one blob at a time and release the connection before decoding.
 		// A row-count batch alone could prefetch hundreds of MiB for a tiny page.
 		var c Chunk
-		err := l.db.QueryRowContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 1", runID, after, lastNumber).
+		err := l.rdb.QueryRowContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 1", runID, after, lastNumber).
 			Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -224,32 +256,139 @@ func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
 	return tx.Commit()
 }
 
+// pruneBatch bounds each prune transaction. Chunks are up to about 1 MiB, so
+// a batch stays short enough that archival and log reads interleave with it.
+const pruneBatch = 256
+
 // Prune applies a rolling age window to individual archived chunks. A run row
-// is removed only after its final retained chunk is gone.
+// is removed only after its final retained chunk is gone. Chunks are deleted
+// in small transactions, so a large backlog never holds the writer for long.
 func (l *LogDB) Prune(ctx context.Context, before time.Time) (int64, error) {
-	tx, err := l.db.BeginTx(ctx, nil)
+	if _, err := l.deleteChunks(ctx, "SELECT rowid FROM log_chunks WHERE archived_us<? LIMIT ?", before.UnixMicro()); err != nil {
+		return 0, err
+	}
+	return l.deleteEmptyRuns(ctx)
+}
+
+// PruneToSize removes the oldest archived chunks until the database's used
+// pages fit in maxBytes. It returns the number of runs removed entirely.
+func (l *LogDB) PruneToSize(ctx context.Context, maxBytes int64) (int64, error) {
+	for {
+		used, err := l.usedBytes(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if used <= maxBytes {
+			break
+		}
+		n, err := l.deleteOldest(ctx, used-maxBytes)
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			break // Only metadata is left; it cannot shrink further.
+		}
+	}
+	return l.deleteEmptyRuns(ctx)
+}
+
+// deleteOldest deletes the oldest chunks whose blobs add up to at least
+// excess bytes, at most one batch per call, in one transaction.
+func (l *LogDB) deleteOldest(ctx context.Context, excess int64) (int64, error) {
+	rows, err := l.db.QueryContext(ctx, "SELECT rowid, LENGTH(blob) FROM log_chunks ORDER BY archived_us, rowid LIMIT ?", pruneBatch)
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE archived_us<?", before.UnixMicro()); err != nil {
+	var ids []any
+	var freed int64
+	for rows.Next() && freed < excess {
+		var id, size int64
+		if err := rows.Scan(&id, &size); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+		freed += size
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	res, err := tx.ExecContext(ctx, "DELETE FROM log_runs WHERE NOT EXISTS (SELECT 1 FROM log_chunks WHERE log_chunks.run_id=log_runs.run_id)")
+	res, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
 	if err != nil {
 		return 0, err
 	}
-	n, err := res.RowsAffected()
+	return res.RowsAffected()
+}
+
+// Compact returns pages freed by pruning to the filesystem, a step at a time,
+// and truncates the WAL that the deletions grew.
+func (l *LogDB) Compact(ctx context.Context) error {
+	for {
+		var free int64
+		if err := l.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
+			return err
+		}
+		if free == 0 {
+			break
+		}
+		if _, err := l.db.ExecContext(ctx, "PRAGMA incremental_vacuum(1024)"); err != nil {
+			return err
+		}
+		var after int64
+		if err := l.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&after); err != nil {
+			return err
+		}
+		if after >= free {
+			break // Auto-vacuum is off for this file; nothing can be released.
+		}
+	}
+	_, err := l.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
+// deleteChunks deletes every chunk selected by a rowid query whose last
+// parameter is the batch size, one batch per transaction.
+func (l *LogDB) deleteChunks(ctx context.Context, selectRows string, args ...any) (int64, error) {
+	var total int64
+	for {
+		n, err := l.deleteChunkBatch(ctx, selectRows, args...)
+		total += n
+		if err != nil || n < pruneBatch {
+			return total, err
+		}
+	}
+}
+
+func (l *LogDB) deleteChunkBatch(ctx context.Context, selectRows string, args ...any) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	res, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+selectRows+")", append(args, pruneBatch)...)
 	if err != nil {
 		return 0, err
 	}
-	return n, tx.Commit()
+	return res.RowsAffected()
+}
+
+func (l *LogDB) deleteEmptyRuns(ctx context.Context) (int64, error) {
+	res, err := l.db.ExecContext(ctx, "DELETE FROM log_runs WHERE NOT EXISTS (SELECT 1 FROM log_chunks WHERE log_chunks.run_id=log_runs.run_id)")
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// usedBytes is the size of the pages that hold data, excluding free pages.
+func (l *LogDB) usedBytes(ctx context.Context) (int64, error) {
+	var pages, free, size int64
+	err := l.db.QueryRowContext(ctx, "SELECT p.page_count, f.freelist_count, s.page_size FROM pragma_page_count() p, pragma_freelist_count() f, pragma_page_size() s").Scan(&pages, &free, &size)
+	return (pages - free) * size, err
 }
 
 // Stats reports archive totals for logging and diagnostics.
 func (l *LogDB) Stats(ctx context.Context) (runs, chunks, blobBytes int64, err error) {
 	// One snapshot and one chunk-table scan keep counts consistent with sizes.
-	err = l.db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM log_runs), COUNT(*), COALESCE(SUM(LENGTH(blob)),0)
+	err = l.rdb.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM log_runs), COUNT(*), COALESCE(SUM(LENGTH(blob)),0)
 		FROM log_chunks`).Scan(&runs, &chunks, &blobBytes)
 	return runs, chunks, blobBytes, err
 }

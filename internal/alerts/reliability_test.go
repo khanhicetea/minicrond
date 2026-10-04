@@ -3,6 +3,7 @@ package alerts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,7 +41,18 @@ func TestChannelIdentityHandlesNestedNonComparableValues(t *testing.T) {
 func testDispatcher(t *testing.T, channel Channel, record func(context.Context, string, string, string, int, string) error) *Dispatcher {
 	t.Helper()
 	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, record)
+	var recordAll RecordFunc
+	if record != nil {
+		recordAll = func(ctx context.Context, records []Record) error {
+			for _, r := range records {
+				if err := record(ctx, r.RunID, r.Channel, r.Status, r.Attempts, r.Reason); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, recordAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +181,7 @@ func TestCloseCancellationCancelsRecordCallback(t *testing.T) {
 	}
 }
 
-func TestCloseCancellationUnblocksNotifyRecord(t *testing.T) {
+func TestCloseCancellationUnblocksQueuedRecord(t *testing.T) {
 	started := make(chan struct{})
 	channel := &captureChannel{messages: make(chan Alert, 1)}
 	d := testDispatcher(t, channel, func(ctx context.Context, _, _, status string, _ int, _ string) error {
@@ -205,5 +217,54 @@ func TestCloseCancellationUnblocksNotifyRecord(t *testing.T) {
 	}
 	if d.QueueDepth() != 0 || len(channel.messages) != 0 {
 		t.Fatalf("depth = %d, messages = %d after cancellation", d.QueueDepth(), len(channel.messages))
+	}
+}
+
+// Notify runs on the run-completion path: it must not wait for the database.
+// A burst of failures is recorded as queued in one call.
+func TestNotifyDoesNotWaitForQueuedRecord(t *testing.T) {
+	release := make(chan struct{})
+	groups := make(chan int, 16)
+	channel := &captureChannel{messages: make(chan Alert, 1)}
+	t.Setenv("BOT_TOKEN", "test")
+	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, func(ctx context.Context, records []Record) error {
+		if records[0].Status == "queued" {
+			groups <- len(records)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.channels["ops"] = channel
+	d.mu.Unlock()
+	d.Notify(model.Run{ID: "first", Status: "failed"}, model.Definition{Alerts: []string{"ops"}})
+	<-groups // the batch goroutine is now blocked recording "first"
+	notified := make(chan struct{})
+	go func() {
+		for i := range 10 {
+			d.Notify(model.Run{ID: fmt.Sprint(i), Status: "failed"}, model.Definition{Alerts: []string{"ops"}})
+		}
+		close(notified)
+	}()
+	select {
+	case <-notified:
+	case <-time.After(time.Second):
+		t.Fatal("Notify waited for the queued record")
+	}
+	close(release)
+	if got := <-groups; got != 10 {
+		t.Fatalf("burst recorded in a group of %d, want 10", got)
+	}
+	if err := d.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if alert := <-channel.messages; len(alert.Runs) != 11 {
+		t.Fatalf("delivered %d runs, want 11", len(alert.Runs))
 	}
 }

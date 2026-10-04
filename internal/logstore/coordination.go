@@ -10,8 +10,9 @@ type runLock struct {
 	refs int
 }
 
-// Lock order: archiveMu (archive operations only), run lock, Writer.mu,
-// Store.mu. Store.mu is released before waiting on a run lock.
+// Lock order: run ownership (archive and delete operations only, see
+// Store.claim), an archive slot, run lock, Writer.mu, Store.mu. Store.mu is
+// released before waiting on a run lock.
 //
 // Acquisition and release are separate calls because this lock is taken for
 // every accepted log frame. Returning an unlock closure here makes that hot

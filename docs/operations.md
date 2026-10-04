@@ -29,20 +29,30 @@ Rules of thumb:
 Log storage is two-tier (ADR-6):
 
 1. **Live tier** — running runs write compressed chunk files under
-   `data/logs/<run_id>/`. Every accepted frame is flushed and synced before
-   `Write` returns. `log_max` defaults to `100MiB` and bounds raw frame bytes
+   `data/logs/<run_id>/`. Every accepted frame is written to the chunk file
+   before the next line is read, so a daemon crash loses no accepted output.
+   With `logs.durability = "batch"` (default) fsyncs are grouped while output
+   keeps arriving (when the pipe drains, or after 256 KiB / 50 ms);
+   `"frame"` fsyncs every line. `log_max` defaults to `100MiB` and bounds raw frame bytes
    in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
    archive. Successful archival frees buffer capacity for either policy.
-2. **Archive tier** — finished runs are archived into
-   `data/minicron-logs.db` and their buffer files removed. Still-running
+2. **Archive tier** — finished runs are sealed on completion and archived
+   into `data/minicron-logs.db` by a background archiver, which then removes
+   their buffer files. Run completion never waits on the archive; the sealed
+   buffer stays readable until it is moved. Still-running
    workers seal+archive their chunks every `logs.worker_flush_interval`
    (default 15m).
 
 Crash-safety: buffers orphaned by a crash are salvaged into the archive at
 startup, up to the last intact frame. Failed final archival leaves its buffer
-on disk and is retried at the worker flush cadence, without a restart.
-Transfers are serialized and use batches of at most 8 MiB / 64 chunks (one
-oversized chunk is allowed); live writers can proceed between batches.
+on disk and is retried at the worker flush cadence, without a restart; the
+same happens to sealed runs still queued at shutdown, which are archived at
+the next start. At most two transfers run at once, each in batches of at most
+8 MiB / 64 chunks (one oversized chunk is allowed); live writers can proceed
+between batches. `GET /api/v1/daemon` reports the archive backlog under
+`diagnostics.log_archive_backlog`, and connection waits for both databases
+(`diagnostics.databases`, writer and read pool) to show whether SQLite is the
+bottleneck.
 Reads synchronize with migration and share one page budget across the
 database, files, and memory tail.
 
@@ -52,13 +62,17 @@ Retention:
   = 10,000) and `keep_for` in days (default 7). Pruning a run removes its logs from
   both tiers.
 - **Log archive:** chunks older than `logs.db_keep_for` in days (default 30) are
-  pruned daily at `logs.db_prune_at` (default 03:30 local).
+  pruned daily at `logs.db_prune_at` (default 03:30 local), in small batches.
+  With `logs.db_max_size` set, the same sweep then removes the oldest chunks
+  until the archive fits that many MiB. Afterwards freed pages are returned
+  to the filesystem (incremental auto-vacuum) and the WAL is truncated.
 
-Monitor data-directory free space and SQLite WAL/freelist growth. Age
-retention is not a disk-space quota: SQL deletion makes pages reusable but
-does not normally shrink the database. If physical reclamation is needed,
-stop the daemon, back up the complete directory, and use SQLite `VACUUM` on
-`minicron-logs.db` with sufficient temporary free space before restarting.
+Monitor data-directory free space. The first start after upgrading to log
+archive schema 3 runs a one-time `VACUUM` of `minicron-logs.db` to enable
+incremental auto-vacuum; it needs temporary free space about the size of the
+file. The main `minicron.db` does not shrink after run retention deletes rows;
+if physical reclamation is needed there, stop the daemon, back up the
+complete directory, and use SQLite `VACUUM` before restarting.
 
 ## Alert delivery
 

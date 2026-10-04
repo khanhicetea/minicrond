@@ -137,14 +137,26 @@ func TestLogArchiveDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Logs.WorkerFlushInterval != 15 || cfg.Logs.DBKeepFor != 30 || cfg.Logs.DBPruneAt != "03:30" {
+	if cfg.Logs.WorkerFlushInterval != 15 || cfg.Logs.DBKeepFor != 30 || cfg.Logs.DBPruneAt != "03:30" || cfg.Logs.DBMaxSize != 0 || cfg.Logs.Durability != "batch" {
 		t.Fatalf("unexpected log defaults: %#v", cfg.Logs)
 	}
-	for _, logs := range []string{"worker_flush_interval=-1", "worker_flush_interval='15m'", "db_keep_for=-1", "db_keep_for='720h'", "db_prune_at='25:00'"} {
+	if cfg.Storage.Synchronous != "full" {
+		t.Fatalf("storage.synchronous default = %q", cfg.Storage.Synchronous)
+	}
+	for _, logs := range []string{"worker_flush_interval=-1", "worker_flush_interval='15m'", "db_keep_for=-1", "db_keep_for='720h'", "db_prune_at='25:00'", "db_max_size=-1", "durability='always'"} {
 		mustWrite(t, path, "[logs]\n"+logs+"\n")
 		if _, err := Load(path); err == nil {
 			t.Fatalf("expected invalid logs config for %s", logs)
 		}
+	}
+	mustWrite(t, path, "[storage]\nsynchronous='off'\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected invalid storage.synchronous")
+	}
+	mustWrite(t, path, "[storage]\nsynchronous='normal'\n[logs]\ndurability='frame'\ndb_max_size=2048\n")
+	cfg, err = Load(path)
+	if err != nil || cfg.Storage.Synchronous != "normal" || cfg.Logs.Durability != "frame" || cfg.Logs.DBMaxSize != 2048 {
+		t.Fatalf("explicit settings: %#v %#v, error %v", cfg.Storage, cfg.Logs, err)
 	}
 }
 

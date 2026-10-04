@@ -533,7 +533,25 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	if s.tcpEnabled {
 		info["token_fingerprint"] = fingerprint(s.currentTokenHash())
 	}
+	// Connection waits show whether either database is the bottleneck.
+	writer, reader := s.store.PoolStats()
+	databases := map[string]any{"metadata": poolInfo(writer, reader)}
+	diagnostics := map[string]any{"databases": databases}
+	if s.logs != nil {
+		if writer, reader, ok := s.logs.ArchivePoolStats(); ok {
+			databases["logs"] = poolInfo(writer, reader)
+		}
+		diagnostics["log_archive_backlog"] = s.logs.ArchiveBacklog()
+	}
+	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)
+}
+
+func poolInfo(writer, reader sql.DBStats) map[string]any {
+	stats := func(st sql.DBStats) map[string]any {
+		return map[string]any{"open": st.OpenConnections, "in_use": st.InUse, "wait_count": st.WaitCount, "wait_ms": st.WaitDuration.Milliseconds()}
+	}
+	return map[string]any{"writer": stats(writer), "reader": stats(reader)}
 }
 func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.reload(r.Context()); err != nil {

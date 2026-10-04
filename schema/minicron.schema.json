@@ -61,6 +61,14 @@
         "audit_keep": {
           "type": "integer",
           "minimum": 1
+        },
+        "synchronous": {
+          "enum": [
+            "full",
+            "normal"
+          ],
+          "default": "full",
+          "description": "SQLite synchronous mode for both databases; normal saves an fsync per commit but can lose the last commits on power loss. Requires restart"
         }
       }
     },
@@ -93,6 +101,20 @@
         "db_prune_at": {
           "type": "string",
           "default": "03:30"
+        },
+        "db_max_size": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Log archive size budget in MiB; the daily prune removes the oldest chunks above it. 0 disables the budget"
+        },
+        "durability": {
+          "enum": [
+            "batch",
+            "frame"
+          ],
+          "default": "batch",
+          "description": "When log lines are fsynced: batch groups syncs while output keeps arriving; frame syncs every line"
         }
       }
     },

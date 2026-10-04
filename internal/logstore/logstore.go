@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,17 +18,32 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/logdb"
 )
 
 const Version byte = 1
 const chunkLimit = 1 << 20
 const maxFramePayload = 16 << 20
+
+// In batch durability mode a pump syncs the hot chunk when its pipe has no
+// more buffered input, or sooner once this much output or time has
+// accumulated. Every frame is still written to the file before Write returns,
+// so a daemon crash loses nothing; only an OS crash can lose this window.
+const (
+	groupSyncBytes = 256 << 10
+	groupSyncDelay = 50 * time.Millisecond
+)
+
+// archiveWorkers bounds concurrent archive transfers, and so the batch memory
+// they hold, without making unrelated runs wait for one another.
+const archiveWorkers = 2
 
 // The live tail is bounded by both frames and bytes. The byte limit prevents
 // a handful of valid maximum-size lines from retaining gigabytes per run.
@@ -78,33 +94,73 @@ type index struct {
 
 // Store keeps live run logs in compressed chunk files under root. When a
 // logdb archive is attached, sealed chunks are also copied into the separate
-// SQLite log database: finished runs archive wholesale on Close, long-running
-// workers archive incrementally via FlushActive, and leftover buffers from a
-// crash are swept into the archive at startup by ArchiveOrphans. Reads merge
-// the database, the buffer files, and the in-memory tail transparently, so
-// callers never need to know where a frame currently lives.
+// SQLite log database: finished runs are sealed and archived in the
+// background, long-running workers archive incrementally via FlushActive, and
+// leftover buffers from a crash or a failed archival are swept into the
+// archive by ArchiveOrphans. Reads merge the database, the buffer files, and
+// the in-memory tail transparently, so callers never need to know where a
+// frame currently lives.
 type Store struct {
 	root     string
 	db       *logdb.LogDB
 	mu       sync.Mutex
 	writers  map[string]*Writer
 	runLocks map[string]*runLock
-	// Serialize archive transfers to bound aggregate batch memory. Acquire
-	// before any per-run lock; readers and writers never take archiveMu.
-	archiveMu sync.Mutex
+	// archiveSlots bounds concurrent archive transfers. Acquire it before any
+	// per-run lock; readers and writers never take it.
+	archiveSlots chan struct{}
+	// owners marks runs whose buffer is being archived or deleted, so two
+	// transfers never interleave on one run. Guarded by mu; released is
+	// broadcast whenever an owner finishes.
+	owners   map[string]bool
+	released *sync.Cond
+	// deferred records sealed runs the archiver found owned by someone else;
+	// they are queued again when that owner finishes. Guarded by mu.
+	deferred map[string]bool
 	// orphanFailures counts consecutive non-database archive failures per
-	// orphaned buffer. Guarded by archiveMu.
+	// orphaned buffer. Guarded by mu.
 	orphanFailures map[string]int
 	tailBytes      int64
 	tailLimit      int64
+	// frameSync selects per-frame fsync for writers opened afterwards.
+	frameSync atomic.Bool
+	archiver  archiver
+}
+
+// archiver moves sealed run buffers into the log database in the background,
+// keeping SQLite off the run-completion path. Fields are guarded by Store.mu.
+type archiver struct {
+	running bool
+	queue   []string
+	queued  map[string]bool
+	wake    chan struct{}
+	stop    chan struct{}
+	abort   atomic.Bool
+	workers sync.WaitGroup
 }
 
 func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, writers: make(map[string]*Writer), runLocks: make(map[string]*runLock), orphanFailures: make(map[string]int), tailLimit: 64 << 20}, nil
+	s := &Store{
+		root:           root,
+		writers:        make(map[string]*Writer),
+		runLocks:       make(map[string]*runLock),
+		archiveSlots:   make(chan struct{}, archiveWorkers),
+		owners:         make(map[string]bool),
+		deferred:       make(map[string]bool),
+		orphanFailures: make(map[string]int),
+		tailLimit:      64 << 20,
+	}
+	s.released = sync.NewCond(&s.mu)
+	return s, nil
 }
+
+// SetFrameSync selects the durability of writers opened afterwards. true
+// syncs every accepted frame to disk; false (the default) groups syncs while
+// output is arriving faster than the disk can sync it.
+func (s *Store) SetFrameSync(enabled bool) { s.frameSync.Store(enabled) }
 
 // AttachDB enables SQLite archival into the given log database.
 func (s *Store) AttachDB(db *logdb.LogDB) { s.db = db }
@@ -129,7 +185,7 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, err
 	}
-	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, subs: make(map[chan Frame]chan struct{})}
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load(), subs: make(map[chan Frame]chan struct{})}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -144,32 +200,222 @@ func (s *Store) Active(runID string) *Writer {
 	return s.writers[runID]
 }
 
-// Close finalizes a run's buffer. With an attached archive it then moves every
-// chunk into the SQLite log database and removes the buffer directory; the log
-// stays queryable through Read afterwards. Without an archive the files remain
-// on disk (pure file backend).
+// Close finalizes a run's buffer and, with an attached archive, moves every
+// chunk into the SQLite log database before returning. The log stays
+// queryable through Read afterwards. Without an archive the files remain on
+// disk (pure file backend).
 func (s *Store) Close(runID string) error {
-	s.archiveMu.Lock()
-	defer s.archiveMu.Unlock()
+	return s.finalize(runID, false)
+}
+
+// Seal finalizes a run's buffer like Close, but when the background archiver
+// is running it only queues the move into the database. The sealed chunks
+// stay readable from the buffer meanwhile, so completing a run never waits on
+// the log database or on another run's archival.
+func (s *Store) Seal(runID string) error {
+	return s.finalize(runID, true)
+}
+
+func (s *Store) finalize(runID string, async bool) error {
 	w := s.Active(runID)
 	if w == nil {
 		return nil
 	}
+	// Closing writes the final index, so the buffer is a complete orphan from
+	// here on. Failed finalization leaves a durable buffer for the next
+	// orphan sweep.
 	err := w.Close()
-	if s.db != nil && err == nil {
-		err = s.archiveWriter(w, w.chunk)
-	}
 	lock := s.lockRun(runID, true)
-	defer s.unlockRun(runID, lock, true)
-	if s.db != nil && err == nil {
-		err = os.RemoveAll(w.dir)
-	}
-	// Failed finalization leaves a durable buffer for the next orphan sweep.
-	// Keep the writer registered until archival finishes so it cannot be
-	// mistaken for an orphan between batches.
 	s.mu.Lock()
 	delete(s.writers, runID)
 	s.mu.Unlock()
+	s.unlockRun(runID, lock, true)
+	if err != nil || s.db == nil {
+		return err
+	}
+	if async && s.enqueue(runID) {
+		return nil
+	}
+	s.claimWait(runID)
+	defer s.release(runID)
+	return s.archiveOwned(runID)
+}
+
+// claim takes exclusive archive/delete ownership of a run without waiting.
+func (s *Store) claim(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owners[runID] {
+		return false
+	}
+	s.owners[runID] = true
+	return true
+}
+
+// claimWait takes ownership of a run, waiting for any current owner.
+func (s *Store) claimWait(runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.owners[runID] {
+		s.released.Wait()
+	}
+	s.owners[runID] = true
+}
+
+func (s *Store) release(runID string) {
+	s.mu.Lock()
+	delete(s.owners, runID)
+	again := s.deferred[runID]
+	delete(s.deferred, runID)
+	s.released.Broadcast()
+	s.mu.Unlock()
+	if again {
+		s.enqueue(runID)
+	}
+}
+
+// archiveOwned archives an inactive buffer. Callers own the run.
+func (s *Store) archiveOwned(runID string) error {
+	s.archiveSlots <- struct{}{}
+	defer func() { <-s.archiveSlots }()
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
+	if s.Active(runID) != nil {
+		return nil
+	}
+	return s.archiveOrphan(runID, filepath.Join(s.root, runID))
+}
+
+// StartArchiver starts the background workers that archive sealed runs.
+// Without it, Seal archives inline like Close.
+func (s *Store) StartArchiver() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.archiver.running || s.db == nil {
+		return
+	}
+	a := &s.archiver
+	a.running = true
+	a.queue, a.queued = nil, make(map[string]bool)
+	a.wake, a.stop = make(chan struct{}, 1), make(chan struct{})
+	a.abort.Store(false)
+	for range archiveWorkers {
+		a.workers.Go(s.archiveLoop)
+	}
+}
+
+// StopArchiver drains queued archival and stops the workers. If ctx ends
+// first, workers stop after the batch in progress; the remaining buffers are
+// archived by the next orphan sweep.
+func (s *Store) StopArchiver(ctx context.Context) error {
+	s.mu.Lock()
+	a := &s.archiver
+	if !a.running {
+		s.mu.Unlock()
+		return nil
+	}
+	a.running = false
+	close(a.stop)
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		a.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		a.abort.Store(true)
+		<-done
+		return ctx.Err()
+	}
+}
+
+// ArchivePoolStats reports the archive database's connection waits.
+func (s *Store) ArchivePoolStats() (writer, reader sql.DBStats, ok bool) {
+	if s.db == nil {
+		return writer, reader, false
+	}
+	writer, reader = s.db.PoolStats()
+	return writer, reader, true
+}
+
+// ArchiveBacklog reports how many sealed runs are waiting for archival.
+func (s *Store) ArchiveBacklog() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.archiver.queue)
+}
+
+// enqueue hands a sealed run to the archiver. It reports false when the
+// archiver is not running.
+func (s *Store) enqueue(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := &s.archiver
+	if !a.running {
+		return false
+	}
+	if !a.queued[runID] {
+		a.queued[runID] = true
+		a.queue = append(a.queue, runID)
+	}
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *Store) archiveLoop() {
+	a := &s.archiver
+	for {
+		s.mu.Lock()
+		var runID string
+		if len(a.queue) > 0 && !a.abort.Load() {
+			runID = a.queue[0]
+			a.queue[0] = ""
+			a.queue = a.queue[1:]
+			delete(a.queued, runID)
+		}
+		stop := a.stop
+		s.mu.Unlock()
+		if runID == "" {
+			select {
+			case <-a.wake:
+				continue
+			case <-stop:
+				// Drain what is left unless shutdown ran out of time.
+				s.mu.Lock()
+				empty := len(a.queue) == 0
+				s.mu.Unlock()
+				if empty || a.abort.Load() {
+					return
+				}
+				continue
+			}
+		}
+		if err := fault.Call(func() error { return s.archiveSealed(runID) }); err != nil {
+			slog.Error("log archival failed; the orphan sweep will retry", "run", runID, "error", err)
+		}
+	}
+}
+
+// archiveSealed archives one queued run. A run owned by a worker flush or a
+// deletion is deferred until that owner releases it.
+func (s *Store) archiveSealed(runID string) error {
+	s.mu.Lock()
+	if s.owners[runID] {
+		s.deferred[runID] = true
+		s.mu.Unlock()
+		return nil
+	}
+	s.owners[runID] = true
+	s.mu.Unlock()
+	defer s.release(runID)
+	err := s.archiveOwned(runID)
+	s.recordOrphanResult(runID, err)
 	return err
 }
 
@@ -195,11 +441,10 @@ func (s *Store) FlushActive() {
 }
 
 // ArchiveOrphans sweeps buffers without an active writer into the archive.
-// It handles both crash recovery and retries of failed final archival. Chunk
-// files that were mid-write are salvaged up to the last intact frame.
+// It handles both crash recovery and retries of failed background archival.
+// Chunk files that were mid-write are salvaged up to the last intact frame.
+// Buffers another goroutine is archiving or deleting are left to it.
 func (s *Store) ArchiveOrphans() error {
-	s.archiveMu.Lock()
-	defer s.archiveMu.Unlock()
 	if s.db == nil {
 		return nil
 	}
@@ -214,16 +459,15 @@ func (s *Store) ArchiveOrphans() error {
 			continue
 		}
 		runID := e.Name()
-		lock := s.lockRun(runID, true)
-		if s.Active(runID) == nil {
-			if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
-				errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
-				s.recordOrphanFailure(runID, err)
-			} else {
-				delete(s.orphanFailures, runID)
-			}
+		if s.Active(runID) != nil || !s.claim(runID) {
+			continue
 		}
-		s.unlockRun(runID, lock, true)
+		err := s.archiveOwned(runID)
+		s.recordOrphanResult(runID, err)
+		s.release(runID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -237,19 +481,26 @@ const orphanQuarantineAfter = 3
 // which cannot be archived, preserved for manual repair.
 const QuarantineDir = ".quarantine"
 
-// recordOrphanFailure moves a buffer that keeps failing into the quarantine,
-// so it stops being retried on every sweep. Callers hold archiveMu and the
-// run's exclusive lock.
-func (s *Store) recordOrphanFailure(runID string, cause error) {
-	if errors.Is(cause, errArchiveDB) {
+// recordOrphanResult moves a buffer that keeps failing into the quarantine,
+// so it stops being retried on every sweep. Callers own the run.
+func (s *Store) recordOrphanResult(runID string, cause error) {
+	s.mu.Lock()
+	if cause == nil || errors.Is(cause, errArchiveDB) {
 		delete(s.orphanFailures, runID)
+		s.mu.Unlock()
 		return
 	}
 	s.orphanFailures[runID]++
-	if s.orphanFailures[runID] < orphanQuarantineAfter {
+	failures := s.orphanFailures[runID]
+	if failures >= orphanQuarantineAfter {
+		delete(s.orphanFailures, runID)
+	}
+	s.mu.Unlock()
+	if failures < orphanQuarantineAfter {
 		return
 	}
-	delete(s.orphanFailures, runID)
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
 	quarantine := filepath.Join(s.root, QuarantineDir)
 	target := filepath.Join(quarantine, runID)
 	err := os.MkdirAll(quarantine, 0o700)
@@ -281,6 +532,10 @@ type Writer struct {
 	maxBytes     int64
 	maxLine      int
 	dropNew      bool
+	frameSync    bool
+	unsynced     int       // bytes written to the hot chunk since its last fsync
+	unsyncedAt   time.Time // when the oldest unsynced frame was written
+	syncs        atomic.Int64
 	truncated    bool
 	idx          index
 	subs         map[chan Frame]chan struct{}
@@ -297,10 +552,10 @@ type Writer struct {
 func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
 
 // Flush seals the current chunk (if it has data) and archives all sealed
-// chunks of this writer.
+// chunks of this writer. It waits for another archival of this run to finish.
 func (w *Writer) Flush(s *Store) error {
-	s.archiveMu.Lock()
-	defer s.archiveMu.Unlock()
+	s.claimWait(w.runID)
+	defer s.release(w.runID)
 	through, err := w.sealForArchive()
 	if err != nil || through == 0 || s.db == nil {
 		return err
@@ -370,6 +625,8 @@ func (w *Writer) rotate() error {
 	}
 	w.chunk = next
 	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
+	// finishChunk synced everything written to the previous chunk.
+	w.unsynced, w.unsyncedAt = 0, time.Time{}
 	return nil
 }
 func (w *Writer) finishChunk() error {
@@ -428,7 +685,18 @@ func (w *Writer) writeIndex() error {
 	}
 	return err
 }
+
+// Write appends one frame. A successful Write is a durability boundary: the
+// frame is on disk when it returns.
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
+	return w.write(stream, payload, flags, true)
+}
+
+// write appends one frame. The frame always reaches the chunk file before
+// write returns, so a daemon crash cannot lose it. Unless durable or the
+// writer syncs every frame, the fsync is grouped: the caller must call Sync
+// before waiting for more input.
+func (w *Writer) write(stream Stream, payload []byte, flags Flags, durable bool) error {
 	lock := w.store.lockRun(w.runID, true)
 	defer w.store.unlockRun(w.runID, lock, true)
 	w.mu.Lock()
@@ -479,13 +747,21 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	if err := encodeWithHeader(w.enc, f, w.header[:]); err != nil {
 		return err
 	}
-	// A successful Write is a durability boundary. Flush compressed bytes and
-	// sync the hot chunk so a daemon crash cannot lose sparse accepted output.
+	// Flush compressed bytes to the file on every frame so a daemon crash
+	// cannot lose accepted output. Readers see it through the page cache.
 	if err := w.enc.Flush(); err != nil {
 		return err
 	}
-	if err := w.file.Sync(); err != nil {
-		return err
+	if w.unsynced == 0 {
+		w.unsyncedAt = f.Timestamp
+	}
+	w.unsynced += frameSize
+	if durable || w.frameSync || w.unsynced >= groupSyncBytes || f.Timestamp.Sub(w.unsyncedAt) >= groupSyncDelay {
+		w.syncs.Add(1)
+		if err := w.file.Sync(); err != nil {
+			return err
+		}
+		w.unsynced, w.unsyncedAt = 0, time.Time{}
 	}
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
@@ -558,6 +834,29 @@ func (w *Writer) evictHistory() int {
 	}
 	return released
 }
+
+// Sync makes every accepted frame durable. The fsync runs without the
+// writer's locks, so readers and the other stream's pump are not held up.
+func (w *Writer) Sync() error {
+	w.mu.Lock()
+	if w.closed || w.file == nil || w.unsynced == 0 {
+		w.mu.Unlock()
+		return nil
+	}
+	f := w.file
+	w.unsynced, w.unsyncedAt = 0, time.Time{}
+	w.mu.Unlock()
+	w.syncs.Add(1)
+	if err := f.Sync(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+	// A closed file was sealed concurrently, and sealing syncs it.
+	return nil
+}
+
+// Pipe copies r into the log line by line. Lines are synced as a group when
+// the pipe has no more buffered input, so a chatty child is not slowed to the
+// disk's fsync rate.
 func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	limit := w.maxLine
 	if limit <= 0 || limit > maxFramePayload {
@@ -567,6 +866,12 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	line := make([]byte, 0, min(limit, 64<<10))
 	truncated := false
 	for {
+		// The next read may block: make everything accepted so far durable.
+		if br.Buffered() == 0 {
+			if err := w.Sync(); err != nil {
+				return err
+			}
+		}
 		fragment, err := br.ReadSlice('\n')
 		hasNewline := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
 		if hasNewline {
@@ -593,17 +898,17 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			if !utf8.Valid(line) {
 				flags |= FlagInvalidUTF8
 			}
-			if writeErr := w.Write(stream, line, flags); writeErr != nil {
+			if writeErr := w.write(stream, line, flags, false); writeErr != nil {
 				return writeErr
 			}
 			line = line[:0]
 			truncated = false
 		}
 		if errors.Is(err, io.EOF) {
-			return nil
+			return w.Sync()
 		}
 		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
-			return err
+			return errors.Join(err, w.Sync())
 		}
 	}
 }
@@ -1023,8 +1328,8 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 
 // Delete removes a run's logs from both the archive and the buffer directory.
 func (s *Store) Delete(runID string) error {
-	s.archiveMu.Lock()
-	defer s.archiveMu.Unlock()
+	s.claimWait(runID)
+	defer s.release(runID)
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
 	if s.Active(runID) != nil {
@@ -1041,9 +1346,8 @@ func (s *Store) Delete(runID string) error {
 // DeleteRuns removes a retention page of inactive runs. An archive batch
 // failure falls back to individual deletion, allowing unaffected runs to
 // progress. The returned IDs have had both archive and file buffers removed.
+// Runs being archived are skipped and reported; the next sweep retries them.
 func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
-	s.archiveMu.Lock()
-	defer s.archiveMu.Unlock()
 	seen := make(map[string]bool, len(runIDs))
 	valid := make([]string, 0, len(runIDs))
 	type heldRunLock struct {
@@ -1057,9 +1361,14 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 			continue
 		}
 		seen[id] = true
+		if !s.claim(id) {
+			errs = append(errs, fmt.Errorf("run %s: logs are being archived", id))
+			continue
+		}
 		lock := s.lockRun(id, true)
 		if s.Active(id) != nil {
 			s.unlockRun(id, lock, true)
+			s.release(id)
 			errs = append(errs, fmt.Errorf("run %s: cannot delete logs of an active writer", id))
 			continue
 		}
@@ -1069,6 +1378,7 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 	defer func() {
 		for i := len(locks) - 1; i >= 0; i-- {
 			s.unlockRun(locks[i].id, locks[i].lock, true)
+			s.release(locks[i].id)
 		}
 	}()
 	batchFailed := false
