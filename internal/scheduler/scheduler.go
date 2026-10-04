@@ -97,9 +97,41 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	}
 	return nil
 }
+
+// loop restarts a failed scheduling pass with capped exponential backoff.
+// A storage failure must not stop a job's schedule until the next reload.
+// Each pass reloads the persisted watermark, so an occurrence that could not
+// be triggered is handled by the definition's catch_up policy on restart.
 func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
+	const maxBackoff = time.Minute
+	backoff := time.Second
+	for {
+		started := time.Now()
+		err := s.runPass(ctx, d)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		if time.Since(started) > maxBackoff {
+			backoff = time.Second
+		}
+		slog.Error("scheduler: scheduling pass failed; retrying", "job", d.Name, "retry_in", backoff, "error", err)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, maxBackoff)
+	}
+}
+
+// runPass schedules d until ctx ends or a step fails. It returns nil when the
+// loop should stop for good (cancellation or an unusable schedule) and an
+// error when a retry may succeed.
+func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 	if ctx.Err() != nil {
-		return
+		return nil
 	}
 	// A panic here would take the whole daemon down; definitions are
 	// validated before they reach the scheduler, so a canonicalization
@@ -107,22 +139,21 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	_, defHash, err := config.Canonical(d)
 	if err != nil {
 		slog.Error("scheduler: canonicalizing definition failed", "job", d.Name, "error", err)
-		return
+		return nil
 	}
 	schedule, err := compileSchedule(d)
 	if err != nil {
 		slog.Error("scheduler: compiling schedule failed", "job", d.Name, "error", err)
-		return
+		return nil
 	}
 	hashBytes := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	hash := hex.EncodeToString(hashBytes[:])
 	anchor, last, persistedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
 	if ctx.Err() != nil {
-		return
+		return nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		slog.Error("scheduler: reading schedule state failed", "job", d.Name, "error", err)
-		return
+		return fmt.Errorf("read schedule state: %w", err)
 	}
 	persistedLast := last
 	hasPersisted := err == nil && storedHash == hash
@@ -132,10 +163,9 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		last = time.Time{}
 		if err := s.store.SetScheduleState(ctx, d.ID, hash, anchor, time.Time{}); err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			slog.Error("scheduler: initialize state failed", "job", d.Name, "error", err)
-			return
+			return fmt.Errorf("initialize schedule state: %w", err)
 		}
 		persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
 	}
@@ -152,13 +182,13 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		return nil
 	}
 	if ctx.Err() != nil {
-		return
+		return nil
 	}
 	if !last.IsZero() && last.Before(now) {
 		next, err := schedule.nextFireDistinct(last, anchor, last)
 		if err != nil {
 			slog.Error("scheduler: calculating initial catch-up fire failed", "job", d.Name, "error", err)
-			return
+			return nil
 		}
 		if next.Before(now) {
 			count := 0
@@ -198,15 +228,15 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 				}
 				if err != nil {
 					if ctx.Err() != nil {
-						return
+						return nil
 					}
-					slog.Error("scheduler: catch-up failed", "job", d.Name, "error", err)
-					return
+					return fmt.Errorf("catch up: %w", err)
 				}
 				last = latest
 				if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
-					slog.Error("scheduler: persist catch-up watermark failed", "job", d.Name, "error", stateErr)
-					return
+					// The run row is unique per occurrence, so retrying catch-up
+					// after this failure cannot fire the occurrence twice.
+					return fmt.Errorf("persist catch-up watermark: %w", stateErr)
 				}
 				persistedLast, persistedNext = last, time.Time{}
 			}
@@ -216,13 +246,12 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		next, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
 			slog.Error("scheduler: calculating next fire failed", "job", d.Name, "error", err)
-			return
+			return nil
 		}
 		// Keep the pending fire in durable state so API clients can display
 		// the same instant the scheduler is waiting for.
 		if err := persistNext(next); err != nil {
-			slog.Error("scheduler: persist next fire failed", "job", d.Name, "error", err)
-			return
+			return fmt.Errorf("persist next fire: %w", err)
 		}
 		for time.Now().Before(next) {
 			wait := min(time.Until(next), 30*time.Second)
@@ -230,7 +259,7 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				return
+				return nil
 			case <-timer.C:
 			}
 			// Recompute from wall time after each bounded monotonic wait only
@@ -244,26 +273,21 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 			recomputed, err := schedule.nextFireDistinct(maxTime(last, now), anchor, last)
 			if err != nil {
 				slog.Error("scheduler: recalculating next fire failed", "job", d.Name, "error", err)
-				return
+				return nil
 			}
 			next = recomputed
 			if err := persistNext(next); err != nil {
-				slog.Error("scheduler: persist recomputed fire failed", "job", d.Name, "error", err)
-				return
+				return fmt.Errorf("persist recomputed fire: %w", err)
 			}
 		}
 		scheduled := next
 		if _, err := s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled); err != nil {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
-			slog.Error("scheduler: trigger failed", "job", d.Name, "error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
+			// The watermark still precedes this occurrence, so the next pass
+			// applies catch_up to it instead of silently dropping it.
+			return fmt.Errorf("trigger occurrence %s: %w", scheduled.Format(time.RFC3339), err)
 		}
 		last = next
 
@@ -274,15 +298,15 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 		if err != nil {
 			slog.Error("scheduler: calculating following fire failed", "job", d.Name, "error", err)
 			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
-				slog.Error("scheduler: persist watermark failed", "job", d.Name, "error", stateErr)
+				return fmt.Errorf("persist watermark: %w", stateErr)
 			}
-			return
+			return nil
 		}
 		if err := persistNext(following); err != nil {
-			slog.Error("scheduler: persist following fire failed", "job", d.Name, "error", err)
-			return
+			return fmt.Errorf("persist following fire: %w", err)
 		}
 	}
+	return nil
 }
 
 type compiledSchedule struct {

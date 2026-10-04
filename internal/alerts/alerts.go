@@ -74,8 +74,16 @@ func New(channels []config.AlertChannel, record func(context.Context, string, st
 	return d, nil
 }
 
-// Reload atomically replaces the available delivery channels.
-func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
+// Registry is a resolved, validated set of delivery channels that has not yet
+// been installed. Preparing separately lets a reload resolve credentials
+// before committing any other change.
+type Registry struct {
+	channels map[string]Channel
+	windows  map[string]time.Duration
+}
+
+// Prepare validates channel settings and resolves their credentials.
+func Prepare(configs []config.AlertChannel) (*Registry, error) {
 	channels := make(map[string]Channel, len(configs))
 	windows := make(map[string]time.Duration, len(configs))
 	for _, cfg := range configs {
@@ -84,7 +92,7 @@ func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
 			window = 10
 		}
 		if window < 1 || window > 3600 {
-			return fmt.Errorf("alert channel %q: invalid batch_window", cfg.Name)
+			return nil, fmt.Errorf("alert channel %q: invalid batch_window", cfg.Name)
 		}
 		windows[cfg.Name] = time.Duration(window) * time.Second
 		var channel Channel
@@ -92,21 +100,36 @@ func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
 		case "telegram":
 			token, err := resolveSecret(cfg.BotToken)
 			if err != nil {
-				return fmt.Errorf("alert channel %q: resolve bot_token: %w", cfg.Name, err)
+				return nil, fmt.Errorf("alert channel %q: resolve bot_token: %w", cfg.Name, err)
 			}
 			channel = newTelegram(token, cfg.ChatID, cfg.DisableNotification, telegramAPI, &http.Client{Timeout: 10 * time.Second})
 		default:
-			return fmt.Errorf("alert channel %q: unsupported type %q", cfg.Name, cfg.Type)
+			return nil, fmt.Errorf("alert channel %q: unsupported type %q", cfg.Name, cfg.Type)
 		}
 		channels[cfg.Name] = channel
 	}
+	return &Registry{channels: channels, windows: windows}, nil
+}
+
+// Reload atomically replaces the available delivery channels.
+func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
+	registry, err := Prepare(configs)
+	if err != nil {
+		return err
+	}
+	return d.Apply(registry)
+}
+
+// Apply installs a prepared registry. Deliveries already in progress keep the
+// channel instance they were queued with.
+func (d *Dispatcher) Apply(registry *Registry) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
 		return errors.New("alert dispatcher is closed")
 	}
-	d.channels = channels
-	d.windows = windows
+	d.channels = registry.channels
+	d.windows = registry.windows
 	return nil
 }
 

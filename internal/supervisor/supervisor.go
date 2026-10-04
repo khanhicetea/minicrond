@@ -197,10 +197,9 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			delete(s.active, d.Name)
 		}
 		s.mu.Unlock()
-		current, err := s.store.Run(context.Background(), r.ID)
+		current, err := s.terminalRun(ctx, d.Name, r.ID)
 		if err != nil {
-			slog.Error("supervisor: reading worker run failed", "worker", d.Name, "run", r.ID, "error", err)
-			return
+			return // canceled while storage was unavailable
 		}
 		if !model.TerminalStatuses[current.Status] {
 			return // defensive: never restart a run that is not terminal
@@ -215,6 +214,31 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		if !s.restartAfter(ctx, d, healthy) {
 			return
 		}
+	}
+}
+
+// terminalRun reads a finished worker run, retrying storage failures with
+// capped backoff. Giving up would leave the worker neither running nor fatal
+// until the next reload. It fails only when ctx ends.
+func (s *Supervisor) terminalRun(ctx context.Context, name, id string) (model.Run, error) {
+	backoff := time.Second
+	for {
+		current, err := s.store.Run(ctx, id)
+		if err == nil {
+			return current, nil
+		}
+		if ctx.Err() != nil {
+			return model.Run{}, ctx.Err()
+		}
+		slog.Error("supervisor: reading worker run failed; retrying", "worker", name, "run", id, "retry_in", backoff, "error", err)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return model.Run{}, ctx.Err()
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, time.Minute)
 	}
 }
 

@@ -27,6 +27,10 @@ var ErrReadOnly = errors.New("config-owned definition is read-only")
 var ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
 var ErrIdempotencyKeyExists = errors.New("active idempotency key already exists")
 
+// ErrInvalidTransition reports a lifecycle update whose guard did not match:
+// the run is missing or already in an incompatible state. Retrying cannot help.
+var ErrInvalidTransition = errors.New("invalid state transition")
+
 type Store struct{ db *sql.DB }
 
 type RunMetrics struct {
@@ -651,7 +655,7 @@ func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID 
 		return fmt.Errorf("read start result for run %s: %w", id, err)
 	}
 	if n != 1 {
-		return fmt.Errorf("start run %s: invalid state transition", id)
+		return fmt.Errorf("start run %s: %w", id, ErrInvalidTransition)
 	}
 	return nil
 }
@@ -665,7 +669,7 @@ func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *
 		return fmt.Errorf("read finish result for run %s: %w", id, err)
 	}
 	if n != 1 {
-		return fmt.Errorf("finish run %s: invalid state transition", id)
+		return fmt.Errorf("finish run %s: %w", id, ErrInvalidTransition)
 	}
 	return nil
 }

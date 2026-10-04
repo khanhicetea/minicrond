@@ -74,9 +74,16 @@ stream. The executor owns the process group for the run's lifetime and kills
 remaining descendants before completing the run. Descendants holding output
 pipes get at most five seconds to drain. Shutdown blocks new API work and worker
 starts, cancels scheduled retries, and forces termination when its run deadline
-expires, even if the definition has a longer grace period. Terminal persistence
-retries share a five-second budget; failures are logged and callers must verify
-the stored status before treating a run as terminal.
+expires, even if the definition has a longer grace period; forced runs then get
+a short bounded join to persist their outcome before the databases close.
+Terminal persistence first retries inline for five seconds, then hands off to a
+background finalizer that keeps retrying until storage recovers or the daemon
+stops, and only then sends alerts and schedules retries. Callers must still
+verify the stored status before treating a run as terminal. Scheduling and
+worker supervision loops retry storage failures with capped backoff instead of
+stopping; an occurrence that could not be triggered is handled by `catch_up`.
+A retry that finds `max_concurrent_runs` full waits another `retry_delay`;
+other over-capacity triggers are recorded `skipped` with `queue_full`.
 
 Definitions and run records are copied at asynchronous ownership boundaries.
 Configuration rejects durations that would overflow, and invalid UID/GID values

@@ -81,6 +81,10 @@ func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 	return more, err
 }
 
+// errArchiveDB marks failures of the archive database itself, as opposed to
+// problems with a buffer's own files.
+var errArchiveDB = errors.New("archive database")
+
 // archiveOrphan recovers an inactive buffer while holding archiveMu and its
 // exclusive run lock. Indexed chunks are copied verbatim; unindexed chunks
 // are salvaged up to the last intact frame. Every committed batch is removed
@@ -121,7 +125,7 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 			return nil
 		}
 		if err := s.db.PutChunks(context.Background(), runID, idx.Job, idx.Kind, time.Now(), chunks); err != nil {
-			return err
+			return fmt.Errorf("%w: %w", errArchiveDB, err)
 		}
 		for _, path := range paths {
 			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {

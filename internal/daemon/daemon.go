@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,19 +29,25 @@ import (
 
 type Daemon struct {
 	ConfigPath, DataDir, Version string
-	mu                           sync.Mutex
-	cfg                          *config.Config
-	running                      bool
-	stopping                     bool
-	lock                         *os.File
-	store                        *store.Store
-	ldb                          *logdb.LogDB
-	logs                         *logstore.Store
-	exec                         *executor.Service
-	sched                        *scheduler.Scheduler
-	super                        *supervisor.Supervisor
-	api                          *api.Server
-	alerts                       *alerts.Dispatcher
+	// reloadMu serializes Reload, Reconcile, and the start of shutdown. It is
+	// held while waiting for scheduler and worker loops to exit, so nothing a
+	// run completion needs may require it. mu only guards short field access.
+	reloadMu sync.Mutex
+	mu       sync.Mutex
+	cfg      *config.Config
+	running  bool
+	stopping bool
+	lock     *os.File
+	store    *store.Store
+	ldb      *logdb.LogDB
+	logs     *logstore.Store
+	exec     *executor.Service
+	sched    *scheduler.Scheduler
+	super    *supervisor.Supervisor
+	api      *api.Server
+	// alerts is read lock-free by run completion callbacks. Taking a daemon
+	// lock there would deadlock with a reload waiting for a worker to exit.
+	alerts atomic.Pointer[alerts.Dispatcher]
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -92,10 +99,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
 		MaxLineBytes:      maxLine,
 		OnFinished: func(run model.Run, definition model.Definition) {
-			d.mu.Lock()
-			dispatcher := d.alerts
-			d.mu.Unlock()
-			if dispatcher != nil {
+			if dispatcher := d.alerts.Load(); dispatcher != nil {
 				dispatcher.Notify(run, definition)
 			}
 		},
@@ -140,18 +144,14 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return append([]config.AlertChannel(nil), d.cfg.AlertChannels...)
 	})
 	apiServer.SetAlertTest(func(ctx context.Context, name string) error {
-		d.mu.Lock()
-		dispatcher := d.alerts
-		d.mu.Unlock()
+		dispatcher := d.alerts.Load()
 		if dispatcher == nil {
 			return errors.New("alert dispatcher is not ready")
 		}
 		return dispatcher.Test(ctx, name)
 	})
 	apiServer.SetAlertQueueDepth(func() int {
-		d.mu.Lock()
-		dispatcher := d.alerts
-		d.mu.Unlock()
+		dispatcher := d.alerts.Load()
 		if dispatcher == nil {
 			return 0
 		}
@@ -182,17 +182,18 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	d.mu.Lock()
-	d.alerts = dispatcher
-	d.mu.Unlock()
+	d.alerts.Store(dispatcher)
 	// Use the same shutdown path for startup failures and normal cancellation.
 	// Producers and HTTP handlers must stop before the databases close.
 	defer func() {
 		apiServer.BeginShutdown()
+		// Let an in-flight reload finish so it cannot restart loops after Stop.
+		d.reloadMu.Lock()
 		d.mu.Lock()
 		d.stopping = true
 		d.running = false
 		d.mu.Unlock()
+		d.reloadMu.Unlock()
 		sched.Stop()
 		super.BeginShutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -277,19 +278,20 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	}
 }
 func (d *Daemon) Reload(ctx context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err := d.ready(); err != nil {
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
+	current, err := d.readyConfig()
+	if err != nil {
 		return err
 	}
 	cfg, err := config.Load(d.ConfigPath)
 	if err != nil {
 		return err
 	}
-	if cfg.Server.Bind != d.cfg.Server.Bind || cfg.Server.UnixOn() != d.cfg.Server.UnixOn() || cfg.Server.TCPOn() != d.cfg.Server.TCPOn() {
+	if cfg.Server.Bind != current.Server.Bind || cfg.Server.UnixOn() != current.Server.UnixOn() || cfg.Server.TCPOn() != current.Server.TCPOn() {
 		return errors.New("server.bind, server.tcp_enabled, and server.unix_socket require daemon restart")
 	}
-	if cfg.Scheduler.MaxConcurrentRuns != d.cfg.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != d.cfg.Logs.MaxLine {
+	if cfg.Scheduler.MaxConcurrentRuns != current.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != current.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
 	}
 	defs, err := d.store.Definitions(ctx)
@@ -305,14 +307,22 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	if err := validateAlertReferences(active, cfg.AlertChannels); err != nil {
 		return err
 	}
-	if err := d.alerts.Reload(cfg.AlertChannels); err != nil {
+	// Resolve channel credentials before touching the registry, then swap
+	// in-memory state only after the definition sync has committed.
+	channels, err := alerts.Prepare(cfg.AlertChannels)
+	if err != nil {
 		return err
 	}
 	if err := d.store.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
 		return fmt.Errorf("sync config definitions: %w", err)
 	}
+	if err := d.alerts.Load().Apply(channels); err != nil {
+		return err
+	}
+	d.mu.Lock()
 	d.cfg = cfg
-	return d.reconcileLocked(ctx)
+	d.mu.Unlock()
+	return d.reconcile(ctx)
 }
 
 func validateAlertReferences(defs []model.Definition, channels []config.AlertChannel) error {
@@ -333,22 +343,28 @@ func validateAlertReferences(defs []model.Definition, channels []config.AlertCha
 // Reconcile refreshes the scheduler and worker supervisor from the authoritative
 // definition registry without reloading daemon settings.
 func (d *Daemon) Reconcile(ctx context.Context) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if err := d.ready(); err != nil {
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
+	if _, err := d.readyConfig(); err != nil {
 		return err
 	}
-	return d.reconcileLocked(ctx)
+	return d.reconcile(ctx)
 }
 
-func (d *Daemon) ready() error {
-	if d.stopping || !d.running || d.cfg == nil || d.store == nil || d.alerts == nil || d.sched == nil || d.super == nil {
-		return errors.New("daemon is not ready")
+// readyConfig reports the current settings of a running daemon. Components
+// wired during startup are immutable once the daemon is running.
+func (d *Daemon) readyConfig() (*config.Config, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stopping || !d.running || d.cfg == nil || d.store == nil || d.alerts.Load() == nil || d.sched == nil || d.super == nil {
+		return nil, errors.New("daemon is not ready")
 	}
-	return nil
+	return d.cfg, nil
 }
 
-func (d *Daemon) reconcileLocked(ctx context.Context) error {
+// reconcile is called with reloadMu held and d.mu released: stopping loops
+// waits for runs whose completion callbacks must not block on daemon locks.
+func (d *Daemon) reconcile(ctx context.Context) error {
 	defs, err := d.store.Definitions(ctx)
 	if err != nil {
 		return err

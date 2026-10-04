@@ -282,7 +282,7 @@ func (s *Server) Start(bind, socket string) error {
 	mux := s.routes()
 	var ln net.Listener
 	if s.tcpEnabled {
-		s.tcp = &http.Server{Addr: bind, Handler: s.middleware(mux, false), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+		s.tcp = &http.Server{Addr: bind, Handler: s.middleware(mux, false), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: responseWriteTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 		var err error
 		ln, err = net.Listen("tcp", bind)
 		if err != nil {
@@ -312,7 +312,7 @@ func (s *Server) Start(bind, socket string) error {
 			}
 			return fmt.Errorf("set Unix socket permissions: %w", err)
 		}
-		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+		s.unix = &http.Server{Handler: s.middleware(mux, true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: responseWriteTimeout, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
 		go s.serve("unix", s.unix, peerListener{Listener: unixListener, uid: uint32(os.Geteuid())})
 	}
 	if ln != nil {
@@ -797,7 +797,11 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("wait") == "true" {
-		run = s.waitForRun(r.Context(), run, time.Duration(timeoutSeconds(r.URL.Query().Get("timeout")))*time.Second)
+		timeout := time.Duration(timeoutSeconds(r.URL.Query().Get("timeout"))) * time.Second
+		// The server write timeout is armed when the request is read; a wait
+		// longer than it would otherwise lose the response after the run ends.
+		extendWriteDeadline(w, timeout+responseWriteTimeout)
+		run = s.waitForRun(r.Context(), run, timeout)
 		if model.Terminal(run.Status) {
 			writeJSON(w, 200, run)
 			return
@@ -1039,7 +1043,9 @@ func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("id")+`.log"`)
-	if err := s.logs.RawContext(r.Context(), r.PathValue("id"), w); err != nil && r.Context().Err() == nil {
+	// Downloads of any size may take longer than the server write timeout as
+	// long as the client keeps reading.
+	if err := s.logs.RawContext(r.Context(), r.PathValue("id"), &progressWriter{w: w}); err != nil && r.Context().Err() == nil {
 		slog.Error("raw log response failed", "run", r.PathValue("id"), "error", err)
 	}
 }
@@ -1368,6 +1374,32 @@ func (s *Server) requireRun(w http.ResponseWriter, r *http.Request, id string) b
 		return false
 	}
 	return true
+}
+
+// responseWriteTimeout bounds each response write. Long-lived responses
+// extend it as they make progress instead of disabling it.
+var responseWriteTimeout = 30 * time.Second
+
+func extendWriteDeadline(w http.ResponseWriter, d time.Duration) {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.Warn("extending response write deadline failed", "error", err)
+	}
+}
+
+// progressWriter renews the write deadline while a streamed body is being
+// written, at most a few times per timeout period, so only a stalled client
+// times out.
+type progressWriter struct {
+	w        http.ResponseWriter
+	extended time.Time
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	if now := time.Now(); now.Sub(p.extended) >= min(time.Second, responseWriteTimeout/4) {
+		extendWriteDeadline(p.w, responseWriteTimeout)
+		p.extended = now
+	}
+	return p.w.Write(b)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -91,15 +92,18 @@ type Store struct {
 	// Serialize archive transfers to bound aggregate batch memory. Acquire
 	// before any per-run lock; readers and writers never take archiveMu.
 	archiveMu sync.Mutex
-	tailBytes int64
-	tailLimit int64
+	// orphanFailures counts consecutive non-database archive failures per
+	// orphaned buffer. Guarded by archiveMu.
+	orphanFailures map[string]int
+	tailBytes      int64
+	tailLimit      int64
 }
 
 func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, writers: make(map[string]*Writer), runLocks: make(map[string]*runLock), tailLimit: 64 << 20}, nil
+	return &Store{root: root, writers: make(map[string]*Writer), runLocks: make(map[string]*runLock), orphanFailures: make(map[string]int), tailLimit: 64 << 20}, nil
 }
 
 // AttachDB enables SQLite archival into the given log database.
@@ -205,7 +209,8 @@ func (s *Store) ArchiveOrphans() error {
 	}
 	var errs []error
 	for _, e := range entries {
-		if !e.IsDir() {
+		// Hidden entries, including the quarantine, are not run buffers.
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		runID := e.Name()
@@ -213,11 +218,49 @@ func (s *Store) ArchiveOrphans() error {
 		if s.Active(runID) == nil {
 			if err := s.archiveOrphan(runID, filepath.Join(s.root, runID)); err != nil {
 				errs = append(errs, fmt.Errorf("run %s: %w", runID, err))
+				s.recordOrphanFailure(runID, err)
+			} else {
+				delete(s.orphanFailures, runID)
 			}
 		}
 		s.unlockRun(runID, lock, true)
 	}
 	return errors.Join(errs...)
+}
+
+// orphanQuarantineAfter is how many consecutive sweeps may fail on a buffer's
+// own contents before it is moved aside. Archive database failures do not
+// count: they are expected to clear, and the buffer stays in place for them.
+const orphanQuarantineAfter = 3
+
+// QuarantineDir names the directory under the log root that keeps buffers
+// which cannot be archived, preserved for manual repair.
+const QuarantineDir = ".quarantine"
+
+// recordOrphanFailure moves a buffer that keeps failing into the quarantine,
+// so it stops being retried on every sweep. Callers hold archiveMu and the
+// run's exclusive lock.
+func (s *Store) recordOrphanFailure(runID string, cause error) {
+	if errors.Is(cause, errArchiveDB) {
+		delete(s.orphanFailures, runID)
+		return
+	}
+	s.orphanFailures[runID]++
+	if s.orphanFailures[runID] < orphanQuarantineAfter {
+		return
+	}
+	delete(s.orphanFailures, runID)
+	quarantine := filepath.Join(s.root, QuarantineDir)
+	target := filepath.Join(quarantine, runID)
+	err := os.MkdirAll(quarantine, 0o700)
+	if err == nil {
+		err = os.Rename(filepath.Join(s.root, runID), target)
+	}
+	if err != nil {
+		slog.Error("quarantining unarchivable log buffer failed", "run", runID, "error", err)
+		return
+	}
+	slog.Error("log buffer could not be archived and was quarantined for repair", "run", runID, "path", target, "attempts", orphanQuarantineAfter, "error", cause)
 }
 
 type Writer struct {

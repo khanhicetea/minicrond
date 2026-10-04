@@ -64,9 +64,17 @@ type activeRun struct {
 	forced bool
 }
 
+// forcedRunJoin bounds how long shutdown waits for runs to finish cleanup
+// after its deadline has forced them to stop.
+const forcedRunJoin = 3 * time.Second
+
 var ErrStopped = errors.New("operator stop")
 var ErrDisabled = errors.New("definition is disabled")
 var ErrShutdown = errors.New("daemon shutdown")
+
+// errCapacity defers a retry attempt that found the concurrency gate full.
+// Recording it as skipped would silently end the job's retry budget.
+var errCapacity = errors.New("concurrent run capacity is full")
 var lookupCurrentUser = user.Current
 
 func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
@@ -129,13 +137,16 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		return model.Run{}, false, fmt.Errorf("definition %s: %w", d.Name, ErrDisabled)
 	}
 	if d.Kind == model.KindJob && d.OnOverlap == "skip" && s.Active(d.Name) > 0 {
-		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
+		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent, "overlap_skip")
 	}
 	if d.Kind == model.KindJob {
 		select {
 		case s.capacity <- struct{}{}:
 		default:
-			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent)
+			if trigger == "retry" {
+				return model.Run{}, false, errCapacity
+			}
+			return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent, "queue_full")
 		}
 	}
 	capacityOwned := d.Kind == model.KindJob
@@ -201,10 +212,12 @@ func resolveLogMax(value int) int64 {
 	return int64(value) << 20
 }
 
-func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest, attempt int, parent string) (model.Run, bool, error) {
+// recordSkipped persists a declined trigger. reason distinguishes the job's
+// own overlap policy from the daemon-wide concurrency limit.
+func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, trigger string, scheduled *time.Time, idem *IdempotencyRequest, attempt int, parent, reason string) (model.Run, bool, error) {
 	id := uuid.NewV7()
 	now := time.Now().UTC()
-	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: "overlap_skip", Trigger: trigger, Attempt: attempt, ParentRunID: parent, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
+	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "skipped", EndReason: reason, Trigger: trigger, Attempt: attempt, ParentRunID: parent, ScheduledFor: scheduled, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
 	if idem != nil && idem.Key != "" {
 		existingID, err := s.store.AdmitIdempotentRun(ctx, r, idem.Principal, idem.Operation, idem.Key, idem.RequestHash)
 		if err != nil {
@@ -261,13 +274,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		if closeErr := s.logs.Close(r.ID); closeErr != nil {
 			logFailure("finalizing panicked-run logs failed", closeErr, "run", r.ID)
 		}
-		ended := time.Now().UTC()
-		if finishErr := s.finishRun(r.ID, "failed", "internal_error", nil, "", ended, bytes, truncated); finishErr != nil {
-			logFailure("persisting panicked run failed", finishErr, "run", r.ID)
-			return
-		}
-		r.Status, r.EndReason, r.EndedAt = "failed", "internal_error", &ended
-		s.notifyFinished(r, d)
+		s.complete(r, d, terminal{status: "failed", reason: "internal_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated})
 	}
 }
 
@@ -416,14 +423,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		slog.Error("finalizing run logs failed", "run", r.ID, "error", err)
 		status, reason = "failed", "log_error"
 	}
-	ended := time.Now().UTC()
-	if err := s.finishRun(r.ID, status, reason, code, signal, ended, bytes, truncated); err != nil {
-		slog.Error("persisting terminal run state failed after retries", "run", r.ID, "status", status, "error", err)
-		return
-	}
-	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = status, reason, code, signal, &ended
-	s.notifyFinished(r, d)
-	s.scheduleRetry(r, d)
+	s.complete(r, d, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
 }
 
 func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
@@ -433,14 +433,85 @@ func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.
 	if closeErr := s.logs.Close(r.ID); closeErr != nil {
 		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
 	}
-	ended := time.Now().UTC()
-	if ferr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, bytes, truncated); ferr != nil {
-		slog.Error("persisting failed run state failed after retries", "run", r.ID, "error", ferr)
+	s.complete(r, d, terminal{status: "failed", reason: "start_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
+}
+
+// terminal is the outcome of a run that has stopped executing.
+type terminal struct {
+	status, reason string
+	code           *int
+	signal         string
+	ended          time.Time
+	bytes          int64
+	truncated      bool
+	retry          bool // whether a failed job may schedule its next attempt
+}
+
+// complete persists a run's terminal state, then notifies and schedules any
+// retry. If storage stays unavailable past the inline budget, a background
+// finalizer keeps trying, so the run cannot stay "running" with no alert.
+func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
+	err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
+	if err == nil {
+		s.finished(r, d, t)
 		return
 	}
-	r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
+	if errors.Is(err, store.ErrInvalidTransition) {
+		logFailure("persisting terminal run state rejected", err, "run", r.ID, "status", t.status)
+		return
+	}
+	logFailure("persisting terminal run state failed; retrying in background", err, "run", r.ID, "status", t.status)
+	s.admission.Lock()
+	if s.closing {
+		// Startup recovery marks the run interrupted.
+		s.admission.Unlock()
+		return
+	}
+	s.retryWG.Add(1)
+	s.admission.Unlock()
+	go func() {
+		defer s.retryWG.Done()
+		if err := fault.Call(func() error {
+			s.finalizeLater(r, d, t)
+			return nil
+		}); err != nil {
+			logFailure("run finalizer panicked", err, "run", r.ID)
+		}
+	}()
+}
+
+func (s *Service) finalizeLater(r model.Run, d model.Definition, t terminal) {
+	backoff := time.Second
+	for {
+		timer := time.NewTimer(backoff)
+		select {
+		case <-s.retryStop:
+			timer.Stop()
+			slog.Warn("run left unfinalized at shutdown; recovery will mark it interrupted", "run", r.ID)
+			return
+		case <-timer.C:
+		}
+		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
+		if err == nil {
+			slog.Info("persisted terminal run state after retry", "run", r.ID, "status", t.status)
+			s.finished(r, d, t)
+			return
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			logFailure("persisting terminal run state rejected", err, "run", r.ID, "status", t.status)
+			return
+		}
+		logFailure("persisting terminal run state failed; retrying", err, "run", r.ID, "status", t.status, "retry_in", min(backoff*2, 30*time.Second))
+		backoff = min(backoff*2, 30*time.Second)
+	}
+}
+
+func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
+	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
 	s.notifyFinished(r, d)
-	s.scheduleRetry(r, d)
+	if t.retry {
+		s.scheduleRetry(r, d)
+	}
 }
 
 // scheduleRetry creates the next attempt as a separate run. Pending timers
@@ -474,25 +545,35 @@ func (s *Service) retry(r model.Run, d model.Definition) {
 	}
 	timer := time.NewTimer(time.Duration(delay) * time.Second)
 	defer timer.Stop()
-	select {
-	case <-s.retryStop:
-		return
-	case <-timer.C:
-	}
-	// Use the current definition: disabled, deleted, or reduced budgets
-	// must not launch a queued retry.
-	current, hash, err := s.store.Definition(context.Background(), d.Name)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, sql.ErrNoRows) {
-			logFailure("reading retry definition failed", err, "job", d.Name, "run", r.ID)
+	for {
+		select {
+		case <-s.retryStop:
+			return
+		case <-timer.C:
+		}
+		// Use the current definition: disabled, deleted, or reduced budgets
+		// must not launch a queued retry.
+		current, hash, err := s.store.Definition(context.Background(), d.Name)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, sql.ErrNoRows) {
+				logFailure("reading retry definition failed", err, "job", d.Name, "run", r.ID)
+			}
+			return
+		}
+		if current.ID != d.ID || current.Kind != model.KindJob || !current.IsEnabled() || r.Attempt > current.Retries {
+			return
+		}
+		_, _, err = s.trigger(context.Background(), current, hash, "retry", r.ScheduledFor, nil, r.Attempt+1, r.ID)
+		if errors.Is(err, errCapacity) {
+			// Wait another retry delay for a free slot instead of dropping the attempt.
+			slog.Info("job retry deferred: concurrent run capacity is full", "job", d.Name, "run", r.ID, "attempt", r.Attempt+1)
+			timer.Reset(time.Duration(delay) * time.Second)
+			continue
+		}
+		if err != nil && !errors.Is(err, ErrShutdown) {
+			slog.Error("job retry trigger failed", "job", d.Name, "run", r.ID, "error", err)
 		}
 		return
-	}
-	if current.ID != d.ID || current.Kind != model.KindJob || !current.IsEnabled() || r.Attempt > current.Retries {
-		return
-	}
-	if _, _, err := s.trigger(context.Background(), current, hash, "retry", r.ScheduledFor, nil, r.Attempt+1, r.ID); err != nil && !errors.Is(err, ErrShutdown) {
-		slog.Error("job retry trigger failed", "job", d.Name, "run", r.ID, "error", err)
 	}
 }
 
@@ -930,6 +1011,18 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				}
 			}
 			s.mu.Unlock()
+			// Killed runs still drain pipes, finalize logs, and persist their
+			// terminal state. Give them a short, bounded join so they do not
+			// race the daemon closing its databases.
+			join := time.NewTimer(forcedRunJoin)
+			defer join.Stop()
+			for _, remaining := range runs {
+				select {
+				case <-remaining.done:
+				case <-join.C:
+					return ctx.Err()
+				}
+			}
 			return ctx.Err()
 		}
 	}
