@@ -3,12 +3,14 @@ package executor
 import (
 	"context"
 	"errors"
+	"io"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
@@ -388,5 +390,29 @@ func TestPoisonFinalizerDoesNotStarveOthers(t *testing.T) {
 	})
 	if background, _ := s.Finalizers(); background != 1 {
 		t.Fatalf("background = %d, want only the poison item left", background)
+	}
+}
+
+// NIT 8 / ADR-8 2A: a log pump error after the output was read must not turn a
+// successful run into failed/log_error: the real status is kept and the logs are
+// marked truncated.
+func TestPumpErrorKeepsExecutionStatus(t *testing.T) {
+	_, st, s := resilienceService(t, Options{})
+	s.pipeHook = func(w *logstore.Writer, stream logstore.Stream, r io.Reader) error {
+		err := w.Pipe(stream, r)
+		if err == nil && stream == logstore.Stdout {
+			return errors.New("injected pump failure")
+		}
+		return err
+	}
+	d, h := putJob(t, st, parallelJob("pump-fails", "echo hi"))
+	run, err := s.Trigger(t.Context(), d, h, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, run.ID)
+	got := runStatus(t, st, run.ID)
+	if got.Status != "succeeded" || got.EndReason != "exit" || !got.LogTruncated {
+		t.Fatalf("run = %s/%s truncated=%v; want succeeded/exit truncated", got.Status, got.EndReason, got.LogTruncated)
 	}
 }

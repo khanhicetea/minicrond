@@ -76,6 +76,8 @@ type Service struct {
 	queue      queueState
 	retries    retryState
 	finals     finalState
+	// pipeHook, when set, replaces Writer.Pipe (tests only).
+	pipeHook func(*logstore.Writer, logstore.Stream, io.Reader) error
 	// finishHook, when set, replaces the terminal-state write (tests only).
 	finishHook func(id string) error
 	// sealHook, when set, replaces logs.Seal for the normal and start-error
@@ -495,8 +497,8 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 			pumpsRemaining--
 		}
 	}()
-	go func() { pumps <- fault.Call(func() error { return w.Pipe(logstore.Stdout, stdoutR) }) }()
-	go func() { pumps <- fault.Call(func() error { return w.Pipe(logstore.Stderr, stderrR) }) }()
+	go func() { pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stdout, stdoutR) }) }()
+	go func() { pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stderr, stderrR) }) }()
 	// Persist the running state and write the first system line concurrently
 	// with supervision, each bounded; the select loop below can stop the
 	// child regardless of how long they take. Because system lines are written
@@ -528,6 +530,9 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	}
 	var waitErr error
 	var cause error
+	// pumpFailed records a log pump error. ADR-8 2A: log capture trouble never
+	// changes the execution result; it only marks the output incomplete.
+	pumpFailed := false
 	for !leaderDone {
 		select {
 		case waitErr = <-wait:
@@ -542,8 +547,8 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		case pumpErr := <-pumps:
 			pumpsRemaining--
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
-				cause = fmt.Errorf("log pump failed: %w", pumpErr)
-				logFailure("run log pump failed", cause, "run", r.ID)
+				pumpFailed = true
+				logFailure("run log pump failed", pumpErr, "run", r.ID)
 				waitErr = s.stopWithNote(w, r.ID, "log pump error; stopping process", pgid, d, wait, a.force)
 				leaderDone = true
 			}
@@ -572,7 +577,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		case pumpErr := <-pumps:
 			pumpsRemaining--
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
-				cause = errors.Join(cause, fmt.Errorf("log pump failed: %w", pumpErr))
+				pumpFailed = true
 				logFailure("run log pump failed", pumpErr, "run", r.ID)
 				writeSystem(w, r.ID, "log pump error: "+pumpErr.Error())
 			}
@@ -589,9 +594,6 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		killGroup(pgid, syscall.SIGKILL)
 	}
 	status, reason, code, signal := classify(waitErr, cause, d.SuccessCodes)
-	if startErr == nil && cause != nil && !errors.Is(cause, context.DeadlineExceeded) && !errors.Is(cause, ErrStopped) && !errors.Is(cause, ErrShutdown) {
-		status, reason = "failed", "log_error"
-	}
 	if startErr != nil {
 		logFailure("starting run failed", startErr, "run", r.ID, "job", d.Name)
 		noted := make(chan struct{})
@@ -605,6 +607,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// Close the log sink before the terminal transition so a wait=true
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
+	truncated = truncated || pumpFailed
 	if err := s.sealLogs(r.ID); err != nil {
 		// ADR-8 2A: a log-storage failure never changes the execution result.
 		// Keep the real status, record that output may be incomplete.
@@ -1194,6 +1197,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// pipe drains one output stream into the run's log; tests replace it to inject
+// pump failures.
+func (s *Service) pipe(w *logstore.Writer, stream logstore.Stream, r io.Reader) error {
+	if s.pipeHook != nil {
+		return s.pipeHook(w, stream, r)
+	}
+	return w.Pipe(stream, r)
 }
 
 // sysLog writes a run's system line; tests replace it per Service to stall the
