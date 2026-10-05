@@ -1,0 +1,11 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEachChunkCursor/chunks_100000/final_page-4         	      50	   9909067 ns/op	    2954 B/op	      84 allocs/op
+BenchmarkEachChunkCursor/chunks_100000/final_page-4         	      50	   9702426 ns/op	    2818 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_100000/final_page-4         	      50	   9377099 ns/op	    2785 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_100000/empty_tail-4         	      50	   8977273 ns/op	    1360 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_100000/empty_tail-4         	      50	   9124445 ns/op	    1351 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_100000/empty_tail-4         	      50	   9390582 ns/op	    1365 B/op	      37 allocs/op
+PASS

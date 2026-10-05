@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -226,8 +227,14 @@ func sleepFor(d time.Duration) error {
 // followLogs prints a run's log frames in pages. Without follow it returns once
 // the stored log is exhausted and never polls. With follow it waits
 // followPollInterval via wait between polls; wait returning an error stops it.
+//
+// A page refused by the daemon's read admission (503 read_busy/read_timeout)
+// is retried at the same cursor after the advertised Retry-After (clamped to
+// 1–10 s): up to maxBusyAttempts times in a row, or without limit when
+// following.
 func followLogs(runID string, follow bool, wait func(time.Duration) error) error {
 	var after uint64
+	busyAttempts := 0
 	for {
 		var response struct {
 			Items []struct {
@@ -237,8 +244,17 @@ func followLogs(runID string, follow bool, wait func(time.Duration) error) error
 			} `json:"items"`
 		}
 		if err := requestJSON("GET", fmt.Sprintf("/api/v1/runs/%s/log?after=%d&limit=1000", runID, after), nil, &response); err != nil {
-			return err
+			var busy *busyError
+			if !errors.As(err, &busy) || (!follow && busyAttempts >= maxBusyAttempts) {
+				return err
+			}
+			busyAttempts++
+			if err := wait(busy.retryAfter); err != nil {
+				return err
+			}
+			continue
 		}
+		busyAttempts = 0
 		for _, f := range response.Items {
 			b, err := base64.StdEncoding.DecodeString(f.Payload)
 			if err != nil {
@@ -383,9 +399,47 @@ func closeResponse(body io.ReadCloser, result *error) {
 	}
 }
 
+// busyError is a retryable refusal from the daemon's expensive-read admission
+// (HTTP 503 with error code read_busy or read_timeout and a Retry-After). It
+// prints exactly like any other HTTP error.
+type busyError struct {
+	message    string
+	retryAfter time.Duration
+}
+
+func (e *busyError) Error() string { return e.message }
+
+// Bounds on honoring Retry-After: the daemon asks for about a second; a
+// misbehaving proxy must not be able to stall the CLI for minutes per retry.
+const (
+	minBusyRetry = time.Second
+	maxBusyRetry = 10 * time.Second
+	// maxBusyAttempts bounds consecutive refusals of one page when not
+	// following; a follow keeps trying, as it already polls indefinitely.
+	maxBusyAttempts = 5
+)
+
+func busyRetryDelay(header string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(header))
+	if err != nil {
+		return minBusyRetry
+	}
+	return min(max(time.Duration(seconds)*time.Second, minBusyRetry), maxBusyRetry)
+}
+
 func responseError(resp *http.Response) error {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	statusErr := fmt.Errorf("HTTP %s: %s", resp.Status, string(body))
+	if err == nil && resp.StatusCode == http.StatusServiceUnavailable {
+		var envelope struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &envelope) == nil && (envelope.Error.Code == "read_busy" || envelope.Error.Code == "read_timeout") {
+			return &busyError{message: statusErr.Error(), retryAfter: busyRetryDelay(resp.Header.Get("Retry-After"))}
+		}
+	}
 	if err != nil {
 		return errors.Join(statusErr, fmt.Errorf("read error response body: %w", err))
 	}

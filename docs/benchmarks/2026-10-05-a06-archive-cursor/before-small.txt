@@ -1,0 +1,33 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     34170 ns/op	    2889 B/op	      74 allocs/op
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     32111 ns/op	    2702 B/op	      74 allocs/op
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     51451 ns/op	    2726 B/op	      74 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	     52296 ns/op	    1333 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	     43746 ns/op	    1336 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	     16898 ns/op	    1336 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1404528 ns/op	  138491 B/op	    3698 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1277939 ns/op	  138160 B/op	    3697 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1392547 ns/op	  138174 B/op	    3698 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	    121954 ns/op	    2803 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	    108005 ns/op	    2764 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	    110309 ns/op	    2767 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	     99843 ns/op	    1355 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	    100000 ns/op	    1346 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	     98422 ns/op	    1345 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  19305173 ns/op	 1403993 B/op	   44024 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  19689878 ns/op	 1404054 B/op	   44024 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  19774594 ns/op	 1403761 B/op	   44024 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	    856149 ns/op	    2791 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	    858844 ns/op	    2761 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	    866572 ns/op	    2761 B/op	      83 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	    862874 ns/op	    1345 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	    893137 ns/op	    1345 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	    878387 ns/op	    1345 B/op	      37 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 725969046 ns/op	14158473 B/op	  458119 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 725696622 ns/op	14158646 B/op	  458121 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 737303846 ns/op	14159014 B/op	  458123 allocs/op
+PASS
+ok  	github.com/khanhicetea/minicrond/internal/logdb	451.778s

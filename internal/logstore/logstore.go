@@ -145,6 +145,16 @@ type Store struct {
 	syncFile        func(*os.File) error
 	captureFailures atomic.Int64 // writers that entered degraded capture
 	archiver        archiver
+
+	// Observability and disk budget (see budget.go and diagnostics.go).
+	disk                    diskState
+	lockWaits               lockWaitStats
+	maint                   maintenanceStats
+	droppedFrames           atomic.Int64 // output discarded under 2A, all runs
+	droppedBytes            atomic.Int64
+	syncFailures            atomic.Int64 // failed fsyncs, all runs
+	quarantinePurgedEntries atomic.Int64
+	quarantinePurgedBytes   atomic.Int64
 }
 
 // archiver moves sealed run buffers into the log database in the background,
@@ -281,6 +291,9 @@ func (s *Store) finalize(runID string, async bool) error {
 	delete(s.writers, runID)
 	s.mu.Unlock()
 	s.unlockRun(runID, lock, true)
+	// A sealed buffer is a disk-pressure candidate and a finished run is the
+	// moment its footprint changed; the hook only raises a coalesced hint.
+	s.signalPressure()
 	if err != nil || s.db == nil {
 		return err
 	}
@@ -855,6 +868,9 @@ func (w *Writer) rotate() error {
 	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
 	// finishChunk synced everything written to the previous chunk.
 	w.unsynced = 0
+	// A rotation sealed a chunk and started a file: the cheap moment to ask
+	// whether disk pressure needs a pass (a coalesced hint, never inline work).
+	w.store.signalPressure()
 	return nil
 }
 func (w *Writer) finishChunk() error {
@@ -930,8 +946,8 @@ func (w *Writer) writeIndex() error {
 // reached the chunk file (daemon-crash safe) but is fsynced with the next
 // group; with strict "frame" durability a successful Write is synced.
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
-	lock := w.store.lockRun(w.runID, true)
-	w.mu.Lock()
+	lock := w.store.lockRunTimed(w.runID)
+	w.lockTimed()
 	needSync, err := w.writeLocked(stream, payload, flags)
 	w.mu.Unlock()
 	w.store.unlockRun(w.runID, lock, true)
@@ -947,8 +963,8 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 // reach the pump: capture degrades, discards, and recovers (ADR-8 2A). Only a
 // closed writer is reported.
 func (w *Writer) capture(stream Stream, payload []byte, flags Flags) error {
-	lock := w.store.lockRun(w.runID, true)
-	w.mu.Lock()
+	lock := w.store.lockRunTimed(w.runID)
+	w.lockTimed()
 	needSync, err := w.captureLocked(stream, payload, flags)
 	w.mu.Unlock()
 	w.store.unlockRun(w.runID, lock, true)
@@ -986,6 +1002,8 @@ func (w *Writer) discard(payload int) {
 	w.episodeFrames++
 	w.episodeBytes += size
 	w.truncated = true
+	w.store.droppedFrames.Add(1)
+	w.store.droppedBytes.Add(size)
 }
 
 // enterDegraded records a storage failure and schedules the next recovery
@@ -998,6 +1016,8 @@ func (w *Writer) enterDegraded(err error) {
 		w.retryDelay = captureRetryMin
 		w.store.captureFailures.Add(1)
 		slog.Error("log storage failed; run output is discarded until capture recovers", "run", w.runID, "error", err)
+		// A full disk is the likeliest cause: ask for a disk-pressure pass.
+		w.store.signalPressure()
 	}
 	w.degradedErr = err
 	w.truncated = true
@@ -1217,6 +1237,7 @@ func (w *Writer) Sync() error {
 	w.syncFailures++
 	w.truncated = true
 	w.mu.Unlock()
+	w.store.syncFailures.Add(1)
 	if !w.syncFailing.Swap(true) {
 		slog.Error("log fsync failed; recent output may not be durable", "run", w.runID, "error", err)
 	}

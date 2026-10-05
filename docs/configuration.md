@@ -56,6 +56,15 @@ db_max_size = 0                # log-archive size budget, MiB (0 = none, max 107
 durability = "batch"           # log fsync policy: "batch" or "frame"
 sync_interval = 2000           # batch: ms until dirty log buffers are fsynced (100..60000)
 sync_max_dirty = 1024          # batch: KiB of unsynced output that forces an fsync (1..65536)
+disk_min_free = 512            # keep this much free on the data-dir filesystem, MiB (0 = off)
+disk_budget = 0                # cap on archive+WAL+buffers, MiB (0 = none, max 1073741824)
+quarantine_keep_for = 0        # delete quarantined log data older than N days (0 = keep)
+quarantine_max_size = 0        # cap quarantined log data, MiB (0 = no cap)
+
+[reads]                        # expensive diagnostic reads (restart)
+slots = 4                      # JSON log pages, raw downloads and metrics running at once (1..64)
+budget = 32                    # MiB of estimated working set shared by those reads (8..4096)
+work_timeout = 20              # seconds one request's read/aggregation may run (1..300)
 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
@@ -166,6 +175,44 @@ and `max_concurrent_runs` are unitless.
 - `logs.sync_max_dirty` — batch durability: KiB of unsynced output after which a
   run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
   `0` selects the default and does not mean "no limit".
+- `logs.disk_min_free` — MiB of free space to keep on the filesystem holding the
+  data directory (default 512). Below it the oldest completed runs' logs are
+  deleted early, ahead of retention age, until free space reaches 125% of it; the
+  value is clamped to a quarter of the filesystem. Omitted selects the default;
+  an explicit `0` disables the rule (unlike `sync_interval`, where `0` means the
+  default). Reloadable. See [operations](operations.md#log-disk-budget).
+- `logs.disk_budget` — optional cap, in MiB, on everything the log tiers occupy:
+  the archive database and its WAL, sealed buffers and live buffers (not the
+  quarantine). Reclamation of the oldest completed runs' logs starts at 90% and
+  stops at 80% of it. `0` (the default) sets no byte budget; values above
+  1073741824 MiB are rejected. Unlike `logs.db_max_size` it is enforced whenever
+  pressure may have changed, not once a day, and it never deletes live buffers,
+  active workers' archived chunks, quarantine or metadata. Reloadable.
+- `logs.quarantine_keep_for` / `logs.quarantine_max_size` — opt-in purge of the
+  quarantine of corrupt log chunks, applied by the daily log prune: entries older
+  than that many days, then the oldest entries until the rest fits that many MiB.
+  Both default to `0`: keep everything (and only report its size). Every deletion
+  is logged. Reloadable.
+- `reads.slots`, `reads.budget`, `reads.work_timeout` — shared admission for
+  the expensive on-demand reads: `GET .../log` pages, `GET .../log/raw`
+  downloads and `GET /api/v1/metrics/runs` (the SSE follow stream has its own
+  64-stream limit). A request needs one of `slots` and a share of `budget` (a
+  log page or download is estimated at 4 MiB, a metrics computation at 8 MiB,
+  so the default 32 MiB admits at most four of them). The budget is a second,
+  independent limit: at the defaults it never binds before `slots` does, and it
+  only matters when it is lowered or `slots` is raised (the per-request figures
+  are fixed estimates, not measurements; one frame near `logs.max_line` can
+  exceed a page's estimate); it queues for up to
+  0.5 s, then is refused with `503` and `Retry-After: 1` (`read_busy`). Waiting
+  requests are themselves capped at four per slot. `work_timeout` bounds the
+  read or aggregation of one request (one page for a download), answering `503`
+  `read_timeout` when exceeded; it is separate from the socket write deadline,
+  which is renewed for the response. A raw download holds its slot until it
+  finishes, so a slow client occupies one slot; a stalled one is cut off by the
+  write deadline. At most `max(1, slots-1)` downloads run at once and a further
+  one is refused immediately (`503 read_busy`), so downloads cannot lock out
+  JSON pages and metrics (with `slots = 1` a download necessarily does). Defaults suit about 1 CPU / 512 MiB. `0` selects the default.
+  Changing them requires a daemon restart (reload rejects the change).
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose

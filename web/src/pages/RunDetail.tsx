@@ -13,7 +13,7 @@ import { downloadFile } from '../lib/download';
 import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
-import { isActiveRun } from '../types';
+import { isActiveRun, type Frame } from '../types';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
 
@@ -95,8 +95,16 @@ export default function RunDetail() {
 
   const copyError = async () => {
     try {
-      const log = await api.logFrames(id, 0, 5000);
-      const stderr = log.items.filter(frame => frame.stream === 2).slice(-20);
+      // A page carries at most about 1 MiB, so walk forward (bounded) to the
+      // end of the log and keep the last stderr lines, where the error is.
+      let stderr: Frame[] = [];
+      let after = 0;
+      for (let page = 0; page < 64; page += 1) {
+        const log = await api.logFrames(id, after, 5000);
+        if (log.items.length === 0) break;
+        stderr = stderr.concat(log.items.filter(frame => frame.stream === 2)).slice(-20);
+        after = log.items[log.items.length - 1].sequence;
+      }
       const message = stderr.map(frame => decodePayload(frame.payload)).join('').trim() || `run ${id} ended with status ${data.status}`;
       await navigator.clipboard.writeText(message);
       setCopiedError(true);

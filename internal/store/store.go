@@ -278,7 +278,18 @@ BEGIN;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled,source FROM definitions WHERE deleted_us IS NULL ORDER BY name")
+	return s.definitions(ctx, s.db)
+}
+
+// ReadDefinitions is Definitions on the read pool, for API listings and
+// exports. Committed writes are visible to it at once (WAL), so only callers
+// that sit on the execution/admission path need the writer connection.
+func (s *Store) ReadDefinitions(ctx context.Context) ([]model.Definition, error) {
+	return s.definitions(ctx, s.rdb)
+}
+
+func (s *Store) definitions(ctx context.Context, db *sql.DB) ([]model.Definition, error) {
+	rows, err := db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled,source FROM definitions WHERE deleted_us IS NULL ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +315,12 @@ func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
 
 // RetentionDefinitions includes soft-deleted definitions so their run history
 // continues to receive the configured retention policy.
+//
+// Retention is background maintenance and every delete it issues re-checks
+// eligibility, so it reads from the pool rather than occupying the single
+// writer connection that run transitions need.
 func (s *Store) RetentionDefinitions(ctx context.Context) ([]model.Definition, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled FROM definitions ORDER BY name")
+	rows, err := s.rdb.QueryContext(ctx, "SELECT definition_id,spec,revision,enabled FROM definitions ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
@@ -328,11 +343,20 @@ func (s *Store) RetentionDefinitions(ctx context.Context) ([]model.Definition, e
 }
 
 func (s *Store) Definition(ctx context.Context, name string) (model.Definition, string, error) {
+	return s.definition(ctx, s.db, name)
+}
+
+// ReadDefinition is Definition on the read pool; see ReadDefinitions.
+func (s *Store) ReadDefinition(ctx context.Context, name string) (model.Definition, string, error) {
+	return s.definition(ctx, s.rdb, name)
+}
+
+func (s *Store) definition(ctx context.Context, db *sql.DB, name string) (model.Definition, string, error) {
 	var d model.Definition
 	var raw, hash string
 	var source string
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,revision,enabled,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Revision, &enabled, &source)
+	err := db.QueryRowContext(ctx, "SELECT definition_id,spec,spec_hash,revision,enabled,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&d.ID, &raw, &hash, &d.Revision, &enabled, &source)
 	if err != nil {
 		return d, "", err
 	}
@@ -846,7 +870,15 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		return out, err
 	}
 	defer rows.Close()
-	for rows.Next() {
+	for rowCount := 0; rows.Next(); rowCount++ {
+		// The query honors ctx, but the aggregation below is CPU work on rows
+		// already fetched; check between batches so a canceled or timed-out
+		// request stops using CPU promptly.
+		if rowCount&metricsCheckMask == 0 {
+			if err := ctx.Err(); err != nil {
+				return out, err
+			}
+		}
 		var job, status string
 		var queuedUS int64
 		var started, ended sql.NullInt64
@@ -923,7 +955,12 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		out.Buckets[i].Queued = queuedNow
 		out.Buckets[i].Active = activeNow
 	}
-	slices.SortFunc(samples, func(a, b durationSample) int { return cmp.Compare(a.value, b.value) })
+	guard := sortGuard{ctx: ctx}
+	if err := guard.run(func() {
+		slices.SortFunc(samples, func(a, b durationSample) int { guard.check(); return cmp.Compare(a.value, b.value) })
+	}); err != nil {
+		return out, err
+	}
 	globalP50, globalP95 := percentileRanks(durationCount)
 	globalSeen := 0
 	jobSeen := make([]int, len(jobs))
@@ -980,6 +1017,48 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 	return out, nil
 }
 
+// metricsCheckMask makes metrics loops look at ctx every metricsCheckMask+1
+// rows or comparisons: rarely enough to be free, often enough to stop within
+// microseconds-to-milliseconds of cancellation.
+const metricsCheckMask = 1<<10 - 1
+
+// sortCanceled carries a context error out of slices.SortFunc, which has no
+// early-exit of its own.
+type sortCanceled struct{ err error }
+
+// sortGuard lets a sort comparator give up when ctx ends: call check from the
+// comparator and run the sort inside run. It checks ctx about every
+// metricsCheckMask+1 comparisons. The comparator calls check directly rather
+// than through a wrapper, which keeps the extra cost per comparison to a counter.
+type sortGuard struct {
+	ctx   context.Context
+	calls int
+}
+
+func (g *sortGuard) check() {
+	if g.calls++; g.calls&metricsCheckMask == 0 {
+		if err := g.ctx.Err(); err != nil {
+			panic(sortCanceled{err})
+		}
+	}
+}
+
+// run executes sort and returns ctx's error if the sort was abandoned, in
+// which case the data is left in an unspecified order.
+func (g *sortGuard) run(sort func()) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			canceled, ok := v.(sortCanceled)
+			if !ok {
+				panic(v)
+			}
+			err = canceled.err
+		}
+	}()
+	sort()
+	return g.ctx.Err()
+}
+
 func percentileRanks(count int) (int, int) {
 	if count == 0 {
 		return -1, -1
@@ -988,7 +1067,17 @@ func percentileRanks(count int) (int, int) {
 }
 
 func (s *Store) Run(ctx context.Context, id string) (model.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
+	return s.run(ctx, s.db, id)
+}
+
+// ReadRun is Run on the read pool for API lookups that do not feed a state
+// transition; see ReadDefinitions.
+func (s *Store) ReadRun(ctx context.Context, id string) (model.Run, error) {
+	return s.run(ctx, s.rdb, id)
+}
+
+func (s *Store) run(ctx context.Context, db *sql.DB, id string) (model.Run, error) {
+	row := db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
 	return scanRun(row)
 }
 
@@ -1036,7 +1125,8 @@ type RetentionCandidate struct {
 }
 
 // RetentionCandidates returns at most limit eligible runs after cursor. A
-// protected idempotency key is skipped while its 24-hour window is active.
+// protected idempotency key is skipped while its 24-hour window is active. The
+// scan runs on the read pool; DeleteRuns re-checks eligibility when it deletes.
 func (s *Store) RetentionCandidates(ctx context.Context, definitionID int64, keep int, olderThan time.Time, cursor *RetentionCandidate, limit int) ([]RetentionCandidate, error) {
 	if limit <= 0 {
 		return nil, errors.New("retention page limit must be positive")
@@ -1048,7 +1138,7 @@ func (s *Store) RetentionCandidates(ctx context.Context, definitionID int64, kee
 	if cursor != nil {
 		after, sortUS, id = 1, cursor.SortUS, cursor.ID
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.rdb.QueryContext(ctx, `
 WITH newest AS (
  SELECT run_id FROM runs WHERE definition_id=? AND status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed')
  ORDER BY COALESCE(ended_us,queued_us) DESC, run_id DESC LIMIT 1

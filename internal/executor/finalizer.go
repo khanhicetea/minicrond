@@ -14,9 +14,10 @@ import (
 // finalItem is a run whose process has stopped but whose terminal state could
 // not be written yet.
 type finalItem struct {
-	r model.Run
-	d model.Definition
-	t terminal
+	r     model.Run
+	d     model.Definition
+	t     terminal
+	token uint64 // persistLag pending token
 }
 
 // finalState is the single background finalizer. Its items live in
@@ -56,7 +57,7 @@ func (s *Service) addFinalizer(r model.Run, d model.Definition, t terminal) fina
 		s.mu.Unlock()
 		return finalizerFull
 	}
-	s.finalizing[r.ID] = &finalItem{r: r, d: d, t: t}
+	s.finalizing[r.ID] = &finalItem{r: r, d: d, t: t, token: s.persistLag.startPending(t.ended)}
 	s.mu.Unlock()
 	if !s.startLoop(&s.finals.started, s.finalizeLoop) {
 		s.dropFinalizer(r.ID)
@@ -145,15 +146,19 @@ func (s *Service) finalizePass() (failed bool) {
 
 func (s *Service) dropFinalizer(id string) {
 	s.mu.Lock()
-	delete(s.finalizing, id)
+	if it, ok := s.finalizing[id]; ok {
+		s.persistLag.endPending(it.token)
+		delete(s.finalizing, id)
+	}
 	s.mu.Unlock()
 }
 
 func (s *Service) abandonFinalizers() {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.finalizing))
-	for id := range s.finalizing {
+	for id, it := range s.finalizing {
 		ids = append(ids, id)
+		s.persistLag.endPending(it.token)
 	}
 	clear(s.finalizing)
 	s.mu.Unlock()
@@ -166,6 +171,7 @@ func (s *Service) abandonFinalizers() {
 // keeps the run's capacity slot. It is the overflow path of the finalizer
 // budget and ends at shutdown.
 func (s *Service) finalizeInline(r model.Run, d model.Definition, t terminal) {
+	defer s.persistLag.endPending(s.persistLag.startPending(t.ended))
 	backoff := finalizerBackoffMin
 	for {
 		timer := time.NewTimer(backoff)

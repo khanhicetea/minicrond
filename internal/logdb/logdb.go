@@ -35,7 +35,10 @@ type Chunk struct {
 // LogDB is the archive. db is the single writer connection; rdb is a
 // read-only pool so log pages and downloads never queue behind archival or
 // pruning, and vice versa.
-type LogDB struct{ db, rdb *sql.DB }
+type LogDB struct {
+	db, rdb *sql.DB
+	path    string // the database file, for on-disk size accounting
+}
 
 // Open creates or opens <dataDir>/minicron-logs.db and applies migrations.
 func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
@@ -47,7 +50,7 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	l := &LogDB{db: db}
+	l := &LogDB{db: db, path: path}
 	if err := l.migrate(context.Background()); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate log database: %w", err), db.Close())
 	}
@@ -273,16 +276,28 @@ func isBusy(err error) bool {
 	return strings.Contains(err.Error(), "SQLITE_BUSY") || strings.Contains(err.Error(), "database is locked")
 }
 
+// eachChunkQuery selects the next chunk of a run after a frame sequence. It is
+// sequence-oriented on purpose (A06): idx_log_chunks_seq(run_id,last_seq)
+// answers both the range condition and the ordering, so SQLite seeks straight
+// to the first chunk beyond the cursor and stops. The former form filtered
+// last_seq while walking the (run_id,number) index from the first chunk, which
+// revisited every consumed chunk on each call. Chunk numbers and last sequences
+// grow together within a run (sequences are assigned in write order and chunks
+// are numbered in write order), so sequence order is chunk-number order.
+const eachChunkQuery = "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? ORDER BY last_seq LIMIT 1"
+
 // EachChunk iterates archived chunks of a run in order. Chunks whose last
 // frame is at or below after are skipped. Returning false from fn stops the
-// iteration; the callback error (if any) is returned wrapped.
+// iteration; the callback error (if any) is returned wrapped. Each step is an
+// index seek on the frame sequence, so the cost of a call depends on the chunks
+// it returns and not on how many chunks precede after.
 func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn func(Chunk) (bool, error)) error {
-	lastNumber := -1
+	cursor := after
 	for {
 		// Fetch one blob at a time and release the connection before decoding.
 		// A row-count batch alone could prefetch hundreds of MiB for a tiny page.
 		var c Chunk
-		err := l.rdb.QueryRowContext(ctx, "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? AND number>? ORDER BY number LIMIT 1", runID, after, lastNumber).
+		err := l.rdb.QueryRowContext(ctx, eachChunkQuery, runID, cursor).
 			Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -297,7 +312,7 @@ func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn fu
 		if !ok {
 			return nil
 		}
-		lastNumber = c.Number
+		cursor = max(cursor, c.Last)
 	}
 }
 

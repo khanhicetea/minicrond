@@ -86,12 +86,26 @@ be combined.
 | `GET /api/v1/runs/{id}` | Full run record |
 | `GET /api/v1/runs/{id}/alerts` | Per-channel delivery status, attempts, last safe error |
 | `POST /api/v1/runs/{id}/stop` | Operator stop (status `stopped`) |
-| `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag) |
-| `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download) |
+| `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag); `limit` is an upper bound (1–5000): a page also stops at about 1 MiB of payload (one larger line is returned alone), so fewer than `limit` items does **not** mean the end — continue with `after` = the last sequence until `items` is empty |
+| `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download), read and sent page by page |
 | `GET /api/v1/runs/{id}/log/stream` | **SSE** follow — frames read from stored chunks by cursor, delivered in batches about every 2 s while the run is active |
 
 `GET /api/v1/metrics/runs?range=15m|1h|24h|7d|30d&buckets=N` — run-count
-time series by outcome.
+time series by outcome. Concurrent requests for the same `range`/`buckets`
+share one computation, and a result is reused for about 3 seconds, so
+`total` and the series can lag by that much; nothing is cached while idle.
+
+### Expensive reads and `503`
+
+JSON log pages, raw downloads and run metrics share one small admission gate
+(`[reads]` in [configuration.md](configuration.md)). When it is full the
+request waits briefly, then gets `503` with `Retry-After` (seconds) and error
+code `read_busy`; a request whose read or aggregation exceeds its work budget
+gets `503` `read_timeout`. Both are retryable and never mean the run or daemon
+is unhealthy. A download that has already started is never cut off by
+admission; if reading fails after the first bytes were sent, the connection is
+aborted so the file cannot look complete. The SSE stream is limited separately
+(`503` `stream_capacity`).
 
 ### Alerts
 
