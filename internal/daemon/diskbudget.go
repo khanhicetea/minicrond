@@ -31,6 +31,28 @@ func (d *Daemon) applyDiskPolicy(logs config.Logs) {
 		BudgetBytes:  logs.DiskBudgetBytes(),
 		MinFreeBytes: logs.DiskMinFreeBytes(),
 	})
+	d.logDiskPolicy(logs)
+}
+
+// logDiskPolicy states, at startup and on every reload, what the log disk budget
+// will do, so a deletion of logs is never the first sign of the setting (the
+// headroom rule is on by default). The effective headroom is the configured one
+// after clamping to a quarter of the filesystem.
+func (d *Daemon) logDiskPolicy(logs config.Logs) {
+	attrs := []any{
+		"min_free_mib", logs.DiskMinFreeBytes() >> 20,
+		"budget_mib", logs.DiskBudgetBytes() >> 20,
+		"quarantine_keep_for_days", logs.QuarantineKeepFor,
+		"quarantine_max_mib", logs.QuarantineMaxBytes() >> 20,
+	}
+	p, total, ok, err := d.logs.EffectiveDiskPolicy()
+	if ok {
+		attrs = append(attrs, "effective_min_free_mib", p.MinFreeBytes>>20, "filesystem_mib", total>>20)
+		if err != nil {
+			attrs = append(attrs, "statfs_error", err.Error())
+		}
+	}
+	slog.Info("log disk budget: the oldest completed runs' logs are deleted before their retention age when free space on the data directory falls below min_free or log bytes exceed budget (0 = off); quarantine is kept unless a purge policy is set", attrs...)
 }
 
 // requestDiskCheck asks diskBudgetLoop for a pass. It never blocks and is safe

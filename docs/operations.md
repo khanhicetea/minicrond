@@ -344,3 +344,15 @@ a unique TCP port. Service mode logs to the journal.
 Stop the daemon, back up the data directory (above), replace the binary,
 start. Rollback = stop, restore the directory snapshot, restore the old
 binary, start. Never downgrade a live newer-schema database.
+
+**Upgrading to the log disk budget.** `logs.disk_min_free` is **on by default**
+(512 MiB, clamped to a quarter of the filesystem). After upgrading, a host with
+less than that free on the data directory's filesystem deletes the oldest
+completed runs' archived logs (and, if that is not enough, sealed buffers) on the
+first pass at startup; deleted logs are not recoverable. Before upgrading a small
+or nearly full disk, check `df` for the data directory, and either free space,
+size `logs.disk_budget` deliberately, or set `logs.disk_min_free = 0` to keep the
+previous behavior. The daemon logs one `log disk budget:` INFO line at every
+start and reload with the configured and effective values (`min_free_mib`,
+`effective_min_free_mib`, `filesystem_mib`, `budget_mib`, quarantine policy); read
+it after upgrading, and see [Log disk budget](#log-disk-budget).

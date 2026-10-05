@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -273,4 +275,87 @@ func TestSlowDiskPassDoesNotDelayMaintenanceLoops(t *testing.T) {
 		}
 		close(release)
 	})
+}
+
+type recordedLog struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *recordedLog) Enabled(context.Context, slog.Level) bool { return true }
+func (r *recordedLog) Handle(_ context.Context, rec slog.Record) error {
+	var b strings.Builder
+	b.WriteString(rec.Level.String() + " " + rec.Message)
+	rec.Attrs(func(a slog.Attr) bool { fmt.Fprintf(&b, " %s=%v", a.Key, a.Value); return true })
+	r.mu.Lock()
+	r.lines = append(r.lines, b.String())
+	r.mu.Unlock()
+	return nil
+}
+func (r *recordedLog) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *recordedLog) WithGroup(string) slog.Handler      { return r }
+func (r *recordedLog) find(sub string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, l := range r.lines {
+		if strings.Contains(l, sub) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// Review SF3: the effective policy is logged (INFO) whenever it is applied, so
+// the first sign of the default-on headroom rule is never a deletion.
+func TestDiskPolicyIsLoggedAtStartAndReload(t *testing.T) {
+	rec := &recordedLog{}
+	old := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	d, _, _, _ := diskDaemon(t, config.Logs{})
+	minFree := 512
+	cfg := config.Logs{DiskMinFree: &minFree, DiskBudget: 2048, QuarantineKeepFor: 14, QuarantineMaxSize: 64}
+	d.applyDiskPolicy(cfg) // startup
+	d.applyDiskPolicy(cfg) // reload
+	lines := rec.find("log disk budget:")
+	if len(lines) != 2 {
+		t.Fatalf("policy logged %d times, want at startup and at reload: %q", len(lines), lines)
+	}
+	for _, want := range []string{"INFO", "min_free_mib=512", "effective_min_free_mib=", "filesystem_mib=", "budget_mib=2048", "quarantine_keep_for_days=14", "quarantine_max_mib=64"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("policy line lacks %q: %s", want, lines[0])
+		}
+	}
+	// With the default (omitted) setting the line shows the 512 MiB default.
+	d.applyDiskPolicy(config.Logs{})
+	if l := rec.find("log disk budget:"); !strings.Contains(l[len(l)-1], "min_free_mib=512") || !strings.Contains(l[len(l)-1], "budget_mib=0") {
+		t.Fatalf("default policy line: %s", l[len(l)-1])
+	}
+	// The clamp is visible: a headroom larger than a quarter of the filesystem.
+	huge := 1 << 30
+	d.applyDiskPolicy(config.Logs{DiskMinFree: &huge})
+	l := rec.find("log disk budget:")
+	if last := l[len(l)-1]; strings.Contains(last, "effective_min_free_mib=1073741824") {
+		t.Fatalf("effective headroom not clamped: %s", last)
+	}
+}
+
+// The upgrade note exists where operators look for it.
+func TestUpgradeNotesDescribeTheDefaultOnHeadroom(t *testing.T) {
+	for file, phrases := range map[string][]string{
+		"../../docs/operations.md":    {"Upgrading to the log disk budget", "`logs.disk_min_free = 0`", "`log disk budget:` INFO line"},
+		"../../docs/releases/next.md": {"on by default", "`logs.disk_min_free = 0`"},
+	} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.Join(strings.Fields(string(b)), " ")
+		for _, p := range phrases {
+			if !strings.Contains(text, p) {
+				t.Errorf("%s lacks %q", file, p)
+			}
+		}
+	}
 }

@@ -324,6 +324,25 @@ func (s *Store) probe(p *DiskPolicy, st *DiskStatus) {
 	}
 }
 
+// EffectiveDiskPolicy reports the installed policy as passes will apply it: the
+// headroom after clamping to a quarter of the filesystem, and the filesystem's
+// size. ok is false without a policy. A statfs failure is returned with the
+// unclamped values, so callers can still describe the configuration.
+func (s *Store) EffectiveDiskPolicy() (p DiskPolicy, totalBytes uint64, ok bool, err error) {
+	cur := s.disk.policy.Load()
+	if cur == nil {
+		return DiskPolicy{}, 0, false, nil
+	}
+	p = *cur
+	var st DiskStatus
+	s.probe(cur, &st)
+	if st.StatfsError != "" {
+		return p, 0, true, errors.New(st.StatfsError)
+	}
+	p.MinFreeBytes = st.MinFreeBytes
+	return p, st.TotalBytes, true, nil
+}
+
 // EnforceDiskBudget runs one pass: it measures, and if a watermark is exceeded
 // it deletes the oldest eligible logs until the low watermarks are met or
 // nothing eligible is left. It is safe to call concurrently; passes are
