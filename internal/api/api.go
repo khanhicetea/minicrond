@@ -1294,7 +1294,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if active == nil {
+		if active == nil && !s.awaitingStart(r.Context(), id) {
 			send(func() error { _, err := fmt.Fprint(w, "event: done\ndata: {}\n\n"); return err })
 			return
 		}
@@ -1314,6 +1314,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-timer.C:
 		}
 	}
+}
+// awaitingStart reports whether a run has no log writer only because it has not
+// started yet (queued for capacity, or admitted but not opened), so a follower
+// must keep polling instead of being told the run is done. A failed lookup ends
+// the stream as before.
+func (s *Server) awaitingStart(ctx context.Context, id string) bool {
+	run, err := s.store.ReadRun(ctx, id)
+	return err == nil && (run.Status == "queued" || run.Status == "pending")
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 	if !s.tcpEnabled {

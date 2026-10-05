@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +144,51 @@ func TestStopQueuedRunViaAPI(t *testing.T) {
 	got, err := st.Run(t.Context(), id)
 	if err != nil || got.Status != "stopped" || got.EndReason != "queue_cancelled" {
 		t.Fatalf("run = %+v, %v", got, err)
+	}
+}
+
+// S4: following a queued run must not end with "done" before it ever starts;
+// the stream keeps polling and delivers the output and the final "done".
+func TestSSEStreamOfQueuedRunWaitsForStart(t *testing.T) {
+	fastStreamPoll(t)
+	s, st, _ := queueServer(t, executor.QueueOptions{DrainRate: 100})
+	mustCreate(t, s, "blocker", "sleep 30")
+	mustCreate(t, s, "later", "echo finally-ran")
+	blocker := decode(t, call(s, true, "POST", "/api/v1/jobs/blocker/trigger", "", "", nil))["run_id"].(string)
+	queued := decode(t, call(s, true, "POST", "/api/v1/jobs/later/trigger", "", "", nil))
+	id := queued["run_id"].(string)
+	if queued["status"] != "queued" {
+		t.Fatalf("status = %v", queued["status"])
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	req := httptest.NewRequest("GET", "/api/v1/runs/"+id+"/log/stream", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		s.middleware(s.routes(), true).ServeHTTP(rec, req)
+	}()
+	select {
+	case <-finished:
+		t.Fatalf("stream of a queued run ended before it started: %q", rec.Body.String())
+	case <-time.After(500 * time.Millisecond):
+	}
+	// Free the slot: the queued run starts, runs and finishes.
+	if rec := call(s, true, "POST", "/api/v1/runs/"+blocker+"/stop", "", "", nil); rec.Code != 202 {
+		t.Fatalf("stop blocker: %d", rec.Code)
+	}
+	select {
+	case <-finished:
+	case <-time.After(15 * time.Second):
+		t.Fatal("stream never finished after the run completed")
+	}
+	got, err := st.Run(t.Context(), id)
+	if err != nil || got.Status != "succeeded" {
+		t.Fatalf("run = %+v, %v", got, err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: line") || !strings.Contains(body, "event: done") {
+		t.Fatalf("stream body = %q", body)
 	}
 }
