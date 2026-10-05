@@ -511,3 +511,32 @@ func TestPressureHookFiresOnRotateSealAndCaptureFailure(t *testing.T) {
 		t.Fatal("hook called after removal")
 	}
 }
+
+// Review NIT 1: an archive in progress commits in several batches; pressure must
+// not delete the batches already committed (a mid-run gap). Owned runs are
+// skipped in both stages and reclaimed once released.
+func TestPressureSkipsArchivedChunksOfRunsOwnedByAnotherOperation(t *testing.T) {
+	f := newBudgetFixture(t)
+	f.completedRun("owned", 100<<10) // oldest
+	f.completedRun("other", 100<<10)
+	f.compact()
+	f.disk.capacity = f.used()
+	f.policy(0, 10<<20)
+	if !f.s.claim("owned") {
+		t.Fatal("claim failed")
+	}
+	f.enforce()
+	if !f.readable("owned") {
+		t.Fatal("pressure deleted archived chunks of a run another operation owns")
+	}
+	if f.readable("other") {
+		t.Fatal("the unowned run should have been reclaimed")
+	}
+	f.s.release("owned")
+	f.compact()
+	f.disk.capacity = f.used() // the disk is full again
+	f.enforce()
+	if f.readable("owned") {
+		t.Fatal("a released run stays unreclaimable")
+	}
+}

@@ -30,7 +30,9 @@ explicit policy, never reclaim metadata or pending execution records, and let
 Reclamation deletes only **completed runs' logs**, oldest first, in two stages:
 
 1. archived chunks in `minicron-logs.db` (oldest by archive time), skipping every
-   run that still has a live writer (a worker's earlier checkpoints stay);
+   run that still has a live writer (a worker's earlier checkpoints stay) or is owned
+   by another operation (an archive in progress commits in several batches; a
+   checkpoint or deletion), exactly as stage 2 skips owned runs;
 2. sealed buffers under `logs/<run>/` of runs with no writer that are waiting
    for archival or retrying it (oldest by modification time).
 

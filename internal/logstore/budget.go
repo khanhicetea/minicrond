@@ -264,15 +264,15 @@ func quarantineUsage(dir string) (bytes int64, entries int, oldest time.Time) {
 	return bytes, entries, oldest
 }
 
-// activeRunSet snapshots the runs that have a live writer.
-func (s *Store) activeRunSet() map[string]struct{} {
+// reclaimProtected reports whether a run's archived chunks must not be
+// reclaimed now: it has a live writer, or another operation owns it (a
+// checkpoint, an archive in progress that commits in several batches, or a
+// deletion). Stage 2 skips owned runs the same way, so both stages treat them alike.
+func (s *Store) reclaimProtected(runID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	set := make(map[string]struct{}, len(s.writers))
-	for id := range s.writers {
-		set[id] = struct{}{}
-	}
-	return set
+	_, active := s.writers[runID]
+	return active || s.owners[runID]
 }
 
 // pressure evaluates the watermarks. trigger is true when one is exceeded; want
@@ -390,8 +390,7 @@ func (s *Store) EnforceDiskBudget(ctx context.Context) (DiskStatus, error) {
 
 	// Stage 1: archived chunks of completed runs, oldest first.
 	if s.db != nil {
-		active := s.activeRunSet()
-		res, err := s.db.PruneOldest(ctx, want, func(id string) bool { _, ok := active[id]; return ok })
+		res, err := s.db.PruneOldest(ctx, want, s.reclaimProtected)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("prune archived logs under disk pressure: %w", err))
 		}
