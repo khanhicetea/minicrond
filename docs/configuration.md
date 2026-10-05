@@ -48,6 +48,11 @@ durability = "batch"           # log fsync policy: "batch" or "frame"
 sync_interval = 2000           # batch: ms until dirty log buffers are fsynced (100..60000)
 sync_max_dirty = 1024          # batch: KiB of unsynced output that forces an fsync (1..65536)
 
+[reads]                        # expensive diagnostic reads (restart)
+slots = 4                      # JSON log pages, raw downloads and metrics running at once (1..64)
+budget = 32                    # MiB of estimated working set shared by those reads (8..4096)
+work_timeout = 20              # seconds one request's read/aggregation may run (1..300)
+
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
 retry_delay = 15                # seconds
@@ -139,6 +144,20 @@ and `max_concurrent_runs` are unitless.
 - `logs.sync_max_dirty` — batch durability: KiB of unsynced output after which a
   run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
   `0` selects the default and does not mean "no limit".
+- `reads.slots`, `reads.budget`, `reads.work_timeout` — shared admission for
+  the expensive on-demand reads: `GET .../log` pages, `GET .../log/raw`
+  downloads and `GET /api/v1/metrics/runs` (the SSE follow stream has its own
+  64-stream limit). A request needs one of `slots` and a share of `budget` (a
+  log page or download is estimated at 4 MiB, a metrics computation at 8 MiB,
+  so the default 32 MiB admits at most four of them); it queues for up to
+  0.5 s, then is refused with `503` and `Retry-After: 1` (`read_busy`). Waiting
+  requests are themselves capped at four per slot. `work_timeout` bounds the
+  read or aggregation of one request (one page for a download), answering `503`
+  `read_timeout` when exceeded; it is separate from the socket write deadline,
+  which is renewed for the response. A raw download holds its slot until it
+  finishes, so a slow client occupies one slot; a stalled one is cut off by the
+  write deadline. Defaults suit about 1 CPU / 512 MiB. `0` selects the default.
+  Changing them requires a daemon restart (reload rejects the change).
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose

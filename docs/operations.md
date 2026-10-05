@@ -74,6 +74,17 @@ viewer. The cost exists only while someone watches, is bounded by the 64-stream
 limit and the 1 MiB page budget, and ends when the viewer disconnects; display
 lag of up to about two seconds is the price of paying nothing for unwatched runs.
 
+On-demand reads other than SSE (JSON log pages, raw downloads, run metrics) pass
+one admission gate with a small slot count, a byte budget and a per-request
+work deadline (`[reads]` in `docs/configuration.md`; defaults 4 slots, 32 MiB,
+20 s). JSON pages carry at most about 1 MiB of payload. Metrics are computed on
+request only, shared between concurrent requests and kept for about 3 seconds;
+there is no background refresh, and the aggregation stops when its request is
+canceled or times out. Excess requests receive a retryable `503` rather than
+competing with job execution. API metadata lookups (run, definition, listings)
+use the SQLite read pool instead of the single writer connection; the execution
+and supervisor paths keep using the writer connection.
+
 Log storage failures (ADR-8 2A): if writing or fsyncing a run's log fails (disk
 full, I/O error), the run keeps executing and its stdout/stderr keep being
 drained; output that cannot be stored is discarded. The run is flagged

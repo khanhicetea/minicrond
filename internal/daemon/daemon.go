@@ -148,6 +148,11 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return err
 	}
 	apiServer.SetTCPEnabled(cfg.Server.TCPOn())
+	apiServer.SetReadLimits(api.ReadLimits{
+		Slots:       cfg.Reads.Slots,
+		BudgetBytes: int64(cfg.Reads.Budget) << 20,
+		WorkTimeout: time.Duration(cfg.Reads.WorkTimeout) * time.Second,
+	})
 	apiServer.SetJobDefaults(func() model.Definition {
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -317,6 +322,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	if cfg.Storage.Synchronous != current.Storage.Synchronous {
 		return errors.New("storage.synchronous requires daemon restart")
+	}
+	if cfg.Reads != current.Reads {
+		return errors.New("the [reads] limits require daemon restart")
 	}
 	defs, err := d.store.Definitions(ctx)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,12 +127,12 @@ func TestSortContextSortsAndStopsOnCancel(t *testing.T) {
 // standing in for a request that is canceled while the daemon is aggregating.
 type cancelAfterCtx struct {
 	context.Context
-	n     int
-	calls int
+	n     int32
+	calls atomic.Int32 // the driver may call Err from its own goroutine
 }
 
 func (c *cancelAfterCtx) Err() error {
-	if c.calls++; c.calls > c.n {
+	if c.calls.Add(1) > c.n {
 		return context.Canceled
 	}
 	return nil
@@ -169,7 +170,7 @@ func TestRunMetricsStopsWhenCanceledDuringAggregation(t *testing.T) {
 	}
 	// Cancel early in the row loop, then once only the sort is left (the row
 	// loop checks about every 1024 rows, the sort about every 1024 compares).
-	for _, n := range []int{2, 30} {
+	for _, n := range []int32{2, 30} {
 		got, err := s.RunMetrics(&cancelAfterCtx{Context: t.Context(), n: n}, now.Add(-24*time.Hour), now, 48)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancel after %d checks: err=%v total=%d", n, err, got.Total)
