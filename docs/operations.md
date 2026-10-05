@@ -83,6 +83,26 @@ error message. These are observations, not a durable delivery queue: after a
 crash, in-flight alerts are marked `interrupted` but not replayed. Test an
 individual channel with `POST /api/v1/alert-channels/{name}/test`.
 
+`counts.dropped` (queue full or channel unavailable) is recorded off the
+run-completion path: pending drop observations are held in a bounded list
+(256) and written by the alert batch goroutine, so a slow database delays the
+record, never the run. Under sustained overload drops beyond that list are
+counted in the daemon log (`alert drop observations discarded`) but not
+stored.
+
+## Shutdown
+
+On SIGTERM the daemon stops accepting work, signals workers and maintenance,
+then stops runs (15s grace before a forced kill), joins worker supervision,
+and drains alerts, within an overall 45s budget plus small reserved slices for
+HTTP and the log archiver. A reload waiting on a worker's long `grace` is
+abandoned rather than waited for. Log maintenance/archive calls are bounded
+only as far as the log store honors contexts; a `maintenance loops did not
+stop` warning means one was still running when the databases closed.
+
+A worker whose terminal state cannot be written (storage fault) is finalized in
+the background; its restart policy is applied once that succeeds.
+
 ## Backup and restore
 
 1. Stop the daemon (`systemctl stop minicrond` or SIGTERM; wait for exit).
