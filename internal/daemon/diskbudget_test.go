@@ -235,17 +235,7 @@ func TestSlowDiskPassDoesNotDelayMaintenanceLoops(t *testing.T) {
 			case <-ctx.Done():
 			}
 		}
-		ctx, cancel := context.WithCancel(t.Context())
-		var wg sync.WaitGroup
-		defer func() { cancel(); wg.Wait() }()
-		for _, loop := range []func(context.Context){d.diskBudgetLoop, d.workerFlushLoop, d.retentionLoop, d.logPruneLoop} {
-			wg.Go(func() { loop(ctx) })
-		}
-		synctest.Wait()
-		if passes != 1 {
-			t.Fatalf("startup passes = %d", passes)
-		}
-		// A finished, unarchived buffer is picked up by the worker-flush tick.
+		// A finished, unarchived buffer (created before any loop runs) is picked up by the worker-flush tick.
 		w, err := logs.Open("orphan", "job", model.KindJob, logstore.WriterOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -258,6 +248,16 @@ func TestSlowDiskPassDoesNotDelayMaintenanceLoops(t *testing.T) {
 			t.Fatal(err)
 		}
 		logs.AttachDB(d.ldb)
+		ctx, cancel := context.WithCancel(t.Context())
+		var wg sync.WaitGroup
+		defer func() { cancel(); wg.Wait() }()
+		for _, loop := range []func(context.Context){d.diskBudgetLoop, d.workerFlushLoop, d.retentionLoop, d.logPruneLoop} {
+			wg.Go(func() { loop(ctx) })
+		}
+		synctest.Wait()
+		if passes != 1 {
+			t.Fatalf("startup passes = %d", passes)
+		}
 		time.Sleep(time.Hour) // flush tick, hourly retention, 00:30 prune: all while the pass hangs
 		synctest.Wait()
 		if _, err := os.Stat(filepath.Join(dir, "logs", "orphan")); !os.IsNotExist(err) {
