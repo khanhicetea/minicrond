@@ -93,7 +93,8 @@ minicrond logs RUN_ID [--follow | -f]
 ```
 
 Prints tagged frames (stderr lines are prefixed `[err] `); `--follow`
-polls until the run ends. Reads merge the SQLite archive, live buffer
+keeps polling every 2 seconds once caught up (no polling without it), reusing
+one connection for the whole command. Reads merge the SQLite archive, live buffer
 files, and the in-memory tail transparently.
 
 ### `export` / `import` — definition bundles
@@ -164,6 +165,10 @@ sudo minicrond service uninstall [--user NAME]
   `/var/lib/minicron`, port 7423.
 - `--user NAME` (port required): unit `minicrond@NAME`, config
   `~NAME/.minicrond/config.toml`, runs as that user.
+  The installer walks `~NAME` with descriptor-relative, no-symlink operations:
+  it refuses a symlinked `.minicrond` or `config.toml` (and one swapped in
+  during the install), an existing directory/config not owned by NAME, and
+  only ever chowns the directory and file it created.
 
 ### `schema` — print the config JSON Schema
 
