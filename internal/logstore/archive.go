@@ -151,10 +151,13 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		size = 0
 		return nil
 	}
-	// Chunks that cannot be decoded at all stay in place, with their buffer,
-	// and fail the sweep: nonempty data is never deleted as if recovered. The
-	// valid chunks around them are still archived.
-	var corrupt []error
+	// A chunk that cannot be decoded at all is moved into the quarantine at
+	// once, so it neither disappears (nonempty data is never deleted as if
+	// recovered) nor makes the run unreadable while it waits there: readers
+	// fail on an undecodable buffer file. The valid chunks around it are still
+	// archived and the sweep reports the quarantine. Only if the move fails does
+	// the chunk stay in place and keep failing the sweep.
+	var corrupt, quarantined []error
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -179,7 +182,17 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 			frames, salvageErr := salvageFrames(blob)
 			if len(frames) == 0 {
 				if salvageErr != nil {
-					corrupt = append(corrupt, fmt.Errorf("log chunk %06d has no decodable frames and was preserved: %w", file.number, salvageErr))
+					cause := fmt.Errorf("log chunk %06d has no decodable frames: %w", file.number, salvageErr)
+					if err := s.preserveCorrupt(runID, file.path, blob); err != nil {
+						corrupt = append(corrupt, fmt.Errorf("%w; it could not be quarantined and was kept: %w", cause, err))
+						continue
+					}
+					if err := os.Remove(file.path); err != nil {
+						corrupt = append(corrupt, fmt.Errorf("%w; its quarantine copy was made but the original could not be removed: %w", cause, err))
+						continue
+					}
+					slog.Error("undecodable log chunk moved to the quarantine", "run", runID, "chunk", file.number, "error", salvageErr)
+					quarantined = append(quarantined, fmt.Errorf("%w; the original was moved to the quarantine", cause))
 				}
 				// Otherwise a genuinely empty chunk: nothing to archive.
 				continue
@@ -222,10 +235,21 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		return err
 	}
 	if len(corrupt) > 0 {
-		return fmt.Errorf("orphan log buffer kept: %w", errors.Join(corrupt...))
+		return fmt.Errorf("orphan log buffer kept: %w", errors.Join(append(corrupt, quarantined...)...))
 	}
-	return os.RemoveAll(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	if len(quarantined) > 0 {
+		return fmt.Errorf("%w: %w", errChunkQuarantined, errors.Join(quarantined...))
+	}
+	return nil
 }
+
+// errChunkQuarantined reports a sweep that archived everything decodable and
+// moved undecodable chunks aside. The buffer is gone, so it does not count
+// toward quarantining the whole buffer.
+var errChunkQuarantined = errors.New("corrupt log chunk quarantined")
 
 // preserveCorrupt copies a partly corrupt chunk into the quarantine before the
 // readable prefix is archived and the original removed.

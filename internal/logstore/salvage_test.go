@@ -99,7 +99,8 @@ func writeOrphan(t *testing.T, dir, run, chunk string, data []byte) string {
 	return path
 }
 
-// A05: a nonempty undecodable orphan chunk is never deleted as "recovered".
+// A05: a nonempty undecodable orphan chunk is never deleted as "recovered":
+// the sweep reports it and the bytes are preserved in the quarantine.
 func TestCorruptOrphanChunkIsPreservedWithError(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -115,27 +116,27 @@ func TestCorruptOrphanChunkIsPreservedWithError(t *testing.T) {
 			if err == nil {
 				t.Fatal("a corrupt chunk was reported as successfully archived")
 			}
-			kept, readErr := os.ReadFile(path)
-			if readErr != nil || !bytes.Equal(kept, tc.blob) {
-				t.Fatalf("corrupt chunk was not preserved: %v", readErr)
+			quarantined, readErr := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run-000001.zst.corrupt"))
+			if readErr != nil || !bytes.Equal(quarantined, tc.blob) {
+				t.Fatalf("corrupt chunk missing from the quarantine: %v", readErr)
+			}
+			if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+				t.Fatalf("corrupt chunk still in the buffer: %v", statErr)
 			}
 			if _, chunks, _, _ := db.Stats(t.Context()); chunks != 0 {
 				t.Fatalf("archived %d chunks from corrupt input", chunks)
 			}
-			// Repeated failures end in the quarantine, preserved, not deleted.
-			for range orphanQuarantineAfter {
-				_ = s.ArchiveOrphans()
-			}
-			quarantined, readErr := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run", "000001.zst"))
-			if readErr != nil || !bytes.Equal(quarantined, tc.blob) {
-				t.Fatalf("corrupt chunk missing from the quarantine: %v", readErr)
+			// Reported once: the buffer is gone, later sweeps are clean.
+			if err := s.ArchiveOrphans(); err != nil {
+				t.Fatalf("second sweep: %v", err)
 			}
 		})
 	}
 }
 
-// Valid chunks around a corrupt one are still archived; the corrupt one stays
-// and the sweep reports it.
+// Review S2: a kept corrupt chunk made every Read/Raw/SSE of the run fail until
+// the buffer was quarantined hours later. Now the valid siblings are archived,
+// the corrupt chunk is quarantined at once, and the run stays readable.
 func TestCorruptChunkDoesNotBlockValidSiblings(t *testing.T) {
 	s, db, dir := newArchiveStore(t)
 	good, err := encodeFrames([]Frame{{Sequence: 1, Stream: Stdout, Payload: []byte("good")}})
@@ -152,11 +153,18 @@ func TestCorruptChunkDoesNotBlockValidSiblings(t *testing.T) {
 	if err := s.ArchiveOrphans(); err == nil {
 		t.Fatal("expected the corrupt chunk to be reported")
 	}
-	if _, err := os.Stat(bad); err != nil {
-		t.Fatalf("corrupt chunk gone: %v", err)
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Fatalf("corrupt chunk left in the buffer: %v", err)
 	}
 	if _, chunks, _, _ := db.Stats(t.Context()); chunks != 2 {
 		t.Fatalf("archived %d chunks, want the 2 valid ones", chunks)
+	}
+	frames, err := s.Read("run", 0, 10)
+	if err != nil || len(frames) != 2 || string(frames[1].Payload) != "also good" {
+		t.Fatalf("the run is unreadable after a corrupt-chunk sweep: %v, %v", frames, err)
+	}
+	if err := s.RawContext(t.Context(), "run", io.Discard); err != nil {
+		t.Fatalf("raw download: %v", err)
 	}
 }
 

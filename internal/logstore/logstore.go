@@ -603,7 +603,7 @@ func (s *Store) recordOrphanResult(runID string, cause error) {
 		s.mu.Unlock()
 		return
 	}
-	if cause == nil || errors.Is(cause, errArchiveDB) {
+	if cause == nil || errors.Is(cause, errArchiveDB) || errors.Is(cause, errChunkQuarantined) {
 		delete(s.orphanFailures, runID)
 		s.mu.Unlock()
 		return
