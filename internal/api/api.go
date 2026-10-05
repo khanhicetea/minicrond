@@ -1067,6 +1067,17 @@ func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
 		slog.Error("raw log response failed", "run", r.PathValue("id"), "error", err)
 	}
 }
+
+// streamPollInterval is how often a followed log stream looks for newly stored
+// output. Following is a cursor read on a per-connection timer (ADR-8, audit
+// D03): the daemon queues no payload for a viewer, wakes for no viewer, and the
+// timer ends with the connection. Display lag is bounded by this interval.
+var streamPollInterval = 2 * time.Second
+
+// stream serves a run's log as SSE. Frames are read from stored chunks by
+// sequence cursor in bounded pages and delivered in batches; the event names,
+// ids and Last-Event-ID resume contract are unchanged. A cursor that has fallen
+// behind retention gets a "gap" event naming the first retained sequence.
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRun(w, r, r.PathValue("id")) {
 		return
@@ -1087,91 +1098,93 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if q, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64); q > after {
 		after = q
 	}
-	var live <-chan logstore.Frame
-	var dropped <-chan struct{}
-	var unsubscribe func()
-	if active := s.logs.Active(r.PathValue("id")); active != nil {
-		live, dropped, unsubscribe = active.Subscribe(after)
-		defer unsubscribe()
-	}
+	id := r.PathValue("id")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
-	reader := s.logs.NewStreamReader(r.PathValue("id"))
+	reader := s.logs.NewStreamReader(id)
 	defer reader.Close()
 	controller := http.NewResponseController(w)
-	for {
-		backlog, err := reader.ReadContext(r.Context(), after, 5000)
-		if err != nil {
-			internal(w, r, err)
-			return
-		}
-		if len(backlog) == 0 {
-			break
-		}
+	started, lastWrite := false, time.Now()
+	// send runs a write under a fresh write deadline and flushes it.
+	send := func(write func() error) bool {
 		_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		for _, f := range backlog {
-			if err := writeSSE(w, "line", f.Sequence, f); err != nil {
+		started = true
+		if err := write(); err != nil {
+			return false
+		}
+		flusher.Flush()
+		lastWrite = time.Now()
+		return true
+	}
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	backlogDone := false
+	for {
+		// Look at the writer before reading. If it is already gone, everything
+		// it accepted is stored, so the drain below delivers the final tail
+		// before "done" is sent.
+		active := s.logs.Active(id)
+		if active == nil || active.Sequence() > after {
+			for {
+				frames, err := reader.ReadContext(r.Context(), after, 5000)
+				if err != nil {
+					if !started && r.Context().Err() == nil {
+						internal(w, r, err)
+					}
+					return
+				}
+				if len(frames) == 0 {
+					break
+				}
+				if after > 0 && frames[0].Sequence > after+1 {
+					gap := map[string]uint64{"after": after, "first": frames[0].Sequence}
+					if !send(func() error { return writeSSE(w, "gap", frames[0].Sequence-1, gap) }) {
+						return
+					}
+				}
+				if !send(func() error {
+					for _, f := range frames {
+						if err := writeSSE(w, "line", f.Sequence, f); err != nil {
+							return err
+						}
+					}
+					return nil
+				}) {
+					return
+				}
+				after = frames[len(frames)-1].Sequence
+			}
+			// Free the decoder while waiting; a poll rebuilds it on demand.
+			reader.Close()
+		}
+		if !backlogDone {
+			backlogDone = true
+			if !send(func() error { _, err := fmt.Fprint(w, "event: backlog_done\ndata: {}\n\n"); return err }) {
 				return
 			}
-			after = f.Sequence
 		}
-		flusher.Flush()
-	}
-	reader.Close()
-	_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if _, err := fmt.Fprint(w, "event: backlog_done\ndata: {}\n\n"); err != nil {
-		return
-	}
-	flusher.Flush()
-	if live == nil {
-		_, _ = fmt.Fprint(w, "event: done\ndata: {}\n\n")
-		flusher.Flush()
-		return
-	}
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-	for {
+		if active == nil {
+			send(func() error { _, err := fmt.Fprint(w, "event: done\ndata: {}\n\n"); return err })
+			return
+		}
+		if time.Since(lastWrite) >= 15*time.Second {
+			if !send(func() error { _, err := fmt.Fprint(w, ": heartbeat\n\n"); return err }) {
+				return
+			}
+		}
+		if timer == nil {
+			timer = time.NewTimer(streamPollInterval)
+		} else {
+			timer.Reset(streamPollInterval)
+		}
 		select {
 		case <-r.Context().Done():
 			return
-		case f, ok := <-live:
-			if !ok {
-				_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				caseDropped := false
-				select {
-				case <-dropped:
-					caseDropped = true
-				default:
-				}
-				if caseDropped {
-					_, _ = fmt.Fprintf(w, "event: dropped\ndata: {\"after\":%d}\n\n", after)
-				} else {
-					_, _ = fmt.Fprint(w, "event: done\ndata: {}\n\n")
-				}
-				flusher.Flush()
-				return
-			}
-			if f.Sequence > after {
-				_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				if err := writeSSE(w, "line", f.Sequence, f); err != nil {
-					return
-				}
-				after = f.Sequence
-				flusher.Flush()
-			}
-		case <-dropped:
-			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "event: dropped\ndata: {\"after\":%d}\n\n", after); err != nil {
-				return
-			}
-			flusher.Flush()
-			return
-		case <-heartbeat.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
+		case <-timer.C:
 		}
 	}
 }

@@ -59,13 +59,14 @@ func TestPipeGroupsSyncsWhileInputIsBuffered(t *testing.T) {
 	}
 }
 
-// Output is synced before the pump waits for more, so an idle run never
-// holds unsynced lines.
-func TestPipeSyncsBeforeWaitingForInput(t *testing.T) {
+// ADR-8 1B: an idle pipe does not force an fsync per line; the shared group
+// timer syncs whatever is dirty shortly after, with no further input.
+func TestPipeLeavesSparseOutputToGroupTimer(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.SetGroupSync(50*time.Millisecond, 0)
 	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +89,9 @@ func TestPipeSyncsBeforeWaitingForInput(t *testing.T) {
 			t.Fatalf("seq %d with %d unsynced bytes while the pipe is idle", seq, unsynced)
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if syncs := w.syncs.Load(); syncs != 1 {
+		t.Fatalf("%d fsyncs for two lines, want one group sync", syncs)
 	}
 	pw.Close()
 	if err := <-done; err != nil {

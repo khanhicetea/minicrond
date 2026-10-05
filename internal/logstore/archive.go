@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,12 +30,14 @@ const (
 // Callers own the run. Release the archive slot and the run and writer locks
 // between batches so a busy worker can continue writing, readers can make
 // progress, and one large checkpoint cannot hold up other runs' archival.
-func (s *Store) archiveWriter(w *Writer, through int) error {
+func (s *Store) archiveWriter(ctx context.Context, w *Writer, through int) error {
 	for {
-		s.archiveSlots <- struct{}{}
+		if err := s.acquireArchiveSlot(ctx); err != nil {
+			return err
+		}
 		lock := s.lockRun(w.runID, true)
 		w.mu.Lock()
-		more, err := s.archiveBatchLocked(w, through)
+		more, err := s.archiveBatchLocked(ctx, w, through)
 		w.mu.Unlock()
 		s.unlockRun(w.runID, lock, true)
 		<-s.archiveSlots
@@ -47,7 +51,10 @@ func (s *Store) archiveWriter(w *Writer, through int) error {
 // files release buffer capacity; a failed removal is retried idempotently.
 // Callers own the run and hold an archive slot, the exclusive run lock, and
 // w.mu.
-func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
+func (s *Store) archiveBatchLocked(ctx context.Context, w *Writer, through int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	var pending []logdb.Chunk
 	var size int64
 	for _, m := range w.idx.Chunks {
@@ -65,7 +72,7 @@ func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 	if len(pending) == 0 {
 		return false, nil
 	}
-	if err := s.db.PutChunks(context.Background(), w.runID, w.job, w.kind, time.Now(), pending); err != nil {
+	if err := s.db.PutChunks(ctx, w.runID, w.job, w.kind, time.Now(), pending); err != nil {
 		return false, err
 	}
 	removed := 0
@@ -76,7 +83,6 @@ func (s *Store) archiveBatchLocked(w *Writer, through int) (bool, error) {
 			break
 		}
 		w.buffered -= c.RawBytes
-		w.discardHistoryThrough(c.Last)
 		removed++
 	}
 	w.idx.Chunks = slices.Delete(w.idx.Chunks, 0, removed)
@@ -93,7 +99,7 @@ var errArchiveDB = errors.New("archive database")
 // archive slot and its exclusive run lock. Indexed chunks are copied verbatim; unindexed chunks
 // are salvaged up to the last intact frame. Every committed batch is removed
 // before loading the next one, including during startup recovery.
-func (s *Store) archiveOrphan(runID, dir string) error {
+func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 	sealed := make(map[int]chunkMeta)
 	var idx index
 	b, err := os.ReadFile(filepath.Join(dir, "index.json"))
@@ -128,10 +134,10 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 		if len(chunks) == 0 {
 			return nil
 		}
-		if s.archiver.abort.Load() {
-			return fmt.Errorf("%w: archiver stopped", errArchiveDB)
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if err := s.db.PutChunks(context.Background(), runID, idx.Job, idx.Kind, time.Now(), chunks); err != nil {
+		if err := s.db.PutChunks(ctx, runID, idx.Job, idx.Kind, time.Now(), chunks); err != nil {
 			return fmt.Errorf("%w: %w", errArchiveDB, err)
 		}
 		for _, path := range paths {
@@ -145,7 +151,14 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 		size = 0
 		return nil
 	}
+	// Chunks that cannot be decoded at all stay in place, with their buffer,
+	// and fail the sweep: nonempty data is never deleted as if recovered. The
+	// valid chunks around them are still archived.
+	var corrupt []error
 	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		info, err := os.Stat(file.path)
 		if err != nil {
 			return err
@@ -163,9 +176,27 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 		if m, ok := sealed[file.number]; ok {
 			c = logdb.Chunk{Number: file.number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob}
 		} else {
-			frames := salvageFrames(blob)
+			frames, salvageErr := salvageFrames(blob)
 			if len(frames) == 0 {
+				if salvageErr != nil {
+					corrupt = append(corrupt, fmt.Errorf("log chunk %06d has no decodable frames and was preserved: %w", file.number, salvageErr))
+				}
+				// Otherwise a genuinely empty chunk: nothing to archive.
 				continue
+			}
+			if salvageErr != nil {
+				if errors.Is(salvageErr, io.ErrUnexpectedEOF) {
+					// A torn tail is what a crash leaves behind.
+					slog.Warn("salvaged a torn log chunk up to its last intact frame", "run", runID, "chunk", file.number, "frames", len(frames))
+				} else {
+					// Corruption inside the stream: keep the original bytes, since
+					// the frames after the damage are not recoverable here.
+					if err := s.preserveCorrupt(runID, file.path, blob); err != nil {
+						corrupt = append(corrupt, fmt.Errorf("log chunk %06d is partly corrupt and could not be preserved: %w", file.number, errors.Join(salvageErr, err)))
+						continue
+					}
+					slog.Error("log chunk is partly corrupt; the readable prefix was archived and the original preserved in the quarantine", "run", runID, "chunk", file.number, "frames", len(frames), "error", salvageErr)
+				}
 			}
 			var raw int64
 			for _, f := range frames {
@@ -190,7 +221,28 @@ func (s *Store) archiveOrphan(runID, dir string) error {
 	if err := flush(); err != nil {
 		return err
 	}
+	if len(corrupt) > 0 {
+		return fmt.Errorf("orphan log buffer kept: %w", errors.Join(corrupt...))
+	}
 	return os.RemoveAll(dir)
+}
+
+// preserveCorrupt copies a partly corrupt chunk into the quarantine before the
+// readable prefix is archived and the original removed.
+func (s *Store) preserveCorrupt(runID, path string, blob []byte) error {
+	dir := filepath.Join(s.root, QuarantineDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, runID+"-"+filepath.Base(path)+".corrupt"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(blob)
+	if err == nil {
+		err = f.Sync()
+	}
+	return errors.Join(err, f.Close())
 }
 
 type chunkFile struct {
