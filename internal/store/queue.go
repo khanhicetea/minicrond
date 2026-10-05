@@ -204,7 +204,8 @@ func (s *Store) ExpireQueued(ctx context.Context, now time.Time, limit int) ([]s
 }
 
 // DropQueued ends one queued run as skipped with reason and removes it from the
-// queue. ErrInvalidTransition means it was no longer queued.
+// queue. If the run was no longer queued, a leftover queue row is still removed
+// and ErrInvalidTransition is returned.
 func (s *Store) DropQueued(ctx context.Context, runID, reason string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -215,15 +216,20 @@ func (s *Store) DropQueued(ctx context.Context, runID, reason string, now time.T
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil {
+	n, err := res.RowsAffected()
+	if err != nil {
 		return err
-	} else if n != 1 {
-		return fmt.Errorf("drop queued run %s: %w", runID, ErrInvalidTransition)
 	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM exec_queue WHERE run_id=?", runID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("drop queued run %s: %w", runID, ErrInvalidTransition)
+	}
+	return nil
 }
 
 // DequeueRun turns a queued run into a pending one and removes its queue row in
