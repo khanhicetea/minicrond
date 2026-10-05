@@ -211,6 +211,12 @@ func (s *Server) SetAlertChannels(list func() []config.AlertChannel)    { s.aler
 func (s *Server) SetAlertTest(test func(context.Context, string) error) { s.testAlert = test }
 func (s *Server) SetAlertQueueDepth(depth func() int)                   { s.alertQueueDepth = depth }
 
+func (s *Server) currentJobDefaults() model.Definition {
+	if s.jobDefaults != nil {
+		return s.jobDefaults()
+	}
+	return model.Definition{}
+}
 func (s *Server) validateAlerts(defs []model.Definition) error {
 	if s.alertChannels == nil {
 		return nil
@@ -606,7 +612,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", strconv.FormatInt(d.Revision, 10))
-	response := map[string]any{"definition": d, "hash": hash, "active_runs": s.exec.Active(d.Name)}
+	response := map[string]any{"definition": config.EditableInput(d, s.currentJobDefaults()), "hash": hash, "active_runs": s.exec.Active(d.Name)}
 	if d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
 		next, err := s.store.ScheduleNext(r.Context(), d.ID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -623,23 +629,22 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, response)
 }
 func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
-	var d model.Definition
-	if err := decodeJSON(r.Body, &d); err != nil {
+	// Timeout and retries are presence-aware: omitted inherits the daemon
+	// defaults, an explicit 0 overrides them.
+	var in config.DefinitionInput
+	if err := decodeJSON(r.Body, &in); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
 	if name := r.PathValue("name"); name != "" {
-		d.Name = name
+		in.Name = name
 	}
-	if d.Kind == "" {
-		d.Kind = model.KindJob
+	if in.Kind == "" {
+		in.Kind = model.KindJob
 	}
-	d.Source = ""
-	var defaults model.Definition
-	if s.jobDefaults != nil {
-		defaults = s.jobDefaults()
-	}
-	if err := config.ValidateDefinition(&d, defaults); err != nil {
+	in.Source = ""
+	d, err := config.ValidateDefinitionInput(in, s.currentJobDefaults())
+	if err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -666,7 +671,6 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var saved model.Definition
-	var err error
 	if createOnly {
 		saved, err = s.store.CreateDefinition(r.Context(), d, "api")
 	} else {
@@ -1205,7 +1209,12 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	}
 	defs = editable
 	if r.URL.Query().Get("format") == "json" {
-		writeJSON(w, 200, map[string]any{"definitions": defs})
+		inputs := make([]config.DefinitionInput, len(defs))
+		defaults := s.currentJobDefaults()
+		for i, d := range defs {
+			inputs[i] = config.EditableInput(d, defaults)
+		}
+		writeJSON(w, 200, map[string]any{"definitions": inputs})
 		return
 	}
 	bundle := struct {

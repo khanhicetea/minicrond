@@ -89,6 +89,66 @@ type Logs struct {
 	Durability string `toml:"durability" json:"durability"`
 }
 
+// DefinitionInput is the decoded form of a definition supplied through TOML or
+// the JSON API. Timeout and Retries shadow the embedded runtime fields with
+// pointers so an omitted key (inherit the defaults) is distinguishable from an
+// explicit zero (no timeout / no retries). Resolve normalizes it back into the
+// runtime model.Definition; the pointers only matter while defaults are merged.
+// It lives here rather than in model so generated web types stay unchanged.
+type DefinitionInput struct {
+	model.Definition
+	Timeout *int `json:"timeout,omitempty" toml:"timeout"`
+	Retries *int `json:"retries,omitempty" toml:"retries"`
+}
+
+// Resolve returns the runtime definition carrying any explicitly supplied
+// values. Callers that merge defaults must also consult the pointers.
+func (in DefinitionInput) Resolve() model.Definition {
+	d := in.Definition
+	if in.Timeout != nil {
+		d.Timeout = *in.Timeout
+	}
+	if in.Retries != nil {
+		d.Retries = *in.Retries
+	}
+	return d
+}
+
+type importBundle struct {
+	Defaults model.Definition  `toml:"defaults"`
+	Jobs     []DefinitionInput `toml:"job"`
+	Workers  []DefinitionInput `toml:"worker"`
+}
+
+// explicit records which numeric settings were supplied by the user, so an
+// explicit zero (no timeout, no retries) overrides a nonzero default instead
+// of being treated as omitted.
+type explicit struct{ timeout, retries bool }
+
+func inputExplicit(in DefinitionInput) explicit {
+	return explicit{timeout: in.Timeout != nil, retries: in.Retries != nil}
+}
+
+// presenceFile re-reads the definition tables of a config file leniently to
+// learn which timeout/retries keys were present, indexed like Config's slices.
+type presenceFile struct {
+	Init    []numericPresence `toml:"init"`
+	Jobs    []numericPresence `toml:"job"`
+	Workers []numericPresence `toml:"worker"`
+}
+
+type numericPresence struct {
+	Timeout *int `toml:"timeout"`
+	Retries *int `toml:"retries"`
+}
+
+func presenceAt(list []numericPresence, i int) explicit {
+	if i >= len(list) {
+		return explicit{}
+	}
+	return explicit{timeout: list[i].Timeout != nil, retries: list[i].Retries != nil}
+}
+
 // MaxDBMaxSizeMiB is the largest accepted logs.db_max_size (1 PiB), far above
 // any real disk yet small enough that the MiB-to-bytes shift cannot overflow.
 const MaxDBMaxSizeMiB = 1 << 30
@@ -105,19 +165,21 @@ func (l Logs) MaxSizeBytes() int64 {
 	return int64(l.DBMaxSize) << 20
 }
 
-type importBundle struct {
-	Defaults model.Definition   `toml:"defaults"`
-	Jobs     []model.Definition `toml:"job"`
-	Workers  []model.Definition `toml:"worker"`
-}
-
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,99}$`)
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 func Load(path string) (*Config, error) {
 	var cfg Config
-	if err := decode(path, &cfg); err != nil {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := decode(path, raw, &cfg); err != nil {
 		return nil, err
+	}
+	var present presenceFile
+	if err := toml.Unmarshal(raw, &present); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	applyConfigDefaults(&cfg)
 	if err := validateConfig(&cfg); err != nil {
@@ -131,7 +193,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("init %s cannot have retries", cfg.Init[i].Name)
 		}
 		cfg.Init[i].Kind, cfg.Init[i].Source, cfg.Init[i].RunOnStart = model.KindJob, "config", true
-		applyDefinitionDefaults(&cfg.Init[i], cfg.Defaults)
+		applyDefinitionDefaults(&cfg.Init[i], cfg.Defaults, presenceAt(present.Init, i))
 		cfg.Init[i].Retries = 0
 	}
 	for i := range cfg.Jobs {
@@ -142,11 +204,11 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("job %s: schedule is required for config-owned jobs", cfg.Jobs[i].Name)
 		}
 		cfg.Jobs[i].Kind, cfg.Jobs[i].Source = model.KindJob, "config"
-		applyDefinitionDefaults(&cfg.Jobs[i], cfg.Defaults)
+		applyDefinitionDefaults(&cfg.Jobs[i], cfg.Defaults, presenceAt(present.Jobs, i))
 	}
 	for i := range cfg.Workers {
 		cfg.Workers[i].Kind, cfg.Workers[i].Source = model.KindWorker, "config"
-		applyDefinitionDefaults(&cfg.Workers[i], model.Definition{})
+		applyDefinitionDefaults(&cfg.Workers[i], model.Definition{}, presenceAt(present.Workers, i))
 	}
 	defs := cfg.Definitions()
 	if err := validateDefinitions(defs, cfg.Scheduler.Timezone); err != nil {
@@ -178,31 +240,31 @@ func ParseImport(content []byte, jobDefaults ...model.Definition) ([]model.Defin
 	}
 	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}}
 	applyConfigDefaults(&cfg)
-	for i := range part.Jobs {
-		part.Jobs[i].Kind = model.KindJob
+	definitions := make([]model.Definition, 0, len(part.Jobs)+len(part.Workers))
+	for _, in := range part.Jobs {
+		d, ex := in.Resolve(), inputExplicit(in)
+		d.Kind = model.KindJob
 		if len(jobDefaults) > 0 {
-			mergeDefinitionDefaults(&part.Jobs[i], part.Defaults)
-			applyDefinitionDefaults(&part.Jobs[i], jobDefaults[0])
+			mergeDefinitionDefaults(&d, part.Defaults, ex)
+			applyDefinitionDefaults(&d, jobDefaults[0], ex)
 		} else {
-			applyDefinitionDefaults(&part.Jobs[i], part.Defaults)
+			applyDefinitionDefaults(&d, part.Defaults, ex)
 		}
+		definitions = append(definitions, d)
 	}
-	for i := range part.Workers {
-		part.Workers[i].Kind = model.KindWorker
-		applyDefinitionDefaults(&part.Workers[i], part.Defaults)
+	for _, in := range part.Workers {
+		d := in.Resolve()
+		d.Kind = model.KindWorker
+		applyDefinitionDefaults(&d, part.Defaults, inputExplicit(in))
+		definitions = append(definitions, d)
 	}
-	definitions := append(part.Jobs, part.Workers...)
 	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
 		return nil, err
 	}
 	return definitions, nil
 }
 
-func decode(path string, dst any) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
+func decode(path string, b []byte, dst any) error {
 	dec := toml.NewDecoder(strings.NewReader(string(b)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -252,8 +314,8 @@ func applyConfigDefaults(c *Config) {
 		c.Storage.Synchronous = "full"
 	}
 }
-func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
-	mergeDefinitionDefaults(d, defaults)
+func applyDefinitionDefaults(d *model.Definition, defaults model.Definition, ex explicit) {
+	mergeDefinitionDefaults(d, defaults, ex)
 	// Built-in defaults apply last.
 	d.Shell = cmp.Or(d.Shell, "/bin/sh")
 	d.CatchUp = cmp.Or(d.CatchUp, "none")
@@ -275,14 +337,17 @@ func applyDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 }
 
 // mergeDefinitionDefaults fills omitted fields without applying built-in values.
-func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition) {
+// Fields marked in ex were supplied explicitly, so a zero value is kept.
+func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition, ex explicit) {
 	defaults = defaults.Clone()
 	d.Shell = cmp.Or(d.Shell, defaults.Shell)
 	d.Timezone = cmp.Or(d.Timezone, defaults.Timezone)
 	d.CatchUp = cmp.Or(d.CatchUp, defaults.CatchUp)
 	d.OnOverlap = cmp.Or(d.OnOverlap, defaults.OnOverlap)
 	if d.Kind == model.KindJob {
-		d.Retries = cmp.Or(d.Retries, defaults.Retries)
+		if !ex.retries {
+			d.Retries = cmp.Or(d.Retries, defaults.Retries)
+		}
 		d.RetryDelay = cmp.Or(d.RetryDelay, defaults.RetryDelay)
 	}
 	d.RunAs = cmp.Or(d.RunAs, defaults.RunAs)
@@ -295,7 +360,9 @@ func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition) {
 		d.SecretEnv = defaults.SecretEnv
 	}
 	d.EnvFile = cmp.Or(d.EnvFile, defaults.EnvFile)
-	d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
+	if !ex.timeout {
+		d.Timeout = cmp.Or(d.Timeout, defaults.Timeout)
+	}
 	d.Grace = cmp.Or(d.Grace, defaults.Grace)
 	d.StopSignal = cmp.Or(d.StopSignal, defaults.StopSignal)
 	if d.SuccessCodes == nil {
@@ -390,7 +457,7 @@ func validateConfig(c *Config) error {
 		return errors.New("defaults: only common job settings are allowed")
 	}
 	probe := model.Definition{Name: "defaults", Kind: model.KindJob, Command: "true"}
-	applyDefinitionDefaults(&probe, c.Defaults)
+	applyDefinitionDefaults(&probe, c.Defaults, explicit{})
 	if err := validateDefinitions([]model.Definition{probe}, c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("defaults: %w", err)
 	}
@@ -544,6 +611,37 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 }
 
 func ValidateDefinition(d *model.Definition, jobDefaults ...model.Definition) error {
+	return validateDefinition(d, explicit{}, jobDefaults)
+}
+
+// ValidateDefinitionInput normalizes a decoded API definition. Unlike
+// ValidateDefinition, an explicit timeout/retries of 0 overrides the defaults.
+func ValidateDefinitionInput(in DefinitionInput, jobDefaults ...model.Definition) (model.Definition, error) {
+	d := in.Resolve()
+	err := validateDefinition(&d, inputExplicit(in), jobDefaults)
+	return d, err
+}
+
+// EditableInput returns the form of d to hand back to API clients. It spells
+// out timeout/retries whenever zero would otherwise be re-read as "inherit the
+// nonzero default", so a GET followed by a PUT preserves the definition.
+func EditableInput(d model.Definition, jobDefaults ...model.Definition) DefinitionInput {
+	in := DefinitionInput{Definition: d}
+	var defaults model.Definition
+	if d.Kind == model.KindJob && len(jobDefaults) > 0 {
+		defaults = jobDefaults[0]
+	}
+	if d.Timeout != 0 || defaults.Timeout != 0 {
+		in.Timeout = &d.Timeout
+	}
+	if d.Kind == model.KindJob && (d.Retries != 0 || defaults.Retries != 0) {
+		in.Retries = &d.Retries
+	}
+	in.Definition.Timeout, in.Definition.Retries = 0, 0
+	return in
+}
+
+func validateDefinition(d *model.Definition, ex explicit, jobDefaults []model.Definition) error {
 	if d.Kind == "" {
 		d.Kind = model.KindJob
 	}
@@ -553,7 +651,7 @@ func ValidateDefinition(d *model.Definition, jobDefaults ...model.Definition) er
 	if d.Kind == model.KindJob && len(jobDefaults) > 0 {
 		defaults = jobDefaults[0]
 	}
-	applyDefinitionDefaults(d, defaults)
+	applyDefinitionDefaults(d, defaults, ex)
 	definitions := []model.Definition{*d}
 	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
 		return err

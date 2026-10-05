@@ -174,7 +174,7 @@ schema below.
 | `timezone` | scheduler's | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions) |
 | `catch_up` | `none` | job | `none`: skip missed fires; `latest`: fire only the most recent miss and mark intermediate ones `missed` |
 | `on_overlap` | `skip` | job | `skip`: a new fire is recorded `skipped` while one runs; `parallel`: allow concurrent runs |
-| `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run |
+| `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run. An explicit `retries = 0` overrides a nonzero `[defaults]` value; omitting the key inherits it |
 | `retry_delay` | `5` | job | Seconds before each retry (1..86400; 0 uses default 5); constant delay; timeouts and stopped runs are not retried |
 | `run_as` | daemon user | both | `user`, `uid`, or `user:group`. **Root daemon only** |
 | `working_dir` | daemon cwd | both | Absolute working directory for the process |
@@ -182,7 +182,7 @@ schema below.
 | `env` | `{}` | both | Literal environment map |
 | `secret_env` | `{}` | both | Values must be `env:NAME` or `file:/abs/path`, resolved at spawn |
 | `env_file` | — | both | Absolute path to a KEY=VALUE file (≤ 1 MiB) |
-| `timeout` | `0` (none) | both | Maximum runtime in seconds; a timeout is reported even if the process then exits 0 |
+| `timeout` | `0` (none) | both | Maximum runtime in seconds; a timeout is reported even if the process then exits 0. An explicit `timeout = 0` (no timeout) overrides a nonzero `[defaults]` value; omitting the key inherits it |
 | `grace` | `10` | both | Seconds to wait after `stop_signal` before SIGKILL to the process group |
 | `stop_signal` | `SIGTERM` | both | INT, HUP, QUIT, USR1, USR2, TERM, or KILL |
 | `success_codes` | `[0]` | both | Exit codes counted as success |
