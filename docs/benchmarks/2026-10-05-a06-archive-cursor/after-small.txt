@@ -1,0 +1,32 @@
+goos: linux
+goarch: amd64
+pkg: github.com/khanhicetea/minicrond/internal/logdb
+cpu: AMD Ryzen AI 9 HX 370 w/ Radeon 890M           
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     40984 ns/op	    2893 B/op	      72 allocs/op
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     16912 ns/op	    2578 B/op	      72 allocs/op
+BenchmarkEachChunkCursor/chunks_100/final_page-4         	     200	     50822 ns/op	    2583 B/op	      72 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	      9323 ns/op	    1265 B/op	      33 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	      7766 ns/op	    1264 B/op	      32 allocs/op
+BenchmarkEachChunkCursor/chunks_100/empty_tail-4         	     200	      8200 ns/op	    1690 B/op	      33 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1056566 ns/op	  134237 B/op	    3672 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1038762 ns/op	  133070 B/op	    3669 allocs/op
+BenchmarkEachChunkCursor/chunks_100/full_pagination-4    	     200	   1137347 ns/op	  133456 B/op	    3670 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	     22113 ns/op	    2656 B/op	      79 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	     27577 ns/op	    2634 B/op	      79 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/final_page-4        	     200	     29758 ns/op	    2635 B/op	      79 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	      9872 ns/op	    1281 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	     18049 ns/op	    1281 B/op	      34 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/empty_tail-4        	     200	     16621 ns/op	    1283 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  12204074 ns/op	 1342994 B/op	   42467 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  12547436 ns/op	 1343028 B/op	   42467 allocs/op
+BenchmarkEachChunkCursor/chunks_1000/full_pagination-4   	     200	  11862748 ns/op	 1343032 B/op	   42467 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	     83586 ns/op	    2648 B/op	      79 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	     44218 ns/op	    2633 B/op	      78 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/final_page-4       	     200	     33407 ns/op	    2634 B/op	      79 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	      8136 ns/op	    1281 B/op	      34 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	     11390 ns/op	    1281 B/op	      35 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/empty_tail-4       	     200	     19461 ns/op	    1280 B/op	      34 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 124103471 ns/op	13518546 B/op	  438532 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 129217430 ns/op	13519895 B/op	  438536 allocs/op
+BenchmarkEachChunkCursor/chunks_10000/full_pagination-4  	     200	 124911028 ns/op	13517954 B/op	  438530 allocs/op
+PASS
