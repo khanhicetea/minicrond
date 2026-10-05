@@ -2,6 +2,7 @@ package executor
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,15 +38,19 @@ func TestPersistenceLagReportsPendingFinalizers(t *testing.T) {
 	var p persistLag
 	older := time.Now().Add(-3 * time.Second)
 	p.startPending(time.Now().Add(-time.Second))
-	p.startPending(older)
-	p.startPending(time.Now())
+	oldest := p.startPending(older)
+	newest := p.startPending(time.Now())
 	got := p.snapshot()
 	if got.Pending != 3 || got.PendingOldestAgeMS < 2900 {
 		t.Fatalf("pending = %+v", got)
 	}
-	for range 3 {
-		p.endPending()
+	// When the oldest finishes the next oldest takes over (no stale age).
+	p.endPending(oldest)
+	if got := p.snapshot(); got.Pending != 2 || got.PendingOldestAgeMS < 900 || got.PendingOldestAgeMS > 2500 {
+		t.Fatalf("after the oldest finished: %+v", got)
 	}
+	p.endPending(newest)
+	p.endPending(1)
 	p.observe(older) // the finalizer finally committed a run that ended 3 s ago
 	got = p.snapshot()
 	if got.Pending != 0 || got.PendingOldestAgeMS != 0 || got.Persisted != 1 || got.MaxMS < 2900 {
@@ -91,5 +96,41 @@ func TestPersistenceLagDuringStorageOutage(t *testing.T) {
 	got := s.PersistenceLag()
 	if got.Pending != 0 || got.Persisted != 1 || got.MaxMS < 1000 {
 		t.Fatalf("after recovery: %+v", got)
+	}
+}
+
+// Review NIT 6: concurrent starts and ends can never leave a pending count with
+// no age, or an age without a pending count.
+func TestPersistenceLagPendingStaysConsistentUnderConcurrency(t *testing.T) {
+	var p persistLag
+	old := time.Now().Add(-time.Minute)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if got := p.snapshot(); (got.Pending > 0) != (got.PendingOldestAgeMS > 0) {
+				t.Errorf("inconsistent snapshot: %+v", got)
+				return
+			}
+		}
+	})
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			for range 2000 {
+				p.endPending(p.startPending(old))
+			}
+		})
+	}
+	workers.Wait()
+	close(stop)
+	wg.Wait()
+	if got := p.snapshot(); got.Pending != 0 || got.PendingOldestAgeMS != 0 {
+		t.Fatalf("after all finished: %+v", got)
 	}
 }

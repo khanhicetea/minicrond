@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -11,8 +12,14 @@ import (
 // It records only what the completion path already does; nothing runs for it.
 type persistLag struct {
 	count, totalNS, lastNS, maxNS atomic.Int64
-	pending                       atomic.Int64 // terminal states still waiting for the background finalizer
-	oldestPendingEnded            atomic.Int64 // unix nanos of the oldest still-pending run's end, 0 if none (approximate)
+
+	// pending holds the end time of every terminal state still waiting for the
+	// background finalizer, keyed by a token. It is bounded by the number of
+	// such finalizers, and a mutex (not racing atomics) keeps the count and the
+	// oldest age consistent.
+	mu      sync.Mutex
+	next    uint64
+	pending map[uint64]time.Time
 }
 
 func (p *persistLag) observe(ended time.Time) {
@@ -56,33 +63,37 @@ func (p *persistLag) snapshot() PersistenceLag {
 		LastMS:    p.lastNS.Load() / int64(time.Millisecond),
 		MaxMS:     p.maxNS.Load() / int64(time.Millisecond),
 		TotalMS:   p.totalNS.Load() / int64(time.Millisecond),
-		Pending:   p.pending.Load(),
 	}
-	if l.Pending > 0 {
-		if ended := p.oldestPendingEnded.Load(); ended > 0 {
-			l.PendingOldestAgeMS = max(time.Since(time.Unix(0, ended)).Milliseconds(), 0)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	l.Pending = int64(len(p.pending))
+	var oldest time.Time
+	for _, ended := range p.pending {
+		if !ended.IsZero() && (oldest.IsZero() || ended.Before(oldest)) {
+			oldest = ended
 		}
+	}
+	if !oldest.IsZero() {
+		l.PendingOldestAgeMS = max(time.Since(oldest).Milliseconds(), 0)
 	}
 	return l
 }
 
-// startPending notes a terminal state handed to the background finalizer.
-func (p *persistLag) startPending(ended time.Time) {
-	p.pending.Add(1)
-	if ended.IsZero() {
-		return
+// startPending notes a terminal state handed to the background finalizer and
+// returns the token to pass to endPending.
+func (p *persistLag) startPending(ended time.Time) uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pending == nil {
+		p.pending = make(map[uint64]time.Time)
 	}
-	n := ended.UnixNano()
-	for {
-		old := p.oldestPendingEnded.Load()
-		if old != 0 && old <= n || p.oldestPendingEnded.CompareAndSwap(old, n) {
-			return
-		}
-	}
+	p.next++
+	p.pending[p.next] = ended
+	return p.next
 }
 
-func (p *persistLag) endPending() {
-	if p.pending.Add(-1) == 0 {
-		p.oldestPendingEnded.Store(0)
-	}
+func (p *persistLag) endPending(token uint64) {
+	p.mu.Lock()
+	delete(p.pending, token)
+	p.mu.Unlock()
 }

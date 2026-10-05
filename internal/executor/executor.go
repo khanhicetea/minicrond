@@ -471,10 +471,10 @@ func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 	}
 	s.retryWG.Add(1)
 	s.admission.Unlock()
-	s.persistLag.startPending(t.ended)
+	pendingToken := s.persistLag.startPending(t.ended)
 	go func() {
 		defer s.retryWG.Done()
-		defer s.persistLag.endPending()
+		defer s.persistLag.endPending(pendingToken)
 		if err := fault.Call(func() error {
 			s.finalizeLater(r, d, t)
 			return nil
