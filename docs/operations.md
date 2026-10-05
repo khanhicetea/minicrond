@@ -83,7 +83,12 @@ there is no background refresh, and the aggregation stops when its request is
 canceled or times out. Excess requests receive a retryable `503` rather than
 competing with job execution. API metadata lookups (run, definition, listings)
 use the SQLite read pool instead of the single writer connection; the execution
-and supervisor paths keep using the writer connection.
+and supervisor paths keep using the writer connection. The read pool has four
+connections, the same as the default `reads.slots`, so four concurrent metrics
+computations (different `range`/`buckets`) can briefly queue those metadata
+lookups behind them; each is bounded by `reads.work_timeout`, and none of it
+touches the writer connection. Design record:
+[ADR-11](adr/0011-read-admission.md).
 
 Log storage failures (ADR-8 2A): if writing or fsyncing a run's log fails (disk
 full, I/O error), the run keeps executing and its stdout/stderr keep being

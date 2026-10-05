@@ -149,7 +149,11 @@ and `max_concurrent_runs` are unitless.
   downloads and `GET /api/v1/metrics/runs` (the SSE follow stream has its own
   64-stream limit). A request needs one of `slots` and a share of `budget` (a
   log page or download is estimated at 4 MiB, a metrics computation at 8 MiB,
-  so the default 32 MiB admits at most four of them); it queues for up to
+  so the default 32 MiB admits at most four of them). The budget is a second,
+  independent limit: at the defaults it never binds before `slots` does, and it
+  only matters when it is lowered or `slots` is raised (the per-request figures
+  are fixed estimates, not measurements; one frame near `logs.max_line` can
+  exceed a page's estimate); it queues for up to
   0.5 s, then is refused with `503` and `Retry-After: 1` (`read_busy`). Waiting
   requests are themselves capped at four per slot. `work_timeout` bounds the
   read or aggregation of one request (one page for a download), answering `503`

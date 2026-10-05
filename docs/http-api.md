@@ -86,7 +86,7 @@ be combined.
 | `GET /api/v1/runs/{id}` | Full run record |
 | `GET /api/v1/runs/{id}/alerts` | Per-channel delivery status, attempts, last safe error |
 | `POST /api/v1/runs/{id}/stop` | Operator stop (status `stopped`) |
-| `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag); a page holds at most about 1 MiB of payload (one larger line is returned alone), so continue with `after` = the last sequence until `items` is empty |
+| `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag); `limit` is an upper bound (1–5000): a page also stops at about 1 MiB of payload (one larger line is returned alone), so fewer than `limit` items does **not** mean the end — continue with `after` = the last sequence until `items` is empty |
 | `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download), read and sent page by page |
 | `GET /api/v1/runs/{id}/log/stream` | **SSE** follow — frames read from stored chunks by cursor, delivered in batches about every 2 s while the run is active |
 
