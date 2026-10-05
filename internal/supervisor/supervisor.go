@@ -27,6 +27,7 @@ type Supervisor struct {
 	cancel        context.CancelFunc
 	ctx           context.Context
 	closing       bool
+	stopped       chan struct{} // closed by BeginShutdown
 	holds         map[string]bool
 	failures      map[string]int
 	active        map[string]string
@@ -45,6 +46,7 @@ func New(st *store.Store, ex *executor.Service) *Supervisor {
 	return &Supervisor{
 		store:         st,
 		exec:          ex,
+		stopped:       make(chan struct{}),
 		holds:         make(map[string]bool),
 		failures:      make(map[string]int),
 		active:        make(map[string]string),
@@ -63,6 +65,8 @@ func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 	return workerLoop{ctx: ctx, def: d}
 }
 
+// launch must be called with s.mu held and s.closing false: every loops.Go
+// call is ordered before shutdown's loops.Wait by that lock.
 func (s *Supervisor) launch(worker workerLoop) {
 	s.loops.Go(func() {
 		if err := fault.Call(func() error {
@@ -105,21 +109,22 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 		}
 	}
 	s.mu.Unlock()
+	// Old workers may hold a long grace period. Shutdown abandons this wait
+	// (it cancels every worker itself) instead of blocking behind it.
 	for _, done := range waits {
-		<-done
+		select {
+		case <-done:
+		case <-s.stopped:
+			return
+		}
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closing {
-		s.mu.Unlock()
 		return
 	}
-	workers := make([]workerLoop, 0, len(desired))
 	for _, d := range desired {
-		workers = append(workers, s.startLocked(d))
-	}
-	s.mu.Unlock()
-	for _, worker := range workers {
-		s.launch(worker)
+		s.launch(s.startLocked(d))
 	}
 }
 
@@ -197,12 +202,20 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			delete(s.active, d.Name)
 		}
 		s.mu.Unlock()
-		current, err := s.terminalRun(ctx, d.Name, r.ID)
+		current, abandoned, err := s.terminalRun(ctx, d.Name, r.ID)
 		if err != nil {
 			return // canceled while storage was unavailable
 		}
-		if !model.TerminalStatuses[current.Status] {
-			return // defensive: never restart a run that is not terminal
+		if abandoned {
+			// Explicit finalization-failure policy: the process is gone, the
+			// stored row stayed nonterminal and no finalizer owns it (only
+			// possible when the executor was shutting down). Count it as an
+			// unhealthy lifetime instead of silently abandoning the worker.
+			slog.Error("worker run left nonterminal without a finalizer; applying restart policy as a failed lifetime", "worker", d.Name, "run", r.ID, "status", current.Status)
+			if s.held(d.Name) || d.Restart == "never" || !s.restartAfter(ctx, d, false) {
+				return
+			}
+			continue
 		}
 		if s.held(d.Name) {
 			return
@@ -217,28 +230,39 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 	}
 }
 
-// terminalRun reads a finished worker run, retrying storage failures with
-// capped backoff. Giving up would leave the worker neither running nor fatal
-// until the next reload. It fails only when ctx ends.
-func (s *Supervisor) terminalRun(ctx context.Context, name, id string) (model.Run, error) {
-	backoff := time.Second
+// terminalRun waits for a finished worker run to reach a terminal state.
+// The executor persists that state inline or, when storage is down, from a
+// background finalizer; a nonterminal read is therefore not an outcome. It
+// keeps polling with capped backoff until the state is terminal, so the restart
+// policy is applied once finalization succeeds, and fails only when ctx ends.
+// If the row stays nonterminal and no finalizer owns it, abandoned is true and
+// the caller applies its failure policy. Finalizing is sampled before the read
+// so a finalizer that just succeeded is never mistaken for an abandoned one.
+func (s *Supervisor) terminalRun(ctx context.Context, name, id string) (run model.Run, abandoned bool, err error) {
+	backoff := 500 * time.Millisecond
 	for {
-		current, err := s.store.Run(ctx, id)
-		if err == nil {
-			return current, nil
+		finalizing := s.exec.Finalizing(id)
+		current, readErr := s.store.Run(ctx, id)
+		switch {
+		case readErr == nil && model.TerminalStatuses[current.Status]:
+			return current, false, nil
+		case readErr == nil && !finalizing:
+			return current, true, nil
+		case readErr == nil:
+			slog.Warn("supervisor: worker run is awaiting background finalization; restart is deferred", "worker", name, "run", id, "status", current.Status, "retry_in", backoff)
+		case ctx.Err() != nil:
+			return model.Run{}, false, ctx.Err()
+		default:
+			slog.Error("supervisor: reading worker run failed; retrying", "worker", name, "run", id, "retry_in", backoff, "error", readErr)
 		}
-		if ctx.Err() != nil {
-			return model.Run{}, ctx.Err()
-		}
-		slog.Error("supervisor: reading worker run failed; retrying", "worker", name, "run", id, "retry_in", backoff, "error", err)
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return model.Run{}, ctx.Err()
+			return model.Run{}, false, ctx.Err()
 		case <-timer.C:
 		}
-		backoff = min(backoff*2, time.Minute)
+		backoff = min(backoff*2, 30*time.Second)
 	}
 }
 
@@ -303,14 +327,10 @@ func (s *Supervisor) StartDefinition(d model.Definition) {
 	delete(s.holds, d.Name)
 	s.failures[d.Name] = 0
 	_, reserved := s.workerCancels[d.Name]
-	var worker workerLoop
 	if !s.closing && s.ctx != nil && !reserved && d.Kind == model.KindWorker && d.IsEnabled() {
-		worker = s.startLocked(d)
+		s.launch(s.startLocked(d))
 	}
 	s.mu.Unlock()
-	if worker.ctx != nil {
-		s.launch(worker)
-	}
 }
 
 func (s *Supervisor) Start(name string) { s.mu.Lock(); delete(s.holds, name); s.mu.Unlock() }
@@ -335,17 +355,20 @@ func (s *Supervisor) Restart(d model.Definition) {
 	if cancel != nil {
 		cancel()
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return
+	}
 	s.loops.Go(func() {
 		if done != nil {
-			<-done
+			select {
+			case <-done:
+			case <-s.stopped:
+				return // shutdown suppresses the replacement
+			}
 		}
-		// Closing suppresses a replacement when shutdown interrupts restart.
-		s.mu.Lock()
-		closing := s.closing
-		s.mu.Unlock()
-		if !closing {
-			s.StartDefinition(d)
-		}
+		s.StartDefinition(d)
 	})
 }
 
@@ -354,6 +377,9 @@ func (s *Supervisor) Restart(d model.Definition) {
 // by the daemon's executor deadline.
 func (s *Supervisor) BeginShutdown() {
 	s.mu.Lock()
+	if !s.closing {
+		close(s.stopped)
+	}
 	s.closing = true
 	if s.cancel != nil {
 		s.cancel()
@@ -361,12 +387,32 @@ func (s *Supervisor) BeginShutdown() {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) Shutdown() {
+// Shutdown joins supervision without a deadline. Prefer ShutdownContext.
+func (s *Supervisor) Shutdown() { _ = s.ShutdownContext(context.Background()) }
+
+// ShutdownContext stops supervision and waits for the worker loops until ctx
+// ends. Once closing is set no loop can be started (every loops.Go is ordered
+// before this call by s.mu), and it never waits for the lifecycle lock, which
+// a reload may hold while an old worker finishes its grace period.
+//
+// Loops left running at expiry only wait for their executor runs: their
+// contexts are already canceled, so they start no new run and every store call
+// they make fails immediately. They therefore cannot touch the database in a
+// harmful way after the caller closes it. The executor's own shutdown (its
+// forced kill and bounded join) is what bounds the processes they wait for.
+func (s *Supervisor) ShutdownContext(ctx context.Context) error {
 	s.BeginShutdown()
-	// Join any admission already in progress before waiting on the group.
-	s.lifecycle.Lock()
-	s.lifecycle.Unlock()
-	s.loops.Wait()
+	joined := make(chan struct{})
+	go func() {
+		s.loops.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // State reports operator supervision facts for one worker definition.
