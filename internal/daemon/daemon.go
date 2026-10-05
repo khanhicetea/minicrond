@@ -97,6 +97,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Unlock()
 	logs.AttachDB(ldb)
 	logs.SetFrameSync(cfg.Logs.Durability == "frame")
+	logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
 	// Finished runs are archived in the background. Stop the archiver after
 	// the executor (deferred calls run in reverse) and before the archive
 	// database closes; anything still queued is swept at the next start.
@@ -137,7 +138,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	}
 	// Buffers orphaned by a crash (runs that never reached Close) are swept
 	// into the archive so their pre-crash output is not lost.
-	if err = logs.ArchiveOrphans(); err != nil {
+	if err = logs.ArchiveOrphansContext(ctx); err != nil {
 		slog.Error("orphaned log sweep failed", "error", err)
 	}
 	sched := scheduler.New(st, execService)
@@ -346,6 +347,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	d.cfg = cfg
 	d.mu.Unlock()
 	d.logs.SetFrameSync(cfg.Logs.Durability == "frame")
+	d.logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
 	return d.reconcile(ctx)
 }
 
@@ -458,7 +460,7 @@ func (d *Daemon) sweepRetention(ctx context.Context) {
 				}
 				ids = append(ids, candidate.ID)
 			}
-			deletable, err := d.logs.DeleteRuns(ids)
+			deletable, err := d.logs.DeleteRunsContext(ctx, ids)
 			if err != nil {
 				slog.Error("retained log deletion failed", "count", len(ids), "error", err)
 			}
@@ -495,9 +497,11 @@ func (d *Daemon) workerFlushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.logs.FlushActive()
+			if err := d.logs.FlushActiveContext(ctx); err != nil {
+				return
+			}
 			// Retry failed final archival without requiring a daemon restart.
-			if err := d.logs.ArchiveOrphans(); err != nil {
+			if err := d.logs.ArchiveOrphansContext(ctx); err != nil && ctx.Err() == nil {
 				slog.Error("orphaned log retry failed", "error", err)
 			}
 			if next := d.logFlushInterval(); next != interval {
