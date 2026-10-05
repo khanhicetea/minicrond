@@ -122,3 +122,25 @@ func TestTriggerReportsQueueStorageFailure(t *testing.T) {
 		t.Fatalf("failed trigger left runs: %+v, %v", runs, err)
 	}
 }
+
+// S2: the Stop button works for a queued run (202, then stopped/queue_cancelled).
+func TestStopQueuedRunViaAPI(t *testing.T) {
+	s, st, _ := queueServer(t, executor.QueueOptions{})
+	mustCreate(t, s, "blocker", "sleep 5")
+	mustCreate(t, s, "a", "true")
+	if rec := call(s, true, "POST", "/api/v1/jobs/blocker/trigger", "", "", nil); rec.Code != 202 {
+		t.Fatalf("blocker: %d", rec.Code)
+	}
+	queued := decode(t, call(s, true, "POST", "/api/v1/jobs/a/trigger", "", "", nil))
+	id := queued["run_id"].(string)
+	if queued["status"] != "queued" {
+		t.Fatalf("status = %v", queued["status"])
+	}
+	if rec := call(s, true, "POST", "/api/v1/runs/"+id+"/stop", "", "", nil); rec.Code != 202 {
+		t.Fatalf("stop queued: %d %s", rec.Code, rec.Body.String())
+	}
+	got, err := st.Run(t.Context(), id)
+	if err != nil || got.Status != "stopped" || got.EndReason != "queue_cancelled" {
+		t.Fatalf("run = %+v, %v", got, err)
+	}
+}

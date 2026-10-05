@@ -58,7 +58,7 @@ executed — see catch-up in `06`), `timeout`.
 
 **End reasons** (orthogonal detail on terminal status): `exit`,
 `exit_nonzero`, `signal`, `timeout`, `overlap_skip`, `overlap_replace`,
-`queue_full`, `queue_expired`, `definition_removed`, `definition_disabled`,
+`queue_full`, `queue_expired`, `queue_cancelled`, `definition_removed`, `definition_disabled`,
 `retry_budget`, `retry_dropped`, `stop_signal`, `sigkill`, `daemon_shutdown`, `crash_recovery`,
 `dst_skip`, `start_error`, `log_overflow`.
 

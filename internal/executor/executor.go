@@ -1069,14 +1069,40 @@ func (s *Service) CleanupRecovered(runs []model.Run) {
 	}
 }
 func (s *Service) Stop(id string) error {
+	if s.stopActive(id) {
+		return nil
+	}
+	// A queued run has no process yet: cancel it in the queue. Taking admission
+	// serializes with the drain, so a run that is just being started is seen as
+	// active afterwards instead of racing the cancel.
+	ctx, cancel := context.WithTimeout(s.stopCtx, 5*time.Second)
+	defer cancel()
+	if err := s.acquireAdmission(ctx); err != nil {
+		return os.ErrNotExist
+	}
+	defer func() { <-s.admission }()
+	if s.stopActive(id) {
+		return nil
+	}
+	if err := s.store.CancelQueued(ctx, id, time.Now()); err != nil {
+		if !errors.Is(err, store.ErrInvalidTransition) {
+			logFailure("cancelling queued run failed", err, "run", id)
+		}
+		return os.ErrNotExist
+	}
+	s.queue.depth.Add(-1)
+	return nil
+}
+
+func (s *Service) stopActive(id string) bool {
 	s.mu.Lock()
 	a := s.active[id]
 	s.mu.Unlock()
 	if a == nil {
-		return os.ErrNotExist
+		return false
 	}
 	a.cancel(ErrStopped)
-	return nil
+	return true
 }
 
 // BeginShutdown stops admission without waiting for anything: new triggers

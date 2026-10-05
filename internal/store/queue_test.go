@@ -253,3 +253,34 @@ func TestQueuedRunsAreNotRetentionDeletable(t *testing.T) {
 		t.Fatalf("metrics = %+v, %v", metrics, err)
 	}
 }
+
+func TestDeleteAndDisableDropQueuedItems(t *testing.T) {
+	st, _, defs := queueFixture(t, "gone", "off", "kept")
+	ctx := t.Context()
+	for _, q := range []struct{ def, run string }{{"gone", "g1"}, {"gone", "g2"}, {"off", "o1"}, {"kept", "k1"}} {
+		if _, err := st.EnqueueRun(ctx, queuedRun(defs[q.def], q.run), nil, testLimits, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.DeleteDefinition(ctx, "gone", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEnabled(ctx, "off", false); err != nil {
+		t.Fatal(err)
+	}
+	for id, reason := range map[string]string{"g1": "definition_removed", "g2": "definition_removed", "o1": "definition_disabled"} {
+		if r, _ := st.Run(ctx, id); r.Status != "skipped" || r.EndReason != reason {
+			t.Fatalf("%s = %s/%s, want skipped/%s", id, r.Status, r.EndReason, reason)
+		}
+	}
+	if r, _ := st.Run(ctx, "k1"); r.Status != "queued" {
+		t.Fatalf("unrelated item = %s", r.Status)
+	}
+	if stats, _ := st.QueueStats(ctx); stats.Depth != 1 {
+		t.Fatalf("depth = %d", stats.Depth)
+	}
+	// Enabling again must not touch anything.
+	if err := st.SetEnabled(ctx, "off", true); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -205,7 +206,12 @@ func TestQueuedItemRevalidatesDefinition(t *testing.T) {
 		ids[q.d.Name] = r.ID
 	}
 	ctx := t.Context()
-	if err := st.SetEnabled(ctx, "to-disable", false); err != nil {
+	// Disabling through a definition update is only noticed when the drain takes
+	// the item; DeleteDefinition drops its queued items immediately (store).
+	off := disabled
+	disabledFlag := false
+	off.Enabled = &disabledFlag
+	if _, err := st.PutDefinition(ctx, off, disabled.Revision, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DeleteDefinition(ctx, "to-delete", "test"); err != nil {
@@ -231,7 +237,7 @@ func TestQueuedItemRevalidatesDefinition(t *testing.T) {
 	if got.Status != "succeeded" || got.Revision != saved.Revision || got.DefinitionHash != newHash {
 		t.Fatalf("edited item = %+v (want revision %d hash %s)", got, saved.Revision, newHash)
 	}
-	if d := s.Diagnostics(ctx); d.Queue.Dropped != 2 {
+	if d := s.Diagnostics(ctx); d.Queue.Dropped != 1 {
 		t.Fatalf("dropped = %d", d.Queue.Dropped)
 	}
 }
@@ -624,4 +630,36 @@ func TestRetryMeetingUnavailableQueueIsRedeferred(t *testing.T) {
 		return s.Diagnostics(t.Context()).Queue.Unavailable >= 2
 	})
 	eventually(t, 5*time.Second, "deferred retry not pending", func() bool { return s.PendingRetries() == 1 })
+}
+
+// S2: Stop on a queued run cancels it in the queue with a visible end reason.
+func TestStopCancelsQueuedRun(t *testing.T) {
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1})
+	blocker, bh := putJob(t, st, parallelJob("blocker", "sleep 30"))
+	a, ah := putJob(t, st, parallelJob("a", "echo must-not-run"))
+	started, err := s.Trigger(t.Context(), blocker, bh, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := s.Trigger(t.Context(), a, ah, "manual", nil)
+	if err != nil || queued.Status != "queued" {
+		t.Fatalf("queue = %s, %v", queued.Status, err)
+	}
+	if err := s.Stop(queued.ID); err != nil {
+		t.Fatalf("stop queued run: %v", err)
+	}
+	got := runStatus(t, st, queued.ID)
+	if got.Status != "stopped" || got.EndReason != "queue_cancelled" || got.StartedAt != nil || got.EndedAt == nil {
+		t.Fatalf("cancelled run = %+v", got)
+	}
+	if d := s.Diagnostics(t.Context()); d.Queue.Depth != 0 {
+		t.Fatalf("depth = %d", d.Queue.Depth)
+	}
+	if err := s.Stop(queued.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("second stop = %v, want not found", err)
+	}
+	// An active run is still stopped normally.
+	if err := s.Stop(started.ID); err != nil {
+		t.Fatal(err)
+	}
 }

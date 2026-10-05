@@ -234,7 +234,7 @@ Workers and `[[init]]` jobs are never queued.
   `queue.max_age`), `queue_full` (a limit was hit; scheduled/retry triggers only),
   `definition_removed` / `definition_disabled` (deleted, recreated, or disabled
   while queued), `retry_budget` (the definition now allows fewer retries),
-  `overlap_skip`, `retry_dropped` (see below). A manual trigger that meets a full
+  `overlap_skip`, `retry_dropped` (see below). Deleting or disabling a definition drops its queued runs at once. `POST /api/v1/runs/{id}/stop` on a queued run cancels it: status `stopped`, end reason `queue_cancelled`. A manual trigger that meets a full
   queue gets HTTP 429 `queue_full` with `Retry-After` and creates no run; if the
   queue cannot be persisted it gets 503 `queue_unavailable`. `wait=true` returns
   `202` with the queued run when the run has not started.

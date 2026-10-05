@@ -508,7 +508,8 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 	defer tx.Rollback()
 	var before string
 	var source string
-	if err = tx.QueryRowContext(ctx, "SELECT spec,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&before, &source); err != nil {
+	var definitionID int64
+	if err = tx.QueryRowContext(ctx, "SELECT definition_id,spec,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&definitionID, &before, &source); err != nil {
 		return err
 	}
 	if source == "config" {
@@ -519,6 +520,9 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before) VALUES(?,?,?,?,?)", now, actor, "delete", name, before); err != nil {
+		return err
+	}
+	if err = dropDefinitionQueued(ctx, tx, definitionID, "definition_removed", time.UnixMicro(now)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -550,6 +554,11 @@ func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error
 	after := fmt.Sprintf(`{"enabled":%t}`, enabled)
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before,after) VALUES(?,?,?,?,?,?)", now, "api", "set_enabled", name, nil, after); err != nil {
 		return err
+	}
+	if !enabled {
+		if err = dropDefinitionQueued(ctx, tx, id, "definition_disabled", time.UnixMicro(now)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

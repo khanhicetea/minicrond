@@ -207,12 +207,23 @@ func (s *Store) ExpireQueued(ctx context.Context, now time.Time, limit int) ([]s
 // queue. If the run was no longer queued, a leftover queue row is still removed
 // and ErrInvalidTransition is returned.
 func (s *Store) DropQueued(ctx context.Context, runID, reason string, now time.Time) error {
+	return s.endQueued(ctx, runID, "skipped", reason, now)
+}
+
+// CancelQueued ends one queued run at an operator's request as stopped with end
+// reason queue_cancelled. ErrInvalidTransition means it was no longer queued
+// (for example it just started).
+func (s *Store) CancelQueued(ctx context.Context, runID string, now time.Time) error {
+	return s.endQueued(ctx, runID, "stopped", "queue_cancelled", now)
+}
+
+func (s *Store) endQueued(ctx context.Context, runID, status, reason string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, "UPDATE runs SET status='skipped',end_reason=?,ended_us=? WHERE run_id=? AND status='queued'", reason, now.UnixMicro(), runID)
+	res, err := tx.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,ended_us=? WHERE run_id=? AND status='queued'", status, reason, now.UnixMicro(), runID)
 	if err != nil {
 		return err
 	}
@@ -227,9 +238,20 @@ func (s *Store) DropQueued(ctx context.Context, runID, reason string, now time.T
 		return err
 	}
 	if n != 1 {
-		return fmt.Errorf("drop queued run %s: %w", runID, ErrInvalidTransition)
+		return fmt.Errorf("end queued run %s: %w", runID, ErrInvalidTransition)
 	}
 	return nil
+}
+
+// dropDefinitionQueued ends every queued run of a definition that was deleted
+// or disabled, inside the caller's transaction. Items that slip through are
+// still revalidated when the drain takes them.
+func dropDefinitionQueued(ctx context.Context, tx *sql.Tx, definitionID int64, reason string, now time.Time) error {
+	if _, err := tx.ExecContext(ctx, "UPDATE runs SET status='skipped',end_reason=?,ended_us=? WHERE status='queued' AND run_id IN (SELECT run_id FROM exec_queue WHERE definition_id=?)", reason, now.UnixMicro(), definitionID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "DELETE FROM exec_queue WHERE definition_id=?", definitionID)
+	return err
 }
 
 // DequeueRun turns a queued run into a pending one and removes its queue row in
