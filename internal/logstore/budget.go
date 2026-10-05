@@ -379,7 +379,7 @@ func (s *Store) EnforceDiskBudget(ctx context.Context) (DiskStatus, error) {
 		if res.Chunks > 0 {
 			// Space returns to the filesystem only after the freed pages are
 			// vacuumed and the WAL truncated.
-			if err := s.db.Compact(context.WithoutCancel(ctx)); err != nil {
+			if err := s.db.Compact(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("compact log archive after pressure prune: %w", err))
 			}
 			st.PrunedRuns += res.Runs
