@@ -645,8 +645,9 @@ type Writer struct {
 	chunkRaw   int
 	chunkFirst uint64
 	seq        uint64
-	total      int64 // accepted raw bytes, less output evicted before archival
-	buffered   int64 // raw bytes still occupying the file buffer
+	lastStored uint64 // sequence of the last frame written to a chunk file
+	total      int64  // accepted raw bytes, less output evicted before archival
+	buffered   int64  // raw bytes still occupying the file buffer
 	maxBytes   int64
 	maxLine    int
 	dropNew    bool
@@ -956,7 +957,29 @@ func (w *Writer) reopenChunk() error {
 		_ = w.file.Close()
 		w.file = nil
 	}
+	w.indexAbandonedChunk()
 	return w.rotate()
+}
+
+// indexAbandonedChunk registers the chunk just abandoned after a storage
+// failure in the index, with the frames known to have been written intact. It
+// is then accounted by the log_max eviction, archived verbatim by the worker
+// checkpoint (a torn tail decodes up to its last block, like any live chunk)
+// and removed with the run, instead of lingering unindexed until the run ends.
+// Callers hold w.mu; the chunk's file is already closed.
+func (w *Writer) indexAbandonedChunk() {
+	if w.enc == nil || w.chunkRaw == 0 || w.lastStored < w.chunkFirst {
+		return
+	}
+	if n := len(w.idx.Chunks); n > 0 && w.idx.Chunks[n-1].Number == w.chunk {
+		return // already indexed (only the index install had failed)
+	}
+	var size int64
+	if info, err := os.Stat(w.chunkPath(w.chunk)); err == nil {
+		size = info.Size()
+	}
+	w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.lastStored, size, int64(w.chunkRaw), false})
+	w.chunkRaw = 0 // the next rotate starts a fresh chunk; keep a retry from re-indexing this one
 }
 
 // writeLocked appends one frame. The frame always reaches the chunk file
@@ -1019,6 +1042,7 @@ func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, 
 	if err := w.enc.Flush(); err != nil {
 		return false, err
 	}
+	w.lastStored = w.seq
 	before := w.unsynced
 	w.unsynced += frameSize
 	w.chunkRaw += frameSize

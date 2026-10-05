@@ -314,3 +314,62 @@ func TestDegradedPipeDiscardsWithoutPerLineWork(t *testing.T) {
 		t.Fatalf("dropped %d", got)
 	}
 }
+
+// Review S4: a chunk abandoned after a storage failure was unindexed, so a
+// long-lived worker's checkpoints and log_max eviction never saw it and each
+// episode left up to a chunk of buffered bytes until the run ended.
+func TestAbandonedChunkIsIndexedArchivedAndAccounted(t *testing.T) {
+	setCaptureRetry(t, time.Hour, time.Hour)
+	s, db, _ := newArchiveStore(t)
+	w, err := s.Open("run", "worker", model.KindWorker, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close("run") })
+	if err := w.Pipe(Stdout, bytes.NewReader([]byte("one\ntwo\n"))); err != nil {
+		t.Fatal(err)
+	}
+	abandoned := w.chunkPath(1)
+	breakStorage(t, w)
+	if err := w.Pipe(Stdout, bytes.NewReader([]byte("lost\n"))); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	w.retryAt = time.Now()
+	w.mu.Unlock()
+	if err := w.Pipe(Stdout, bytes.NewReader([]byte("after\n"))); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	indexed := len(w.idx.Chunks) == 1 && w.idx.Chunks[0].Number == 1 && w.idx.Chunks[0].First == 1 && w.idx.Chunks[0].Last == 2
+	w.mu.Unlock()
+	if !indexed {
+		t.Fatalf("abandoned chunk not registered in the index: %+v", w.idx.Chunks)
+	}
+	if err := w.Flush(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(abandoned); !os.IsNotExist(err) {
+		t.Fatalf("abandoned chunk file survives the checkpoint: %v", err)
+	}
+	w.mu.Lock()
+	buffered := w.buffered
+	w.mu.Unlock()
+	if buffered != 0 {
+		t.Fatalf("%d bytes still counted against log_max after the checkpoint", buffered)
+	}
+	if _, chunks, _, _ := db.Stats(t.Context()); chunks != 2 {
+		t.Fatalf("archived %d chunks, want the abandoned one and the recovered one", chunks)
+	}
+	frames, err := s.Read("run", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range frames {
+		got = append(got, string(f.Payload))
+	}
+	if len(got) != 4 || got[0] != "one" || got[1] != "two" || got[3] != "after" {
+		t.Fatalf("frames = %q", got)
+	}
+}
