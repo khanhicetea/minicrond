@@ -142,3 +142,101 @@ func TestReloadRefusesQueueSettingChange(t *testing.T) {
 	cancel()
 	<-done
 }
+
+const queueInitConfig = `[server]
+tcp_enabled=false
+[scheduler]
+max_concurrent_runs=1
+[queue]
+drain_rate=100
+[[init]]
+name='prep'
+command='sleep 0.3'
+[[job]]
+name='blocker'
+schedule='@every 24h'
+on_overlap='parallel'
+command='sleep 30'
+grace=1
+[[job]]
+name='later'
+schedule='@every 24h'
+on_overlap='parallel'
+command='echo ran-after-init'
+`
+
+// B1: a restart with a queued backlog must not let the drain take the only
+// slot before [[init]] runs, which would fail init and abort startup.
+func TestInitRunsBeforeQueuedBacklogDrains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "minicron.toml")
+	// First boot without init to build the backlog.
+	first := strings.Replace(queueInitConfig, "[[init]]\nname='prep'\ncommand='sleep 0.3'\n", "", 1)
+	if err := os.WriteFile(path, []byte(first), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "data")
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	d1 := &Daemon{ConfigPath: path, DataDir: data}
+	done1 := make(chan error, 1)
+	go func() { done1 <- d1.Run(ctx1) }()
+	waitDaemonReady(t, d1)
+	bd, bh, _ := d1.store.Definition(t.Context(), "blocker")
+	ld, lh, _ := d1.store.Definition(t.Context(), "later")
+	if _, err := d1.exec.Trigger(t.Context(), bd, bh, "manual", nil); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for range 3 {
+		r, err := d1.exec.Trigger(t.Context(), ld, lh, "manual", nil)
+		if err != nil || r.Status != "queued" {
+			t.Fatalf("queue: %s, %v", r.Status, err)
+		}
+		ids = append(ids, r.ID)
+	}
+	cancel1()
+	select {
+	case err := <-done1:
+		if err != nil {
+			t.Fatalf("first daemon: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("first daemon did not stop")
+	}
+	if err := os.WriteFile(path, []byte(queueInitConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	defer cancel2()
+	d2 := &Daemon{ConfigPath: path, DataDir: data}
+	done2 := make(chan error, 1)
+	go func() { done2 <- d2.Run(ctx2) }()
+	waitDaemonReady(t, d2)
+	select {
+	case err := <-done2:
+		t.Fatalf("second daemon exited: %v", err)
+	default:
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for _, id := range ids {
+		for {
+			run, err := d2.store.Run(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status == "succeeded" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("backlog run %s = %s/%s", id, run.Status, run.EndReason)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	runs, _ := d2.store.Runs(t.Context(), "prep", 10)
+	if len(runs) != 1 || runs[0].Status != "succeeded" {
+		t.Fatalf("init runs = %+v", runs)
+	}
+	cancel2()
+	<-done2
+}

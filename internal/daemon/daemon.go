@@ -208,11 +208,6 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err = st.Recover(ctx); err != nil {
 		return err
 	}
-	// Queued runs were never started (running and pending rows were just marked
-	// interrupted); count them and let the rate-limited drain loop take over.
-	if err = execService.ResumeQueue(ctx); err != nil {
-		return err
-	}
 	if err := validateAlertReferences(cfg.Definitions(), cfg.AlertChannels); err != nil {
 		return err
 	}
@@ -340,6 +335,12 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		if finished.Status != "succeeded" {
 			return fmt.Errorf("init %s: run %s ended %s", init.Name, run.ID, finished.Status)
 		}
+	}
+	// Queued runs were never started (running and pending rows were just marked
+	// interrupted). Resume the rate-limited drain only now: [[init]] jobs are
+	// never queued and must not find every capacity slot taken by a backlog.
+	if err := execService.ResumeQueue(ctx); err != nil {
+		return err
 	}
 	if err := sched.Reload(ctx, defs); err != nil {
 		return err
