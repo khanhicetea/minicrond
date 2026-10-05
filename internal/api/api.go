@@ -548,6 +548,12 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 			databases["logs"] = poolInfo(writer, reader)
 		}
 		diagnostics["log_archive_backlog"] = s.logs.ArchiveBacklog()
+		// Tier bytes, capture failures, maintenance durations and writer-lock
+		// waits. Footprints are measured on demand and cached for a few seconds.
+		diagnostics["log_storage"] = s.logs.Diagnostics(r.Context())
+	}
+	if s.exec != nil {
+		diagnostics["terminal_persistence"] = s.exec.PersistenceLag()
 	}
 	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)

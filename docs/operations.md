@@ -97,8 +97,91 @@ archived and the original bytes copied to the same
 `.quarantine/<run>-<chunk>.zst.corrupt` name. If the quarantine move itself
 fails, the chunk stays in place and fails each sweep; after repeated failures the
 whole buffer moves to `.quarantine/<run>/`. Torn tails left by a crash are still
-salvaged up to the last intact frame. Quarantined files are never pruned
-automatically; remove them deliberately.
+salvaged up to the last intact frame. By default quarantined files are kept
+forever and never pruned automatically: watch `quarantine_bytes`,
+`quarantine_entries` and `quarantine_oldest_age_s` under
+`diagnostics.log_storage.disk` (see below) and remove or repair them
+deliberately. To bound them, opt in to `logs.quarantine_keep_for` (days) and/or
+`logs.quarantine_max_size` (MiB): the daily log prune then deletes whole
+top-level entries (a `<run>-<chunk>.zst.corrupt` file or a `<run>/` directory),
+oldest first, and logs every deletion at warn level with its reason. Disk
+pressure never touches the quarantine.
+
+## Log disk budget
+
+`log_max` bounds one run's hot buffer, not the disk; `logs.db_max_size` is a
+once-a-day archive-only limit. The log **disk budget** (ADR-8 3A,
+[ADR-10](adr/0010-log-disk-budget.md)) is the real bound and outranks retention
+age: when it is exceeded, the oldest completed runs' logs are deleted early,
+even if `keep_for` / `logs.db_keep_for` have not elapsed.
+
+Two rules, both reloadable:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `logs.disk_min_free` (MiB) | `512` | Keep this much free on the filesystem of the data directory. Below it, reclaim up to 125% of it. The value is clamped to a quarter of the filesystem. `0` disables the rule. |
+| `logs.disk_budget` (MiB) | `0` (off) | Cap on the log tiers: archive database **plus WAL**, sealed buffers and live buffers (not the quarantine). Reclaim starts at 90% of it and stops at 80%. |
+
+What is deleted, oldest first: archived chunks of completed runs, then sealed
+buffers of completed runs still waiting for archival. What is **never**
+deleted by this mechanism: live buffers, archived chunks of runs that still have
+a writer (workers), `.quarantine/`, `minicron.db` metadata (definitions, run
+records, audit, pending execution records) and anything outside the log tiers.
+A run whose logs were reclaimed keeps its run record; its log reads empty.
+
+A pass runs on the hourly retention tick, the worker-flush tick and the daily log
+prune, at startup and on reload, and when the log store hints that pressure may
+have changed (a chunk rotated, a run sealed, log capture failed), at most once per
+10 seconds. An idle daemon runs nothing. Without pressure a pass is a single
+`statfs`; the tiers are walked only when a watermark may be exceeded. If
+`statfs` fails, headroom is skipped (reported as `statfs_error`) and only the byte
+budget is enforced.
+
+If everything eligible is gone and pressure remains, `diagnostics.log_storage.disk`
+shows `insufficient: true` and the daemon logs one error per episode. Running
+children then follow the capture-failure policy above (output is discarded, they keep
+running). **Admission is not wired to disk pressure in this build:** jobs and
+workers still start normally while `insufficient` is true, and the only effect on
+them is that their log output is dropped (ADR-8 2A) until space returns. Refusing
+or queueing new work under disk pressure belongs to the queue policy (ADR-8 4B),
+which may consult `Store.DiskPressure()` once it exists. Fix the cause: free space, raise
+`logs.disk_budget`, or lower retention. Expect occasional shorter history during
+noisy periods; this is the accepted trade-off.
+
+### Diagnostics
+
+`GET /api/v1/daemon` returns, under `diagnostics`:
+
+- `log_storage.disk` — `hot_bytes`/`hot_runs`, `sealed_bytes`/`sealed_runs`,
+  `archive_bytes` (database + WAL, `archive_wal_bytes` separately), `log_bytes`
+  (what the budget applies to), `quarantine_bytes`/`quarantine_entries`/
+  `quarantine_oldest_age_s`, `quarantine_purged_*`, the policy (`budget_bytes`,
+  `min_free_bytes` effective, `free_bytes`, `total_bytes`, `statfs_error`) and the
+  outcome (`pressure`, `insufficient`, `passes`, `pressure_passes`,
+  `insufficient_passes`, `pruned_runs`/`pruned_chunks`/`pruned_bytes`,
+  `sealed_runs_deleted`/`sealed_bytes_deleted`). Tier sizes are measured on
+  demand and cached for a few seconds; polling it does not scan continuously.
+  Alert on `insufficient`, on `free_bytes` approaching `min_free_bytes`, and on
+  growing `quarantine_bytes`.
+- `log_storage.capture` — `failures_total` (runs that entered degraded capture
+  since start), `dropped_frames`/`dropped_bytes`, `sync_failures`, `active_writers`,
+  `degraded` and up to ten `degraded_runs` with their error. It never waits for a
+  busy writer (`unavailable` counts those skipped).
+- `log_storage.maintenance` — per task (`retention`, `worker_flush`, `log_prune`,
+  `disk_budget`, `quarantine_purge`): `runs`, `last_ms`, `max_ms`, `total_ms`,
+  `last_at`.
+- `log_storage.writer_lock_waits` — `count`, `total_ms`, `max_ms` of log writes
+  that blocked on the run lock or the writer lock (behind an archive batch, a
+  read page or a flush). Uncontended writes are not counted, so it costs nothing
+  on the happy path.
+- `terminal_persistence` — time from a run's process end to its terminal state
+  being committed (`persisted`, `last_ms`, `max_ms`, `total_ms`) and
+  `pending`/`pending_oldest_age_ms` for runs still retried in the background
+  (should be 0).
+
+Archive cursor reads (log pages, downloads, SSE catch-up) seek by frame sequence
+(A06): the cost of a read depends on the chunks it returns, not on how many
+chunks of the run precede it.
 
 Retention:
 
@@ -108,10 +191,12 @@ Retention:
 - **Log archive:** chunks older than `logs.db_keep_for` in days (default 30) are
   pruned daily at `logs.db_prune_at` (default 03:30 local), in small batches.
   With `logs.db_max_size` set, the same sweep then removes the oldest chunks
-  until the archive fits that many MiB. Afterwards freed pages are returned
+  until the archive fits that many MiB. The log disk budget (below) applies
+  independently and earlier, whenever its watermarks are crossed. Afterwards freed pages are returned
   to the filesystem (incremental auto-vacuum) and the WAL is truncated.
 
-Monitor data-directory free space. The first start after upgrading to log
+Monitor data-directory free space (the log disk budget above reacts to
+low headroom, but only by deleting logs). The first start after upgrading to log
 archive schema 3 runs a one-time `VACUUM` of `minicron-logs.db` to enable
 incremental auto-vacuum; it needs temporary free space about the size of the
 file. The main `minicron.db` does not shrink after run retention deletes rows;
@@ -292,3 +377,15 @@ a unique TCP port. Service mode logs to the journal.
 Stop the daemon, back up the data directory (above), replace the binary,
 start. Rollback = stop, restore the directory snapshot, restore the old
 binary, start. Never downgrade a live newer-schema database.
+
+**Upgrading to the log disk budget.** `logs.disk_min_free` is **on by default**
+(512 MiB, clamped to a quarter of the filesystem). After upgrading, a host with
+less than that free on the data directory's filesystem deletes the oldest
+completed runs' archived logs (and, if that is not enough, sealed buffers) on the
+first pass at startup; deleted logs are not recoverable. Before upgrading a small
+or nearly full disk, check `df` for the data directory, and either free space,
+size `logs.disk_budget` deliberately, or set `logs.disk_min_free = 0` to keep the
+previous behavior. The daemon logs one `log disk budget:` INFO line at every
+start and reload with the configured and effective values (`min_free_mib`,
+`effective_min_free_mib`, `filesystem_mib`, `budget_mib`, quarantine policy); read
+it after upgrading, and see [Log disk budget](#log-disk-budget).

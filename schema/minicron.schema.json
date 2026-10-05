@@ -130,6 +130,33 @@
           "maximum": 65536,
           "default": 1024,
           "description": "Batch durability: KiB of unsynced output after which a run's log buffer is fsynced at once"
+        },
+        "disk_budget": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824,
+          "default": 0,
+          "description": "Log disk budget in MiB over the archive database and WAL, sealed buffers and live buffers (not the quarantine). Above 90% the oldest completed runs' logs are deleted early, down to 80%, ahead of retention age. 0 sets no byte budget"
+        },
+        "disk_min_free": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824,
+          "default": 512,
+          "description": "Free space in MiB to keep on the filesystem holding the data directory. Below it the oldest completed runs' logs are deleted early, up to 125% of it (clamped to a quarter of the filesystem). 0 disables the headroom rule"
+        },
+        "quarantine_keep_for": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Delete quarantined log data older than this many days at the daily prune. 0 keeps it forever"
+        },
+        "quarantine_max_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1073741824,
+          "default": 0,
+          "description": "Cap in MiB on quarantined log data; the oldest entries are deleted at the daily prune until it fits. 0 means no cap"
         }
       }
     },

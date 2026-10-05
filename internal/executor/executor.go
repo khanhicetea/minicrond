@@ -72,6 +72,8 @@ type Service struct {
 	// bound (tests only).
 	systemLog       func(*logstore.Writer, string, string)
 	systemWriteJoin time.Duration
+	// persistLag observes terminal-state persistence latency (diagnostics).
+	persistLag persistLag
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
@@ -611,8 +613,10 @@ func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 	// an abandoned one; it is registered before the run's done channel closes.
 	s.finalizing[r.ID] = struct{}{}
 	s.mu.Unlock()
+	pendingToken := s.persistLag.startPending(t.ended)
 	go func() {
 		defer s.retryWG.Done()
+		defer s.persistLag.endPending(pendingToken)
 		defer func() {
 			s.mu.Lock()
 			delete(s.finalizing, r.ID)
@@ -654,6 +658,7 @@ func (s *Service) finalizeLater(r model.Run, d model.Definition, t terminal) {
 }
 
 func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
+	s.persistLag.observe(t.ended)
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
 	s.notifyFinished(r, d)
 	if t.retry {
