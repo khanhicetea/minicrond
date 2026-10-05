@@ -47,6 +47,10 @@ db_max_size = 0                # log-archive size budget, MiB (0 = none, max 107
 durability = "batch"           # log fsync policy: "batch" or "frame"
 sync_interval = 2000           # batch: ms until dirty log buffers are fsynced (100..60000)
 sync_max_dirty = 1024          # batch: KiB of unsynced output that forces an fsync (1..65536)
+disk_min_free = 512            # keep this much free on the data-dir filesystem, MiB (0 = off)
+disk_budget = 0                # cap on archive+WAL+buffers, MiB (0 = none, max 1073741824)
+quarantine_keep_for = 0        # delete quarantined log data older than N days (0 = keep)
+quarantine_max_size = 0        # cap quarantined log data, MiB (0 = no cap)
 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
@@ -139,6 +143,24 @@ and `max_concurrent_runs` are unitless.
 - `logs.sync_max_dirty` — batch durability: KiB of unsynced output after which a
   run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
   `0` selects the default and does not mean "no limit".
+- `logs.disk_min_free` — MiB of free space to keep on the filesystem holding the
+  data directory (default 512). Below it the oldest completed runs' logs are
+  deleted early, ahead of retention age, until free space reaches 125% of it; the
+  value is clamped to a quarter of the filesystem. Omitted selects the default;
+  an explicit `0` disables the rule (unlike `sync_interval`, where `0` means the
+  default). Reloadable. See [operations](operations.md#log-disk-budget).
+- `logs.disk_budget` — optional cap, in MiB, on everything the log tiers occupy:
+  the archive database and its WAL, sealed buffers and live buffers (not the
+  quarantine). Reclamation of the oldest completed runs' logs starts at 90% and
+  stops at 80% of it. `0` (the default) sets no byte budget; values above
+  1073741824 MiB are rejected. Unlike `logs.db_max_size` it is enforced whenever
+  pressure may have changed, not once a day, and it never deletes live buffers,
+  active workers' archived chunks, quarantine or metadata. Reloadable.
+- `logs.quarantine_keep_for` / `logs.quarantine_max_size` — opt-in purge of the
+  quarantine of corrupt log chunks, applied by the daily log prune: entries older
+  than that many days, then the oldest entries until the rest fits that many MiB.
+  Both default to `0`: keep everything (and only report its size). Every deletion
+  is logged. Reloadable.
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose

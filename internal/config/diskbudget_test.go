@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -76,5 +80,46 @@ func TestDiskBudgetValidation(t *testing.T) {
 	}
 	if got := (Logs{DiskBudget: math.MaxInt}).DiskBudgetBytes(); got != math.MaxInt64 {
 		t.Fatalf("out-of-range value wrapped to %d", got)
+	}
+}
+
+// The schema served to the UI editor documents the same defaults and limits as
+// the code, and both embedded copies are identical.
+func TestSchemaDocumentsDiskBudgetSettings(t *testing.T) {
+	a, err := os.ReadFile("../../schema/minicron.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile("../../cmd/minicrond/minicron.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatal("the two copies of minicron.schema.json differ")
+	}
+	var schema struct {
+		Properties struct {
+			Logs struct {
+				Properties map[string]struct {
+					Default json.RawMessage `json:"default"`
+					Maximum json.RawMessage `json:"maximum"`
+				} `json:"properties"`
+			} `json:"logs"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(a, &schema); err != nil {
+		t.Fatal(err)
+	}
+	props := schema.Properties.Logs.Properties
+	for name, want := range map[string]int{"disk_min_free": DefaultDiskMinFreeMiB, "disk_budget": 0, "quarantine_keep_for": 0, "quarantine_max_size": 0} {
+		p, ok := props[name]
+		if !ok || string(p.Default) != strconv.Itoa(want) {
+			t.Errorf("schema logs.%s default = %s, want %d", name, p.Default, want)
+		}
+	}
+	for _, name := range []string{"disk_min_free", "disk_budget", "quarantine_max_size"} {
+		if p := props[name]; string(p.Maximum) != strconv.FormatInt(MaxDBMaxSizeMiB, 10) {
+			t.Errorf("schema logs.%s maximum = %s", name, p.Maximum)
+		}
 	}
 }
