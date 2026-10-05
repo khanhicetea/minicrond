@@ -16,6 +16,7 @@ const STATUS_META: Record<string, StatusMeta> = {
   skipped: { label: 'Skipped', icon: 'pause', cls: 'chip-warn' },
   missed: { label: 'Missed', icon: 'alert-triangle', cls: 'chip-warn' },
   running: { label: 'Running', icon: 'loader', cls: 'chip-info', spin: true },
+  queued: { label: 'Queued', icon: 'clock', cls: 'chip-info' },
   pending: { label: 'Pending', icon: 'clock', cls: 'chip-info' },
 };
 
