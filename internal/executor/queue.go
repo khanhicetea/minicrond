@@ -380,6 +380,12 @@ func (s *Service) startQueued(ctx context.Context, item *store.QueueItem) (start
 	case current.OnOverlap == "skip" && s.Active(current.Name) > 0:
 		return drop("overlap_skip")
 	}
+	// Last check before the point of no return: once dequeued, a refusal at
+	// launch would spend the item as failed/start_error instead of leaving it
+	// durable for the next start.
+	if s.isClosing() {
+		return false, def, nil, ErrShutdown
+	}
 	if err := s.store.DequeueRun(ctx, run.ID, current.Revision, hash, s.bootID); err != nil {
 		if errors.Is(err, store.ErrInvalidTransition) {
 			return false, def, nil, nil // ended elsewhere (expiry); nothing to start

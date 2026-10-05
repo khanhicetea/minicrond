@@ -663,3 +663,32 @@ func TestStopCancelsQueuedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// NIT 1: an item the drain reaches after shutdown began stays queued (durable
+// for the next start) instead of being dequeued and spent as failed/start_error.
+func TestShutdownBeforeDequeueKeepsItemQueued(t *testing.T) {
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1})
+	blocker, bh := putJob(t, st, parallelJob("blocker", "sleep 30"))
+	a, ah := putJob(t, st, parallelJob("a", "true"))
+	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := s.Trigger(t.Context(), a, ah, "manual", nil)
+	if err != nil || queued.Status != "queued" {
+		t.Fatalf("queue = %s, %v", queued.Status, err)
+	}
+	heads, err := st.QueueHeads(t.Context(), 10)
+	if err != nil || len(heads) != 1 {
+		t.Fatalf("heads = %+v, %v", heads, err)
+	}
+	s.BeginShutdown()
+	if _, _, _, err := s.startQueued(t.Context(), &heads[0]); !errors.Is(err, ErrShutdown) {
+		t.Fatalf("startQueued during shutdown = %v, want ErrShutdown", err)
+	}
+	if got := runStatus(t, st, queued.ID); got.Status != "queued" {
+		t.Fatalf("item = %s/%s, want still queued", got.Status, got.EndReason)
+	}
+	if stats, _ := st.QueueStats(t.Context()); stats.Depth != 1 {
+		t.Fatalf("queue depth = %d", stats.Depth)
+	}
+}

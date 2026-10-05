@@ -95,7 +95,9 @@ exactly as before. **Therefore an item whose run may have started is never
 re-queued**; an item still `queued` was provably never started and survives the
 restart. At startup the daemon only counts the queue and arms the drain; the same
 rate, capacity and expiry rules apply, so items older than `max_age` after a long
-outage expire instead of running late in a burst. There is no exactly-once
+outage expire instead of running late in a burst. The drain re-checks for shutdown immediately before the dequeue; a shutdown that
+lands in the few milliseconds between that commit and the spawn leaves the run
+refused (`failed/start_error`), like any trigger racing shutdown. There is no exactly-once
 promise: a crash after the dequeue commit and before the spawn loses that run
 (recorded `interrupted`), a crash after the spawn is the usual interrupted run.
 
