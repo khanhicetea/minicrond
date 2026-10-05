@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -39,5 +40,17 @@ func TestDocumentedWatermarksMatchTheCode(t *testing.T) {
 	if budgetHighPercent != 90 || budgetLowPercent != 80 || freeLowDivisor != 4 || freeMaxShare != 4 {
 		t.Fatalf("watermark constants changed (%d/%d, +1/%d, clamp 1/%d): update docs/adr/0010-log-disk-budget.md, docs/operations.md and docs/configuration.md",
 			budgetHighPercent, budgetLowPercent, freeLowDivisor, freeMaxShare)
+	}
+}
+
+// Review SF2: the docs must not promise admission control that does not exist.
+func TestDocsStateAdmissionIsNotWiredToDiskPressure(t *testing.T) {
+	docContains(t, "operations.md", "Admission is not wired to disk pressure in this build", "their log output is dropped")
+	docContains(t, "adr/0010-log-disk-budget.md", "New work (4B) is not wired yet", "admission is unchanged")
+	for _, f := range []string{"operations.md", "adr/0010-log-disk-budget.md"} {
+		b, _ := os.ReadFile("../../docs/" + f)
+		if strings.Contains(string(b), "new work follows the queue policy") || strings.Contains(string(b), "New work follows 4B") {
+			t.Errorf("docs/%s still claims new work follows the queue policy", f)
+		}
 	}
 }

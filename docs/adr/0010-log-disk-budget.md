@@ -21,7 +21,7 @@ output, not by readers. Before this change nothing bounded it as a whole:
 3A says: delete the oldest *eligible* logs early when approaching the budget,
 account for every log tier and for headroom, keep quarantine under its own
 explicit policy, never reclaim metadata or pending execution records, and let
-2A and 4B govern what happens when reclamation is not enough.
+2A (existing and new runs' output) and, once implemented, 4B (admission of new work) govern what happens when reclamation is not enough.
 
 ## Decision
 
@@ -120,8 +120,11 @@ pass; a later pass that finds the watermarks met logs the relief.
 
 - **Existing processes follow 2A:** their log writes fail, capture degrades, output is
   discarded with drop counters and a `system` line, children keep running.
-- **New work follows 4B:** the queue policy owns admission. `Store.DiskPressure()` is
-  the signal it may consult; this ADR does not change admission itself.
+- **New work (4B) is not wired yet.** `Store.DiskPressure()` is the signal the queue
+  policy may consult, but nothing calls it in this implementation: admission is
+  unchanged, new runs start normally while pressure is insufficient, and the only
+  effect on them is that their log output is dropped under 2A. Refusing or queueing new
+  work under disk pressure is left to the queue stream (4B).
 
 Timeouts, cancellation and execution-state persistence are unaffected.
 

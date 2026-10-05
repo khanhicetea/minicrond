@@ -138,7 +138,11 @@ budget is enforced.
 If everything eligible is gone and pressure remains, `diagnostics.log_storage.disk`
 shows `insufficient: true` and the daemon logs one error per episode. Running
 children then follow the capture-failure policy above (output is discarded, they keep
-running) and new work follows the queue policy. Fix the cause: free space, raise
+running). **Admission is not wired to disk pressure in this build:** jobs and
+workers still start normally while `insufficient` is true, and the only effect on
+them is that their log output is dropped (ADR-8 2A) until space returns. Refusing
+or queueing new work under disk pressure belongs to the queue policy (ADR-8 4B),
+which may consult `Store.DiskPressure()` once it exists. Fix the cause: free space, raise
 `logs.disk_budget`, or lower retention. Expect occasional shorter history during
 noisy periods; this is the accepted trade-off.
 
