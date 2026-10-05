@@ -1,8 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,4 +286,63 @@ func TestDeleteAndDisableDropQueuedItems(t *testing.T) {
 	if err := st.SetEnabled(ctx, "off", true); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// S3: the active-run index must cover 'queued', or RunMetrics and the active
+// filter fall back to full table scans. Checked on fresh and migrated databases.
+func TestActiveIndexCoversQueuedOnFreshAndMigratedDatabases(t *testing.T) {
+	check := func(t *testing.T, st *Store) {
+		t.Helper()
+		queries := map[string]string{
+			"metrics": `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=1 OR ended_us>=1 OR status IN ('queued','pending','running')`,
+			"active":  `SELECT run_id FROM runs WHERE status IN ('queued','pending','running') ORDER BY queued_us DESC, run_id DESC LIMIT 10`,
+		}
+		for name, q := range queries {
+			rows, err := st.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var plan []string
+			for rows.Next() {
+				var id, parent, unused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+					t.Fatal(err)
+				}
+				plan = append(plan, detail)
+			}
+			rows.Close()
+			joined := strings.Join(plan, " | ")
+			if !strings.Contains(joined, "idx_runs_active") {
+				t.Fatalf("%s plan does not use idx_runs_active: %s", name, joined)
+			}
+		}
+	}
+	t.Run("fresh", func(t *testing.T) {
+		st, _, _ := queueFixture(t)
+		check(t, st)
+	})
+	t.Run("migrated", func(t *testing.T) {
+		dir := t.TempDir()
+		db, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := strings.Replace(schema, "PRAGMA user_version=9;", "PRAGMA user_version=8;", 1)
+		old = strings.Replace(old, execQueueDDL, "", 1)
+		old = strings.Replace(old, "idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running')", "idx_runs_active ON runs(status) WHERE status IN ('pending','running')", 1)
+		if !strings.Contains(old, "WHERE status IN ('pending','running');") {
+			t.Fatal("fixture did not recreate the old index")
+		}
+		if _, err := db.Exec(old); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		st, err := Open(t.Context(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		check(t, st)
+	})
 }

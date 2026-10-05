@@ -203,7 +203,7 @@ CREATE INDEX idx_runs_time ON runs(queued_us DESC);
 CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);
 CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
 CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
-CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('pending','running');
+CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
 CREATE UNIQUE INDEX idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
 CREATE TABLE schedule_state (
  definition_id INTEGER PRIMARY KEY REFERENCES definitions(definition_id), schedule_hash TEXT NOT NULL,
@@ -274,6 +274,8 @@ CREATE INDEX idx_exec_queue_expiry ON exec_queue(expires_us);
 
 const migration9 = `
 BEGIN;
+DROP INDEX IF EXISTS idx_runs_active;
+CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
 ` + execQueueDDL + `PRAGMA user_version=9;
 COMMIT;`
 
