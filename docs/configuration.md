@@ -133,8 +133,11 @@ and `max_concurrent_runs` are unitless.
   unsynced log write and the group fsync of every dirty run buffer (default
   2000, range 100–60000). One timer is shared by all runs and exists only while
   some run is dirty; idle runs and an idle daemon schedule nothing. Reloadable.
+  `0` selects the default and does not disable batching or syncing; values below
+  100 are rejected. Use `logs.durability = "frame"` for per-line fsync.
 - `logs.sync_max_dirty` — batch durability: KiB of unsynced output after which a
   run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
+  `0` selects the default and does not mean "no limit".
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose

@@ -76,3 +76,8 @@ func TestDocsNameTheQuarantineCopyLikeTheCode(t *testing.T) {
 		t.Error("docs/operations.md names the quarantine copy without .zst")
 	}
 }
+
+// N6: zero means "default", not "disabled".
+func TestDocsSayZeroSyncWindowSelectsTheDefault(t *testing.T) {
+	docContains(t, "configuration.md", "`0` selects the default and does not disable")
+}
