@@ -66,6 +66,14 @@ through on every frame). The daemon keeps **no in-memory payload tail or
 per-viewer queue**: a log viewer reads stored chunks on demand, so an
 unwatched run costs nothing extra and a stalled viewer holds no memory.
 
+Accepted downside of following a run (ADR-8 / audit D03): each SSE poll (every
+2 s per viewer) re-decodes the active chunk from its start — up to 1 MiB of raw
+output, more only for oversized lines — and holds that run's shared read lock
+for the page, so the run's writer waits for the decode, once per poll per
+viewer. The cost exists only while someone watches, is bounded by the 64-stream
+limit and the 1 MiB page budget, and ends when the viewer disconnects; display
+lag of up to about two seconds is the price of paying nothing for unwatched runs.
+
 Log storage failures (ADR-8 2A): if writing or fsyncing a run's log fails (disk
 full, I/O error), the run keeps executing and its stdout/stderr keep being
 drained; output that cannot be stored is discarded. The run is flagged

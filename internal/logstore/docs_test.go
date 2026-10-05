@@ -81,3 +81,8 @@ func TestDocsNameTheQuarantineCopyLikeTheCode(t *testing.T) {
 func TestDocsSayZeroSyncWindowSelectsTheDefault(t *testing.T) {
 	docContains(t, "configuration.md", "`0` selects the default and does not disable")
 }
+
+// N7: the accepted downside of cursor-read following is recorded.
+func TestDocsRecordTheFollowPollingDownside(t *testing.T) {
+	docContains(t, "operations.md", "re-decodes the active chunk from its start", "Accepted downside of following a run")
+}
