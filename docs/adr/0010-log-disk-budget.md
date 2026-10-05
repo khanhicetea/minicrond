@@ -1,6 +1,6 @@
 # ADR-10: Log disk budget outranks retention age (ADR-8 3A), quarantine policy, archive cursor
 
-- Status: accepted; implemented on `feat/disk`
+- Status: accepted; implemented (merge of `feat/disk`, `e815a97`)
 - Decision source: owner choice **3A** in [ADR-8](0008-background-first-trade-offs.md), audit "additional capacity observations" 1 and 3, finding A06
 - Related: [ADR-6](0006-hybrid-log-storage.md), [operations](../operations.md), [configuration](../configuration.md)
 
