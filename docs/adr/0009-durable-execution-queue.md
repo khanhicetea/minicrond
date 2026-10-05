@@ -44,7 +44,7 @@ occurrence index and retention all work unchanged. Queue wait is
 | `enabled` | `true` | `false` restores the old behavior: over-capacity triggers are skipped `queue_full` (items already queued still drain or expire) |
 | `max_items` | 100 | total queued items |
 | `max_per_job` | 25 | queued items per definition, so one noisy job cannot occupy the queue |
-| `max_bytes` | 256 (KiB) | persisted payload bytes (`payload_bytes` = identity strings of the item: job, hash, idempotency key, parent, plus a fixed row overhead) |
+| `max_bytes` | 256 (KiB) | a ceiling on accounted payload (`payload_bytes` = identity strings of the item: job, hash, idempotency key, parent, plus a fixed row overhead, about 250 B per item, not real bytes), so `max_items` is normally reached first |
 | `max_age` | 900 (s) | time an item may wait for capacity before it expires |
 | `drain_rate` | 5 | maximum queued items started per second |
 | `max_pending_retries` | 500 | global cap of retries waiting for their delay (section 7) |

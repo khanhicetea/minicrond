@@ -72,7 +72,7 @@
           "minimum": 1,
           "maximum": 65536,
           "default": 256,
-          "description": "Maximum persisted queue payload in KiB"
+          "description": "Ceiling on accounted queue payload in KiB (identity strings plus a fixed overhead, about 250 bytes per item); max_items is normally reached first"
         },
         "max_age": {
           "type": "integer",

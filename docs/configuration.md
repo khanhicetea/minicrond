@@ -35,7 +35,7 @@ max_concurrent_runs = 32       # global gate across all definitions
 enabled = true                 # false: over-capacity triggers are skipped (queue_full) as before
 max_items = 100                # total queued runs (1..10000)
 max_per_job = 25               # queued runs per definition (1..max_items)
-max_bytes = 256                # persisted queue payload, KiB (1..65536)
+max_bytes = 256                # ceiling on accounted queue payload, KiB (1..65536); ~250 B per item
 max_age = 900                  # seconds a run may wait before it expires (1..604800)
 drain_rate = 5                 # queued runs started per second at most (1..1000)
 max_pending_retries = 500      # retries waiting for retry_delay (1..100000)
@@ -144,7 +144,7 @@ and `max_concurrent_runs` are unitless.
   expire). `max_pending_retries` bounds retries that
   are waiting for `retry_delay`; an overflowing retry is dropped with a
   `skipped` / `retry_dropped` run. Workers and `[[init]]` jobs are never queued.
-  A zero numeric value selects its default. Changing any `[queue]` value requires a
+  `max_bytes` is a safety ceiling on the accounted payload (the identity strings of each item plus a fixed overhead, roughly 250 bytes per item, not real on-disk bytes), so with defaults `max_items` (100) is reached long before it; it only matters if you raise `max_items` a lot. A zero numeric value selects its default. Changing any `[queue]` value requires a
   daemon restart.
 - `logs.db_keep_for` / `logs.db_prune_at` — the SQLite log archive has a
   rolling age budget; chunks older than `db_keep_for` are pruned once a day

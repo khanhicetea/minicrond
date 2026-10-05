@@ -769,7 +769,10 @@ func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
 }
 func (s *Store) Recover(ctx context.Context) error {
 	now := time.Now().UnixMicro()
-	_, err := s.db.ExecContext(ctx, "UPDATE runs SET status='interrupted',end_reason='crash_recovery',ended_us=? WHERE status IN ('pending','running')", now)
+	// A queued run without a queue row can never drain or expire (impossible by
+	// construction; repaired here so it cannot stay active forever).
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status='interrupted',end_reason='crash_recovery',ended_us=?
+		WHERE status IN ('pending','running') OR (status='queued' AND run_id NOT IN (SELECT run_id FROM exec_queue))`, now)
 	return err
 }
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {

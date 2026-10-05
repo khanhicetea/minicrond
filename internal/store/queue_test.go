@@ -346,3 +346,27 @@ func TestActiveIndexCoversQueuedOnFreshAndMigratedDatabases(t *testing.T) {
 		check(t, st)
 	})
 }
+
+// NIT 4: Recover repairs a queued run that has no queue row, and leaves
+// properly queued ones alone.
+func TestRecoverRepairsQueuedRunWithoutQueueRow(t *testing.T) {
+	st, _, defs := queueFixture(t, "a")
+	ctx := t.Context()
+	if _, err := st.EnqueueRun(ctx, queuedRun(defs["a"], "ok"), nil, testLimits, false); err != nil {
+		t.Fatal(err)
+	}
+	orphan := queuedRun(defs["a"], "orphan")
+	orphan.Status = "queued"
+	if err := st.CreateRun(ctx, orphan); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := st.Run(ctx, "orphan"); r.Status != "interrupted" || r.EndReason != "crash_recovery" {
+		t.Fatalf("orphan = %s/%s", r.Status, r.EndReason)
+	}
+	if r, _ := st.Run(ctx, "ok"); r.Status != "queued" {
+		t.Fatalf("queued run = %s", r.Status)
+	}
+}
