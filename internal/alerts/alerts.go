@@ -48,6 +48,10 @@ type Record struct {
 // transaction. Observations for one delivery arrive in order.
 type RecordFunc func(context.Context, []Record) error
 
+// maxDropObservations bounds the in-memory list of drops awaiting a database
+// write. Further drops only increment a counter.
+const maxDropObservations = 256
+
 type delivery struct {
 	channel Channel
 	alert   Alert
@@ -67,15 +71,23 @@ type Dispatcher struct {
 	record   RecordFunc
 	closed   bool
 	pending  atomic.Int64
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	// drops holds bounded observations of alerts shed on the completion path.
+	// Notify only appends under dropMu (no I/O); the batch goroutine records
+	// them. dropWake coalesces wakeups.
+	dropMu       sync.Mutex
+	drops        []Record // ring of the newest maxDropObservations drops
+	dropStart    int      // index of the oldest entry when the ring is full
+	dropOverflow int      // older drops overwritten since the last flush
+	dropWake     chan struct{}
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // New creates a dispatcher and validates/resolves channel credentials.
 func New(channels []config.AlertChannel, record RecordFunc) (*Dispatcher, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), work: make(chan []delivery, 256), record: record, ctx: ctx, cancel: cancel}
+	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), work: make(chan []delivery, 256), dropWake: make(chan struct{}, 1), record: record, ctx: ctx, cancel: cancel}
 	if err := d.Reload(channels); err != nil {
 		cancel()
 		return nil, err
@@ -148,8 +160,8 @@ func (d *Dispatcher) Apply(registry *Registry) error {
 
 // Notify queues alerts for failed and timed-out runs. Definitions opt in by
 // naming channels in their alerts field. It runs on the run-completion path,
-// so it writes to the database only to record a dropped alert; the batch
-// goroutine records queued deliveries.
+// so it never touches the database: dropped alerts are noted in a bounded,
+// coalesced list that the batch goroutine records later.
 func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	if run.Status != "failed" && run.Status != "timeout" {
 		return
@@ -162,7 +174,7 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	for _, name := range definition.Alerts {
 		channel := d.channels[name]
 		if channel == nil {
-			d.report(run.ID, name, "dropped", 0, "alert channel is unavailable")
+			d.observeDrop(run.ID, name, "alert channel is unavailable")
 			continue
 		}
 		d.pending.Add(1)
@@ -170,13 +182,45 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 		case d.queue <- delivery{channel: channel, alert: Alert{Run: run.Clone()}, name: name, window: d.windows[name]}:
 		default:
 			d.pending.Add(-1)
-			d.report(run.ID, name, "dropped", 0, "alert queue is full")
+			d.observeDrop(run.ID, name, "alert queue is full")
 		}
 	}
 }
 
-func (d *Dispatcher) report(runID, name, status string, attempts int, reason string) {
-	d.reportAll([]Record{{RunID: runID, Channel: name, Status: status, Attempts: attempts, Reason: reason}})
+// observeDrop notes a shed alert without I/O or blocking. The list keeps the
+// newest maxDropObservations drops; each older one overwritten only bumps a
+// counter that is logged when flushed.
+func (d *Dispatcher) observeDrop(runID, name, reason string) {
+	d.dropMu.Lock()
+	rec := Record{RunID: runID, Channel: name, Status: "dropped", Reason: reason}
+	if len(d.drops) < maxDropObservations {
+		d.drops = append(d.drops, rec)
+	} else {
+		d.drops[d.dropStart] = rec
+		d.dropStart = (d.dropStart + 1) % maxDropObservations
+		d.dropOverflow++
+	}
+	d.dropMu.Unlock()
+	select {
+	case d.dropWake <- struct{}{}:
+	default:
+	}
+}
+
+// flushDrops records pending drop observations in one call. Only the batch
+// goroutine calls it, so a slow database delays observation, never Notify.
+func (d *Dispatcher) flushDrops() {
+	d.dropMu.Lock()
+	records, overflow := d.drops, d.dropOverflow
+	if d.dropStart > 0 { // restore oldest-first order
+		records = append(records[d.dropStart:len(records):len(records)], records[:d.dropStart]...)
+	}
+	d.drops, d.dropStart, d.dropOverflow = nil, 0, 0
+	d.dropMu.Unlock()
+	if overflow > 0 {
+		slog.Warn("alert drop observations discarded under overload", "count", overflow)
+	}
+	d.reportAll(records)
 }
 
 // reportAll records a group of observations in one call.
@@ -313,11 +357,14 @@ func (d *Dispatcher) batch() {
 				d.pending.Add(-1)
 			}
 			return
+		case <-d.dropWake:
+			d.flushDrops()
 		case item, ok := <-d.queue:
 			if !ok {
 				for key := range batches {
 					flush(key)
 				}
+				d.flushDrops()
 				return
 			}
 			// Take whatever else is already waiting, so a burst of failures is
@@ -426,8 +473,8 @@ func (d *Dispatcher) Test(ctx context.Context, name string) error {
 // Close drains queued deliveries. Call it only after alert producers stop.
 func (d *Dispatcher) Close(ctx context.Context) error {
 	defer d.cancel()
-	// Notify can hold a read lock while recording a dropped delivery. Cancel
-	// that operation even if Close is still waiting for the producer lock.
+	// Cancel in-flight recording even if Close is still waiting for the
+	// producer lock.
 	stopCancellation := context.AfterFunc(ctx, d.cancel)
 	defer stopCancellation()
 	d.mu.Lock()

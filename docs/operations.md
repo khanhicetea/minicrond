@@ -85,7 +85,9 @@ many lines were not stored. Lines discarded while capture is down do not
 consume sequence numbers, but the single frame whose write failed does (it may
 be partly on disk), so a failure shows up as one skipped sequence — which an
 SSE `gap` event can report — plus the `system` line. Timeouts and stop requests
-are unaffected.
+are unaffected, and so is the final status: if closing the log fails when a run
+ends, the run keeps its real status (for example `succeeded`) and is marked
+`log_truncated`.
 
 Corrupt buffers: an orphaned chunk that cannot be decoded at all is never
 deleted. It is moved at once to `data/logs/.quarantine/<run>-<chunk>.zst.corrupt`,
@@ -124,6 +126,37 @@ Monitor `GET /api/v1/metrics/alerts` (`counts.failed`, `counts.dropped`,
 error message. These are observations, not a durable delivery queue: after a
 crash, in-flight alerts are marked `interrupted` but not replayed. Test an
 individual channel with `POST /api/v1/alert-channels/{name}/test`.
+
+`counts.dropped` (queue full or channel unavailable) is recorded off the
+run-completion path: pending drop observations are held in a bounded list
+(256) and written by the alert batch goroutine, so a slow database delays the
+record, never the run. Under sustained overload drops beyond that list are
+counted in the daemon log (`alert drop observations discarded`) but not
+stored.
+
+## Shutdown
+
+On SIGTERM the daemon stops accepting work, cancels log maintenance, signals
+worker supervision and the executor, stops the scheduler (5s), then stops runs
+(15s grace before a forced kill), joins worker supervision (5s) and
+maintenance (10s), drains alerts, and shuts down HTTP (5s). The stages before
+alert drain share a 45s target; alert delivery always gets at least 5s and HTTP
+and the log archiver keep small reserved slices, so the worst case is somewhat
+over 45s. This is a target, not a hard guarantee: a run that survives a forced
+kill, or file/fsync work that cannot be interrupted, can still overrun it. A
+reload waiting on a worker's long `grace` is abandoned rather than waited for.
+
+Log maintenance and archive calls honor the shutdown context. If a maintenance
+loop still has not stopped after its 10s join, the daemon logs `maintenance
+loops did not stop ... databases will be left open` and deliberately does **not**
+close the SQLite databases under it; SQLite recovers from the unclosed WAL at
+the next start. A trigger that races with shutdown can be refused with
+`ErrShutdown` after its run row exists; that row is marked `failed`
+(`start_error`) and, for API idempotency keys or scheduled occurrences, is not
+replayed.
+
+A worker whose terminal state cannot be written (storage fault) is finalized in
+the background; its restart policy is applied once that succeeds.
 
 ## Backup and restore
 

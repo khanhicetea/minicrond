@@ -119,3 +119,23 @@ func TestReloadKeepsUnchangedLoopAndJoinsChangedLoop(t *testing.T) {
 		t.Fatalf("running loops = %d, want 0", len(s.running))
 	}
 }
+
+func TestReloadAfterStopStartsNoLoops(t *testing.T) {
+	st, _, s := setup(t)
+	d := worker("late", "none")
+	d.Schedule = "@every 1h"
+	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	defs, err := st.Definitions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+	if err := s.Reload(t.Context(), defs); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Reload after Stop = %v, want ErrStopped", err)
+	}
+	if len(s.running) != 0 {
+		t.Fatalf("%d loops started after Stop", len(s.running))
+	}
+}

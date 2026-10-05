@@ -28,11 +28,58 @@ import (
 	"github.com/khanhicetea/minicrond/internal/supervisor"
 )
 
+// shutdownBudget caps the shutdown path up to alert drain (reload wait,
+// executor, supervisor, maintenance, alerts). Each stage also has its own
+// smaller budget. HTTP cleanup and the archiver stop keep small reserved
+// slices (5s and at least 2s) so they still run when the budget is spent.
+// The budget is a target, not a hard guarantee: see runShutdown for what can
+// still overrun. The one guarantee kept strictly is that the databases are
+// never closed under a maintenance loop that failed to stop.
+const shutdownBudget = 45 * time.Second
+
+// maintenanceJoinBudget bounds the wait for maintenance loops after they have
+// been canceled. A variable so tests can shorten it.
+var maintenanceJoinBudget = 10 * time.Second
+
+// extraMaintenanceLoop, when set (tests only), runs as one more maintenance loop.
+var extraMaintenanceLoop func(context.Context)
+
+// alertDrainFloor is the minimum time alert delivery gets at shutdown.
+const alertDrainFloor = 5 * time.Second
+
+// executorShutdownBudget is how long runs get to stop gracefully at shutdown
+// before they are force-killed. A variable so tests can shorten it.
+var executorShutdownBudget = 15 * time.Second
+
+// lockContext acquires mu or gives up when ctx ends. sync.Mutex has no
+// context-aware Lock, so it polls TryLock at a few-millisecond cadence; this
+// is only used on rare reload/shutdown paths. It is not fair: it does not
+// queue behind blocked Lock callers, so a steady stream of API reloads could
+// starve one waiter until its context ends.
+func lockContext(ctx context.Context, mu *sync.Mutex) bool {
+	if mu.TryLock() {
+		return true
+	}
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if mu.TryLock() {
+				return true
+			}
+		}
+	}
+}
+
 type Daemon struct {
 	ConfigPath, DataDir, Version string
-	// reloadMu serializes Reload, Reconcile, and the start of shutdown. It is
-	// held while waiting for scheduler and worker loops to exit, so nothing a
-	// run completion needs may require it. mu only guards short field access.
+	// reloadMu serializes Reload and Reconcile; shutdown waits for it only
+	// within a budget (lockContext). It is held while waiting for scheduler and
+	// worker loops to exit, so nothing a run completion needs may require it.
+	// mu only guards short field access.
 	reloadMu sync.Mutex
 	mu       sync.Mutex
 	cfg      *config.Config
@@ -67,6 +114,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.cfg = cfg
 	d.mu.Unlock()
+	// Set by the shutdown path when a maintenance loop outlives its join
+	// budget; the database closers below then leave the databases open.
+	var maintenanceStuck atomic.Bool
 	dbOptions := sqlite.Options{Synchronous: cfg.Storage.Synchronous}
 	st, err := store.Open(ctx, d.DataDir, dbOptions)
 	if err != nil {
@@ -75,7 +125,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.store = st
 	d.mu.Unlock()
-	defer func() { runErr = errors.Join(runErr, st.Close()) }()
+	defer func() {
+		if maintenanceStuck.Load() {
+			slog.Error("not closing the metadata database: a maintenance loop is still running; SQLite recovers at the next start")
+			return
+		}
+		runErr = errors.Join(runErr, st.Close())
+	}()
 	if err := st.InterruptAlerts(ctx); err != nil {
 		return fmt.Errorf("mark interrupted alerts: %w", err)
 	}
@@ -90,7 +146,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	defer func() { runErr = errors.Join(runErr, ldb.Close()) }()
+	defer func() {
+		if maintenanceStuck.Load() {
+			slog.Error("not closing the log database: a maintenance loop is still running; SQLite recovers at the next start")
+			return
+		}
+		runErr = errors.Join(runErr, ldb.Close())
+	}()
 	d.mu.Lock()
 	d.ldb = ldb
 	d.logs = logs
@@ -102,8 +164,16 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	// the executor (deferred calls run in reverse) and before the archive
 	// database closes; anything still queued is swept at the next start.
 	logs.StartArchiver()
+	// shutdownBy is the overall shutdown deadline, set when the shutdown
+	// defer below starts. The archiver stop runs after it (deferred calls run
+	// in reverse) and must fit in what remains, with a small floor.
+	var shutdownBy time.Time
 	defer func() {
-		archiveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		archiveBy := time.Now().Add(10 * time.Second)
+		if !shutdownBy.IsZero() {
+			archiveBy = minTime(archiveBy, maxTime(shutdownBy, time.Now().Add(2*time.Second)))
+		}
+		archiveCtx, cancel := context.WithDeadline(context.Background(), archiveBy)
 		defer cancel()
 		if err := logs.StopArchiver(archiveCtx); err != nil {
 			slog.Warn("log archival interrupted at shutdown; the next start will finish it", "error", err)
@@ -204,30 +274,27 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return err
 	}
 	d.alerts.Store(dispatcher)
+	// Maintenance loops are created here so the shutdown path can cancel them
+	// first and join them last; they only start once the daemon is ready.
+	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
+	var maintenance sync.WaitGroup
 	// Use the same shutdown path for startup failures and normal cancellation.
 	// Producers and HTTP handlers must stop before the databases close.
 	defer func() {
-		apiServer.BeginShutdown()
-		// Let an in-flight reload finish so it cannot restart loops after Stop.
-		d.reloadMu.Lock()
-		d.mu.Lock()
-		d.stopping = true
-		d.running = false
-		d.mu.Unlock()
-		d.reloadMu.Unlock()
-		sched.Stop()
-		super.BeginShutdown()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		runErr = errors.Join(runErr, execService.Shutdown(shutdownCtx))
-		super.Shutdown()
-		alertCtx, cancelAlerts := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancelAlerts()
-		runErr = errors.Join(runErr, dispatcher.Close(alertCtx))
-		// HTTP cleanup gets its own budget even when a job used the run budget.
-		apiCtx, cancelAPI := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelAPI()
-		runErr = errors.Join(runErr, apiServer.Shutdown(apiCtx))
+		overall, cancelOverall := context.WithTimeout(context.Background(), shutdownBudget)
+		defer cancelOverall()
+		deadline, _ := overall.Deadline()
+		shutdownBy = deadline
+		runErr = errors.Join(runErr, d.runShutdown(overall, shutdownParts{
+			stopMaintenance:  stopMaintenance,
+			maintenance:      &maintenance,
+			maintenanceStuck: &maintenanceStuck,
+			api:              apiServer,
+			sched:            sched,
+			super:            super,
+			exec:             execService,
+			dispatcher:       dispatcher,
+		}))
 	}()
 	for _, init := range cfg.Init {
 		if !init.IsEnabled() {
@@ -271,10 +338,12 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.running = true
 	d.mu.Unlock()
 	apiServer.SetReady(true)
-	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
-	var maintenance sync.WaitGroup
-	maintenanceErrors := make(chan error, 3)
-	for name, loop := range map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop} {
+	maintenanceErrors := make(chan error, 4)
+	loops := map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop}
+	if extraMaintenanceLoop != nil {
+		loops["test"] = extraMaintenanceLoop
+	}
+	for name, loop := range loops {
 		maintenance.Go(func() {
 			if err := fault.Call(func() error {
 				loop(maintenanceCtx)
@@ -284,10 +353,6 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 			}
 		})
 	}
-	defer func() {
-		stopMaintenance()
-		maintenance.Wait()
-	}()
 	slog.Info("minicron ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
 	select {
 	case <-ctx.Done():
@@ -298,8 +363,132 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return err
 	}
 }
+
+// shutdownParts are the components runShutdown stops, in dependency order.
+type shutdownParts struct {
+	stopMaintenance  context.CancelFunc
+	maintenance      *sync.WaitGroup
+	maintenanceStuck *atomic.Bool
+	api              *api.Server
+	sched            *scheduler.Scheduler
+	super            *supervisor.Supervisor
+	exec             *executor.Service
+	dispatcher       *alerts.Dispatcher
+}
+
+// runShutdown stops the daemon within ctx, in this order:
+//
+//  1. Signal everything that can run long: cancel maintenance (joined later),
+//     refuse new API work, mark the daemon stopping, and signal worker
+//     supervision so a reload waiting on an old worker's grace period unblocks.
+//  2. Wait for an in-flight reload (bounded) so it cannot restart loops after
+//     the scheduler stops, then refuse executor work and stop the scheduler
+//     (bounded, 5s).
+//  3. Executor shutdown (15s), supervisor join (5s), maintenance join (10s),
+//     alert drain (20s), HTTP (5s), each capped by ctx.
+//
+// Maintenance and archive calls take the shutdown-canceled context
+// (FlushActiveContext, ArchiveOrphansContext, DeleteRunsContext, retention and
+// prune queries) and StopArchiver takes its own deadline. What can still
+// overrun: executor runs that ignore a forced kill beyond forcedRunJoin, and
+// uncancelable file/fsync work. A stage that times out is reported and the next
+// stage still runs, except that a maintenance loop that fails to stop makes the
+// daemon leave the databases open instead of closing them underneath it.
+func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
+	var err error
+	p.stopMaintenance()
+	p.api.BeginShutdown()
+	d.mu.Lock()
+	d.stopping = true
+	d.running = false
+	d.mu.Unlock()
+	p.super.BeginShutdown()
+	lockCtx, cancelLock := context.WithTimeout(ctx, 5*time.Second)
+	locked := lockContext(lockCtx, &d.reloadMu)
+	cancelLock()
+	if !locked {
+		slog.Warn("reload still in progress at shutdown; stopping without waiting for it")
+	}
+	// Refuse new executor work first: a scheduler loop blocked in Trigger
+	// (queued behind a slow admission) is released with ErrShutdown, so
+	// Scheduler.Stop can join it. Stop itself is also bounded; its loops are
+	// already canceled and only wait for calls that return on their own.
+	p.exec.BeginShutdown()
+	schedStopped := make(chan struct{})
+	go func() {
+		p.sched.Stop()
+		close(schedStopped)
+	}()
+	schedCtx, cancelSched := context.WithTimeout(ctx, 5*time.Second)
+	select {
+	case <-schedStopped:
+	case <-schedCtx.Done():
+		slog.Warn("scheduler loops did not stop within the shutdown budget")
+		err = errors.Join(err, fmt.Errorf("scheduler shutdown: %w", schedCtx.Err()))
+	}
+	cancelSched()
+	if locked {
+		d.reloadMu.Unlock()
+	}
+	execCtx, cancelExec := context.WithTimeout(ctx, executorShutdownBudget)
+	err = errors.Join(err, p.exec.Shutdown(execCtx))
+	cancelExec()
+	superCtx, cancelSuper := context.WithTimeout(ctx, 5*time.Second)
+	if superErr := p.super.ShutdownContext(superCtx); superErr != nil {
+		err = errors.Join(err, fmt.Errorf("worker supervision shutdown: %w", superErr))
+	}
+	cancelSuper()
+	joined := make(chan struct{})
+	go func() {
+		p.maintenance.Wait()
+		close(joined)
+	}()
+	maintCtx, cancelMaint := context.WithTimeout(ctx, maintenanceJoinBudget)
+	select {
+	case <-joined:
+	case <-maintCtx.Done():
+		// Strict: the loops were canceled and the log store honors that, so
+		// a loop that is still running is stuck in uncancelable work. Do not
+		// close the databases under it.
+		p.maintenanceStuck.Store(true)
+		slog.Error("maintenance loops did not stop within the shutdown budget; databases will be left open")
+		err = errors.Join(err, fmt.Errorf("maintenance shutdown: %w", maintCtx.Err()))
+	}
+	cancelMaint()
+	// Failure alerts for runs killed at shutdown are the ones most worth
+	// delivering: keep a floor even when earlier stages used the budget.
+	alertBudget := alertDrainFloor
+	if deadline, ok := ctx.Deadline(); ok {
+		alertBudget = min(max(time.Until(deadline), alertDrainFloor), 20*time.Second)
+	}
+	alertCtx, cancelAlerts := context.WithTimeout(context.WithoutCancel(ctx), alertBudget)
+	err = errors.Join(err, p.dispatcher.Close(alertCtx))
+	cancelAlerts()
+	// HTTP cleanup keeps its own slice even when a job used the run budget.
+	apiCtx, cancelAPI := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	err = errors.Join(err, p.api.Shutdown(apiCtx))
+	cancelAPI()
+	return err
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 func (d *Daemon) Reload(ctx context.Context) error {
-	d.reloadMu.Lock()
+	if !lockContext(ctx, &d.reloadMu) {
+		return ctx.Err()
+	}
 	defer d.reloadMu.Unlock()
 	current, err := d.readyConfig()
 	if err != nil {
@@ -369,7 +558,9 @@ func validateAlertReferences(defs []model.Definition, channels []config.AlertCha
 // Reconcile refreshes the scheduler and worker supervisor from the authoritative
 // definition registry without reloading daemon settings.
 func (d *Daemon) Reconcile(ctx context.Context) error {
-	d.reloadMu.Lock()
+	if !lockContext(ctx, &d.reloadMu) {
+		return ctx.Err()
+	}
 	defer d.reloadMu.Unlock()
 	if _, err := d.readyConfig(); err != nil {
 		return err
