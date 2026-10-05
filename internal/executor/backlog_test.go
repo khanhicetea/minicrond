@@ -246,3 +246,32 @@ func TestSustainedFailuresWithDegradedMetadataStayBounded(t *testing.T) {
 	t.Logf("accepted %d, rejected %d, retries dropped %d, peaks: goroutines %d (base %d), retries %d, finalizers %d",
 		accepted, rejected, s.RetriesDropped(), peakGoroutines.Load(), base, peakRetries.Load(), peakFinalizers.Load())
 }
+
+// ADR-8 2A for every completion path: a log Seal failure never changes the
+// execution result, whether the run failed on its own or could not start.
+func TestSealFailureKeepsFailureAndStartErrorStatus(t *testing.T) {
+	_, st, s := resilienceService(t, Options{})
+	s.sealHook = func(id string) error {
+		_ = s.logs.Seal(id)
+		return errors.New("injected seal failure")
+	}
+	failing, fh := putJob(t, st, parallelJob("seal-fail-exit", "exit 3"))
+	badStart := parallelJob("seal-fail-start", "")
+	badStart.Argv = []string{"/nonexistent/program"}
+	bad, bh := putJob(t, st, badStart)
+	for _, tc := range []struct {
+		d           model.Definition
+		h           string
+		status, why string
+	}{{failing, fh, "failed", "exit_nonzero"}, {bad, bh, "failed", "start_error"}} {
+		run, err := s.Trigger(t.Context(), tc.d, tc.h, "manual", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, s, run.ID)
+		stored := runStatus(t, st, run.ID)
+		if stored.Status != tc.status || stored.EndReason != tc.why || !stored.LogTruncated {
+			t.Fatalf("%s = %s/%s truncated=%v; want %s/%s truncated", tc.d.Name, stored.Status, stored.EndReason, stored.LogTruncated, tc.status, tc.why)
+		}
+	}
+}
