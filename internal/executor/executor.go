@@ -55,6 +55,8 @@ type Service struct {
 	retryStop chan struct{}
 	retryDone chan struct{}
 	retryWG   sync.WaitGroup
+	// persistLag observes terminal-state persistence latency (diagnostics).
+	persistLag persistLag
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
@@ -469,8 +471,10 @@ func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 	}
 	s.retryWG.Add(1)
 	s.admission.Unlock()
+	s.persistLag.startPending(t.ended)
 	go func() {
 		defer s.retryWG.Done()
+		defer s.persistLag.endPending()
 		if err := fault.Call(func() error {
 			s.finalizeLater(r, d, t)
 			return nil
@@ -507,6 +511,7 @@ func (s *Service) finalizeLater(r model.Run, d model.Definition, t terminal) {
 }
 
 func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
+	s.persistLag.observe(t.ended)
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
 	s.notifyFinished(r, d)
 	if t.retry {
