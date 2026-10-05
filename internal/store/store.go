@@ -923,7 +923,10 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		out.Buckets[i].Queued = queuedNow
 		out.Buckets[i].Active = activeNow
 	}
-	if err := sortContext(ctx, samples, func(a, b durationSample) int { return cmp.Compare(a.value, b.value) }); err != nil {
+	guard := sortGuard{ctx: ctx}
+	if err := guard.run(func() {
+		slices.SortFunc(samples, func(a, b durationSample) int { guard.check(); return cmp.Compare(a.value, b.value) })
+	}); err != nil {
 		return out, err
 	}
 	globalP50, globalP95 := percentileRanks(durationCount)
@@ -991,9 +994,26 @@ const metricsCheckMask = 1<<10 - 1
 // early-exit of its own.
 type sortCanceled struct{ err error }
 
-// sortContext is slices.SortFunc that gives up with ctx's error shortly after
-// ctx ends, leaving data in an unspecified order.
-func sortContext[E any](ctx context.Context, data []E, compare func(a, b E) int) (err error) {
+// sortGuard lets a sort comparator give up when ctx ends: call check from the
+// comparator and run the sort inside run. It checks ctx about every
+// metricsCheckMask+1 comparisons. The comparator calls check directly rather
+// than through a wrapper, which keeps the extra cost per comparison to a counter.
+type sortGuard struct {
+	ctx   context.Context
+	calls int
+}
+
+func (g *sortGuard) check() {
+	if g.calls++; g.calls&metricsCheckMask == 0 {
+		if err := g.ctx.Err(); err != nil {
+			panic(sortCanceled{err})
+		}
+	}
+}
+
+// run executes sort and returns ctx's error if the sort was abandoned, in
+// which case the data is left in an unspecified order.
+func (g *sortGuard) run(sort func()) (err error) {
 	defer func() {
 		if v := recover(); v != nil {
 			canceled, ok := v.(sortCanceled)
@@ -1003,16 +1023,8 @@ func sortContext[E any](ctx context.Context, data []E, compare func(a, b E) int)
 			err = canceled.err
 		}
 	}()
-	calls := 0
-	slices.SortFunc(data, func(a, b E) int {
-		if calls++; calls&metricsCheckMask == 0 {
-			if err := ctx.Err(); err != nil {
-				panic(sortCanceled{err})
-			}
-		}
-		return compare(a, b)
-	})
-	return ctx.Err()
+	sort()
+	return g.ctx.Err()
 }
 
 func percentileRanks(count int) (int, int) {

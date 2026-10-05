@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -105,14 +106,18 @@ func TestSortContextSortsAndStopsOnCancel(t *testing.T) {
 		values[i] = (i * 7919) % 50021
 	}
 	sorted := append([]int(nil), values...)
-	if err := sortContext(t.Context(), sorted, func(a, b int) int { return a - b }); err != nil || !sort.IntsAreSorted(sorted) {
+	guard := sortGuard{ctx: t.Context()}
+	if err := guard.run(func() { slices.SortFunc(sorted, func(a, b int) int { guard.check(); return a - b }) }); err != nil || !sort.IntsAreSorted(sorted) {
 		t.Fatalf("sortContext sorted=%v err=%v", sort.IntsAreSorted(sorted), err)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	calls := 0
-	err := sortContext(ctx, append([]int(nil), values...), func(a, b int) int { calls++; return a - b })
+	canceled := sortGuard{ctx: ctx}
+	err := canceled.run(func() {
+		slices.SortFunc(append([]int(nil), values...), func(a, b int) int { calls++; canceled.check(); return a - b })
+	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled sort returned %v", err)
 	}
