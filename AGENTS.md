@@ -9,7 +9,7 @@
 
 ## Owner-approved choices: 1B, 2A, 3A, 4B, 5A
 
-Accepted design direction, **not implemented by these documentation changes**. See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for scope, consequences, and implementation requirements.
+Implemented as of the merged tree `57063ba` (2026-10-06), with open items. See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for scope, chosen defaults and open items, and the audit's [Implementation status](astra-audit-code.md#implementation-status) for per-finding residual gaps. The priorities below are unchanged.
 
 1. **Batched log durability:** write accepted frames through to the OS/file immediately; group fsync on a roughly 1–3-second cadence with a byte limit and final sync. Preserve daemon-crash recovery. Accept recent unsynced-log loss after OS crash/power failure; storage stalls can extend that nominal window. No accepted-output buffering solely in RAM.
 2. **Continue on log-storage failure:** keep the child running and drain stdout/stderr, discarding output that cannot be stored. Report missing output/storage failures when possible via bounded observations. This does not relax timeouts or required execution-state persistence.
@@ -17,7 +17,7 @@ Accepted design direction, **not implemented by these documentation changes**. S
 4. **Bounded durable queue before skipping:** queue excess execution work for later with count/byte/age limits, persist before acknowledging durable enqueue, and drain at a bounded rate. Reject explicitly when full or persistence is unavailable; expose expiry. Define replay semantics and respect definition/overlap/retry/catch-up policies, without assuming exactly-once execution.
 5. **Small-server-first tuning:** benchmark roughly 1 CPU / 512 MiB, 10 workers, four concurrent jobs, and modest output. This is a planning profile, not a capacity guarantee or fixed runtime limits; child resources are additional. Favor small caches/queues and limited archive concurrency.
 
-Exact sync/byte thresholds, disk budget/watermarks, queue limits/expiry/replay policy, and numerical log-volume targets remain implementation decisions to document and measure. The earlier 5 GiB disk example is not a selected default.
+Chosen defaults are in ADR-8 and ADR-9/10/11; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
 
 ## System design defaults
 
@@ -52,4 +52,4 @@ For a design/performance decision, record:
 
 Use an ADR for substantial architecture/durability changes and update operational/configuration docs when contracts change. Older live-tail-oriented drafts are not a reason to optimize for constant viewers, but do not silently break public APIs or durability promises.
 
-`astra-audit-code.md` is the audit source; `astra-audit-code.html` is its visual companion. Keep findings, evidence caveats, design decisions, severity counts, and remediation order synchronized. Distinguish severity from workload-based investment order: a viewer-only OOM risk remains serious when exposed even though reader speed is secondary. The audit recommends changes; it does not mean they are implemented.
+`astra-audit-code.md` is the audit source; `astra-audit-code.html` is its visual companion. Keep findings, evidence caveats, design decisions, severity counts, and remediation order synchronized. Distinguish severity from workload-based investment order: a viewer-only OOM risk remains serious when exposed even though reader speed is secondary. The original findings and evidence describe revision `7198673`; the audit's Implementation status section says which are fixed, partially fixed, and still open.

@@ -1,6 +1,6 @@
 # ADR-11: Admission and work budgets for expensive on-demand reads
 
-- Status: accepted; implemented on `feat/reads` (audit A14, observation 5)
+- Status: accepted; implemented (merge of `feat/reads`, `3117652`; audit A14, observation 5)
 - Related: [ADR-8](0008-background-first-trade-offs.md) (decision 5, small-server-first), [audit](../../astra-audit-code.md)
 
 ## Context and zero-viewer cost

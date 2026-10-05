@@ -1,6 +1,6 @@
 # ADR-9: Bounded durable execution queue and global background budgets
 
-- Status: accepted; implemented with this ADR
+- Status: accepted; implemented (merge of `feat/queue`, `57063ba`)
 - Implements: [ADR-8](0008-background-first-trade-offs.md) choice **4B** and audit finding **A15**
 - Related: [audit](../../astra-audit-code.md), [agent guidance](../../AGENTS.md)
 
