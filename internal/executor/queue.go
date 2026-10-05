@@ -32,8 +32,10 @@ type QueueOptions struct {
 	// MaxPendingRetries caps retries waiting for their delay.
 	MaxPendingRetries int
 	// MaxFinalizers caps runs whose terminal write is retried in the
-	// background; beyond it the completing run retries inline.
+	// background; beyond it the completing job retries inline for at most
+	// InlineHold, then hands off up to 4x this cap.
 	MaxFinalizers int
+	InlineHold    time.Duration
 }
 
 func (o QueueOptions) withDefaults() QueueOptions {
@@ -57,6 +59,9 @@ func (o QueueOptions) withDefaults() QueueOptions {
 	}
 	if o.MaxFinalizers <= 0 {
 		o.MaxFinalizers = 256
+	}
+	if o.InlineHold <= 0 {
+		o.InlineHold = defaultInlineHold
 	}
 	return o
 }

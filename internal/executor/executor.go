@@ -638,9 +638,9 @@ type terminal struct {
 
 // complete persists a run's terminal state, then notifies and schedules any
 // retry. If storage stays unavailable past the inline budget, the background
-// finalizer keeps trying (at most maxFinalizers runs at once; beyond that this
-// goroutine retries inline and keeps its capacity slot), so the run cannot stay
-// "running" with no alert and the number of unfinalized runs stays bounded.
+// finalizer keeps trying. Past the soft cap a job retries inline holding its
+// capacity slot for at most InlineHold, then hands off (see finalState), so the
+// run cannot stay "running" with no alert and unfinalized runs stay bounded.
 func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 	err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
 	if err == nil {
@@ -652,11 +652,17 @@ func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 		return
 	}
 	logFailure("persisting terminal run state failed; retrying in background", err, "run", r.ID, "status", t.status)
-	switch s.addFinalizer(r, d, t) {
+	mode := finalizerSoft
+	if d.Kind == model.KindWorker {
+		// Workers hold no capacity slot and their supervisor waits for the
+		// run, so inline retrying would only delay its restart policy.
+		mode = finalizerWorker
+	}
+	switch s.addFinalizer(r, d, t, mode) {
 	case finalizerQueued, finalizerClosing:
 		// Closing: startup recovery marks the run interrupted.
 	case finalizerFull:
-		slog.Warn("finalizer budget exhausted; retrying this run's terminal state inline, holding its capacity slot", "run", r.ID, "limit", s.queueOpt.MaxFinalizers)
+		slog.Warn("finalizer budget exhausted; retrying this run's terminal state inline, holding its capacity slot", "run", r.ID, "limit", s.queueOpt.MaxFinalizers, "hold", s.queueOpt.InlineHold)
 		s.finals.inline.Add(1)
 		defer s.finals.inline.Add(-1)
 		s.finalizeInline(r, d, t)

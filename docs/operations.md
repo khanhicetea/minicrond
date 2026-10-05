@@ -249,10 +249,14 @@ Workers and `[[init]]` jobs are never queued.
   the cap a retry is dropped with evidence: an error log, the `dropped` counter
   and a `skipped` / `retry_dropped` run (attempt N+1, linked to the failed run).
 - **Terminal-state writes.** If a run's terminal write fails, one background
-  finalizer retries (1s to 30s backoff) for at most 256 runs. Further runs retry
-  inline and keep their concurrency slot, so storage trouble throttles new runs
-  instead of growing memory; nothing is discarded, and anything unwritten at
-  shutdown is marked `interrupted` by recovery.
+  finalizer retries it, each item with its own 1s to 30s backoff (a permanently
+  failing item never starves the others; three consecutive failures pause the
+  pass). Up to 256 runs wait there. Beyond that a job retries inline for at most
+  two minutes, holding its concurrency slot (new runs are throttled instead of
+  memory growing), then is handed to the background map up to four times the
+  cap; past that it keeps holding its slot, and `diagnostics.finalizers.inline`
+  shows it. Workers always use the background map. Nothing is discarded, and
+  anything unwritten at shutdown is marked `interrupted` by recovery.
 - **Archive discovery.** The archiver keeps at most 4096 sealed run ids in memory;
   beyond that buffers stay on disk and the idle archiver sweeps the directory to
   find them (the periodic worker-flush sweep does too).

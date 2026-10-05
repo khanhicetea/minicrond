@@ -275,3 +275,118 @@ func TestSealFailureKeepsFailureAndStartErrorStatus(t *testing.T) {
 		}
 	}
 }
+
+// S5: with a permanently failing terminal write, jobs past the soft cap hold
+// their slot only for InlineHold, then hand off to the background map, which is
+// itself capped (hard cap = 4 x MaxFinalizers). Beyond that jobs keep holding
+// (documented backpressure) and nothing is discarded.
+func TestInlineFinalizerHoldIsBoundedThenHandsOff(t *testing.T) {
+	const soft = 1
+	var finished atomic.Int64
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 3, Queue: QueueOptions{MaxFinalizers: soft, InlineHold: 300 * time.Millisecond, DrainRate: 1000},
+		OnFinished: func(model.Run, model.Definition) { finished.Add(1) }})
+	var broken atomic.Bool
+	broken.Store(true)
+	s.finishHook = func(string) error {
+		if broken.Load() {
+			return errors.New("permanent update failure")
+		}
+		return nil
+	}
+	d, h := putJob(t, st, parallelJob("wedge", "true"))
+	for range 8 {
+		if _, err := s.Trigger(t.Context(), d, h, "manual", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Hand-offs fill the map up to the hard cap and no further.
+	eventually(t, 15*time.Second, "hard cap reached", func() bool {
+		background, _ := s.Finalizers()
+		return background == soft*finalizerHardFactor
+	})
+	time.Sleep(1500 * time.Millisecond)
+	if background, _ := s.Finalizers(); background != soft*finalizerHardFactor {
+		t.Fatalf("background finalizers = %d, hard cap %d", background, soft*finalizerHardFactor)
+	}
+	// Slots were released by the hand-offs, so later admissions progressed past
+	// the first soft-cap runs rather than wedging on them.
+	runs, err := st.Runs(t.Context(), "wedge", 20)
+	if err != nil || len(runs) != 8 {
+		t.Fatalf("runs = %d, %v", len(runs), err)
+	}
+	// Nothing is lost: when storage recovers every run reaches a terminal state.
+	broken.Store(false)
+	eventually(t, 60*time.Second, "all terminal after recovery", func() bool {
+		return finished.Load() == 8
+	})
+}
+
+// S5: workers always use the background map (no inline hold), even past the cap,
+// so a failing terminal write never delays the run's done signal.
+func TestWorkerFinalizationNeverHoldsInline(t *testing.T) {
+	_, st, s := resilienceService(t, Options{Queue: QueueOptions{MaxFinalizers: 1, InlineHold: time.Hour}})
+	s.finishHook = func(string) error { return errors.New("permanent update failure") }
+	var ids []string
+	for i := range 3 {
+		w := parallelJob("worker-"+string(rune('a'+i)), "true")
+		w.Kind = model.KindWorker
+		d, h := putJob(t, st, w)
+		r, err := s.Trigger(t.Context(), d, h, "startup", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitDone(t, s, r.ID) // must close promptly, not after storage recovers
+		ids = append(ids, r.ID)
+	}
+	if background, inline := s.Finalizers(); background != 3 || inline != 0 {
+		t.Fatalf("finalizers = %d background, %d inline; want all 3 workers in the map", background, inline)
+	}
+	for _, id := range ids {
+		if !s.Finalizing(id) {
+			t.Fatalf("run %s not reported as finalizing", id)
+		}
+	}
+}
+
+// S5: a poison item (permanent error for one run) must not starve the others.
+func TestPoisonFinalizerDoesNotStarveOthers(t *testing.T) {
+	var mu sync.Mutex
+	done := map[string]bool{}
+	var failAll atomic.Bool
+	failAll.Store(true)
+	var poison atomic.Value
+	poison.Store("")
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 8, Queue: QueueOptions{MaxFinalizers: 16},
+		OnFinished: func(r model.Run, _ model.Definition) { mu.Lock(); done[r.ID] = true; mu.Unlock() }})
+	s.finishHook = func(id string) error {
+		if failAll.Load() || id == poison.Load().(string) {
+			return errors.New("injected failure")
+		}
+		return nil
+	}
+	d, h := putJob(t, st, parallelJob("poisoned", "true"))
+	var ids []string
+	for range 5 {
+		r, err := s.Trigger(t.Context(), d, h, "manual", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, r.ID)
+		waitDone(t, s, r.ID)
+	}
+	eventually(t, 15*time.Second, "all items in the background map", func() bool {
+		background, _ := s.Finalizers()
+		return background == 5
+	})
+	// The oldest item becomes permanently failing; storage works for the rest.
+	poison.Store(ids[0])
+	failAll.Store(false)
+	eventually(t, 30*time.Second, "others finalized despite the poison item", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(done) == 4 && !done[ids[0]]
+	})
+	if background, _ := s.Finalizers(); background != 1 {
+		t.Fatalf("background = %d, want only the poison item left", background)
+	}
+}

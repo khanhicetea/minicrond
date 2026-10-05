@@ -1315,6 +1315,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
 // awaitingStart reports whether a run has no log writer only because it has not
 // started yet (queued for capacity, or admitted but not opened), so a follower
 // must keep polling instead of being told the run is done. A failed lookup ends

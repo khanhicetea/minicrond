@@ -123,11 +123,14 @@ Under the admission lock the current definition is loaded by name:
   disabled it waits another `retry_delay`. Pending retries are in memory and are
   still lost on restart, exactly as before.
 - **Finalizers**: one finalizer goroutine owns a map of runs whose terminal write
-  failed (at most one entry per run, capped at 256), retrying with global backoff
-  (1 s .. 30 s); one storage failure pauses the whole pass. At the cap, the
-  completing run does **not** drop its state: it keeps its own goroutine and its
-  capacity slot and retries inline, so overload turns into backpressure on admission
-  (bounded by `max_concurrent_runs`). The database still shows `running` until the
+  failed (one entry per run), each with its own backoff (1 s .. 30 s) so a
+  permanently failing item cannot starve the rest; three consecutive failures end a
+  pass (storage down). A job joins the map while it has fewer than 256 entries.
+  Beyond that the completing job does **not** drop its state: it retries inline,
+  keeping its capacity slot (backpressure bounded by `max_concurrent_runs`), for at
+  most 2 minutes, then is handed to the map up to a hard cap of 1024; past the hard
+  cap it keeps holding its slot. Workers hold no slot and their supervisor waits on
+  them, so they always join the map. The database still shows `running` until the
   write lands; `Recover` marks it `interrupted` after a restart.
 - **Archiver**: the in-memory queue of sealed run ids is capped at 4096. Beyond the
   cap the id is not queued; the archiver sets an overflow flag and, when its queue
