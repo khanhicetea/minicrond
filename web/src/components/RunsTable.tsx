@@ -159,6 +159,7 @@ function statusLabel(status: string): string {
     skipped: 'Skipped',
     missed: 'Missed',
     running: 'Running',
+    queued: 'Queued',
     pending: 'Pending',
   };
   return labels[status] ?? status;
@@ -168,7 +169,7 @@ function statusLabel(status: string): string {
 function statusTextClass(status: string): string {
   if (status === 'succeeded') return 'text-green-400';
   if (status === 'failed' || status === 'timeout' || status === 'interrupted') return 'text-red-400';
-  if (status === 'running' || status === 'pending') return 'text-blue-400';
+  if (status === 'running' || status === 'pending' || status === 'queued') return 'text-blue-400';
   return 'text-amber-400';
 }
 
@@ -178,7 +179,7 @@ export function RunStatusDot({ status }: { status: string }) {
     return <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-green-500/15 text-green-400"><Icon name="check" size={10} strokeWidth={3} /></span>;
   if (status === 'failed' || status === 'timeout')
     return <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-red-500/15 text-red-400"><Icon name="alert-circle" size={10} /></span>;
-  if (status === 'running' || status === 'pending')
+  if (status === 'running' || status === 'pending' || status === 'queued')
     return <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-blue-500/15 text-blue-400"><Icon name="loader" size={10} className="spin" /></span>;
   return <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-500/15 text-amber-400"><Icon name="clock" size={10} /></span>;
 }

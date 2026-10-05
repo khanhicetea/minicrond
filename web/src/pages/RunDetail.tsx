@@ -381,7 +381,7 @@ function heroIcon(status: string): { icon: IconName; cls: string; spin?: boolean
   if (status === 'succeeded') return { icon: 'circle-check', cls: 'icon-green' };
   if (status === 'failed' || status === 'timeout' || status === 'interrupted')
     return { icon: 'alert-circle', cls: 'icon-red' };
-  if (status === 'running' || status === 'pending') return { icon: 'loader', cls: 'icon-blue', spin: true };
+  if (status === 'running' || status === 'pending' || status === 'queued') return { icon: 'loader', cls: 'icon-blue', spin: true };
   return { icon: 'clock', cls: 'icon-amber' };
 }
 
