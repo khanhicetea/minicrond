@@ -184,62 +184,44 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	if !last.IsZero() && last.Before(now) {
-		next, err := schedule.nextFireDistinct(last, anchor, last)
+	// Occurrences are missed relative to the last fire or, before the first
+	// fire ever happened, relative to the persisted anchor: the stored anchor
+	// proves the job existed, so an overdue first occurrence is not time
+	// before the job existed.
+	if last.Before(now) {
+		overdue, err := schedule.overdue(ctx, anchor, last, now, d.CatchUp != "latest")
 		if err != nil {
-			slog.Error("scheduler: calculating initial catch-up fire failed", "job", d.Name, "error", err)
+			if ctx.Err() != nil {
+				return nil
+			}
+			slog.Error("scheduler: calculating catch-up fire failed", "job", d.Name, "error", err)
 			return nil
 		}
-		if next.Before(now) {
-			count := 0
-			cursor := next
-			latest := next
-			if schedule.interval > 0 {
-				steps := now.Sub(next) / schedule.interval
-				latest = next.Add(steps * schedule.interval)
-				// Saturate before the addition and conversion. Nanosecond
-				// intervals can exceed an int's count over a long downtime.
-				if steps >= time.Duration(math.MaxInt) {
-					count = math.MaxInt
-				} else {
-					count = int(steps) + 1
-				}
+		if overdue.count > 0 {
+			if !overdue.exact && d.CatchUp != "latest" {
+				// The missed count is a lower bound: counting stopped at a CPU
+				// safety bound. `latest` is still the true latest occurrence.
+				slog.Warn("scheduler: missed occurrence count is incomplete; reporting a lower bound", "job", d.Name, "count_at_least", overdue.count, "latest", overdue.latest)
+			}
+			if d.CatchUp == "latest" {
+				scheduled := overdue.latest
+				_, err = s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled)
 			} else {
-				for !cursor.After(now) && count < 10000 {
-					latest = cursor
-					count++
-					following, nextErr := schedule.nextFireDistinct(cursor, anchor, latest)
-					if nextErr != nil {
-						slog.Error("scheduler: calculating catch-up fire failed", "job", d.Name, "error", nextErr)
-						break
-					}
-					cursor = following
-				}
-				if count == 10000 && !cursor.After(now) {
-					slog.Warn("scheduler: cron catch-up summarized at safety bound", "job", d.Name, "count", count)
-				}
+				_, err = s.exec.RecordMissed(ctx, d, defHash, overdue.count, overdue.latest)
 			}
-			if count > 0 {
-				if d.CatchUp == "latest" {
-					scheduled := latest
-					_, err = s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled)
-				} else {
-					_, err = s.exec.RecordMissed(ctx, d, defHash, count, latest)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
 				}
-				if err != nil {
-					if ctx.Err() != nil {
-						return nil
-					}
-					return fmt.Errorf("catch up: %w", err)
-				}
-				last = latest
-				if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
-					// The run row is unique per occurrence, so retrying catch-up
-					// after this failure cannot fire the occurrence twice.
-					return fmt.Errorf("persist catch-up watermark: %w", stateErr)
-				}
-				persistedLast, persistedNext = last, time.Time{}
+				return fmt.Errorf("catch up: %w", err)
 			}
+			last = overdue.latest
+			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
+				// The run row is unique per occurrence, so retrying catch-up
+				// after this failure cannot fire the occurrence twice.
+				return fmt.Errorf("persist catch-up watermark: %w", stateErr)
+			}
+			persistedLast, persistedNext = last, time.Time{}
 		}
 	}
 	for ctx.Err() == nil {
@@ -341,6 +323,111 @@ func compileSchedule(d model.Definition) (compiledSchedule, error) {
 	return c, nil
 }
 
+// Catch-up bounds. They only limit CPU spent counting missed occurrences;
+// the latest missed occurrence is always computed exactly.
+const (
+	maxCatchUpCount  = 100000 // enumerated occurrences when counting missed fires
+	maxCatchUpWindow = 100000 // enumerated occurrences per backward-search window
+)
+
+// overdueFires describes the occurrences that elapsed while no scheduler ran.
+type overdueFires struct {
+	first, latest time.Time
+	count         int  // occurrences in [first, latest]; a lower bound unless exact
+	exact         bool // false when count was not computed or hit its CPU bound
+}
+
+// overdue finds occurrences in (last, now], or in (anchor, now] when nothing
+// has fired yet. The count is computed only when wantCount is set (catch_up =
+// none records it); catch_up = latest needs just the latest occurrence.
+func (c compiledSchedule) overdue(ctx context.Context, anchor, last, now time.Time, wantCount bool) (overdueFires, error) {
+	base := last
+	if base.IsZero() {
+		base = anchor
+	}
+	first, err := c.nextFireDistinct(base, anchor, last)
+	if err != nil || !first.Before(now) {
+		return overdueFires{}, err
+	}
+	if c.interval > 0 {
+		steps := now.Sub(first) / c.interval
+		out := overdueFires{first: first, latest: first.Add(steps * c.interval), exact: true}
+		// Saturate before the addition and conversion. Nanosecond
+		// intervals can exceed an int's count over a long downtime.
+		if steps >= time.Duration(math.MaxInt) {
+			out.count = math.MaxInt
+		} else {
+			out.count = int(steps) + 1
+		}
+		return out, nil
+	}
+	latest, err := c.latestFire(ctx, first, anchor, last, now)
+	if err != nil {
+		return overdueFires{}, err
+	}
+	out := overdueFires{first: first, latest: latest, count: 1, exact: true}
+	if latest.Equal(first) {
+		return out, nil
+	}
+	if !wantCount {
+		out.count, out.exact = 2, false // first and latest at least; not counted
+		return out, nil
+	}
+	out.count = 0
+	for cursor := first; !cursor.After(now); {
+		if out.count == maxCatchUpCount {
+			out.exact = false
+			return out, nil
+		}
+		if out.count&0xfff == 0 && ctx.Err() != nil {
+			return overdueFires{}, ctx.Err()
+		}
+		out.count++
+		if cursor.Equal(latest) {
+			break
+		}
+		if cursor, err = c.nextFireDistinct(cursor, anchor, last); err != nil {
+			return overdueFires{}, err
+		}
+	}
+	return out, nil
+}
+
+// latestFire returns the latest occurrence at or before now, given that first
+// (an occurrence) is before now. It searches backward in growing windows so a
+// long downtime costs time proportional to the schedule's density near now,
+// not to the number of elapsed occurrences.
+func (c compiledSchedule) latestFire(ctx context.Context, first, anchor, last, now time.Time) (time.Time, error) {
+	span := now.Sub(first)
+	for window := time.Hour; ; {
+		start, best := now.Add(-window), time.Time{}
+		if window >= span || window > time.Duration(math.MaxInt64)/8 {
+			start, best = first, first
+		}
+		cursor := start
+		for steps := 0; ; steps++ {
+			if steps >= maxCatchUpWindow {
+				return time.Time{}, fmt.Errorf("schedule %q: more than %d occurrences in a %s window", c.raw, maxCatchUpWindow, window)
+			}
+			if steps&0xfff == 0xfff && ctx.Err() != nil {
+				return time.Time{}, ctx.Err()
+			}
+			next, err := c.nextFireDistinct(cursor, anchor, last)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if next.After(now) {
+				break
+			}
+			best, cursor = next, next
+		}
+		if !best.IsZero() {
+			return best, nil
+		}
+		window *= 8
+	}
+}
+
 func nextFireDistinct(d model.Definition, after, anchor, last time.Time) (time.Time, error) {
 	c, err := compileSchedule(d)
 	if err != nil {
@@ -383,14 +470,29 @@ func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
 		}
 		return candidate, nil
 	}
-	candidate := c.cron.Next(after.In(c.loc)).UTC()
+	// Inside the second copy of a fold every candidate before its end is
+	// suppressed below, so resume the search from the end of the fold.
+	from := after.In(c.loc)
+	if foldEnd, ok := secondFoldEnd(from); ok {
+		from = foldEnd.Add(-time.Second)
+	}
+	candidate := c.cron.Next(from).UTC()
 	if candidate.IsZero() {
 		return time.Time{}, fmt.Errorf("schedule has no future occurrence: %q", c.raw)
 	}
 
-	// Suppress the second instance of a wall-clock minute in a DST fold.
-	if sameWallMinute(after.In(c.loc), candidate.In(c.loc)) {
-		candidate = c.cron.Next(candidate.In(c.loc)).UTC()
+	// Suppress every candidate in the second copy of a repeated DST-fold
+	// interval: each wall minute fires on its first occurrence only, however
+	// many fires the schedule has inside the fold.
+	for range 4 {
+		foldEnd, ok := secondFoldEnd(candidate.In(c.loc))
+		if !ok {
+			break
+		}
+		candidate = c.cron.Next(foldEnd.Add(-time.Second).In(c.loc)).UTC()
+		if candidate.IsZero() {
+			return time.Time{}, fmt.Errorf("schedule has no future occurrence: %q", c.raw)
+		}
 	}
 
 	// robfig/cron correctly skips nonexistent wall times. minicron's contract
@@ -405,6 +507,24 @@ func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
 		}
 	}
 	return candidate, nil
+}
+
+// secondFoldEnd reports whether t lies in the second copy of a wall-clock
+// interval repeated by a backward offset transition (a DST "fall back", of
+// any size) and returns the instant that second copy ends. t must carry the
+// schedule's location.
+func secondFoldEnd(t time.Time) (time.Time, bool) {
+	start, _ := t.ZoneBounds()
+	if start.IsZero() {
+		return time.Time{}, false
+	}
+	_, offset := t.Zone()
+	_, previous := start.Add(-time.Second).Zone()
+	if previous <= offset {
+		return time.Time{}, false
+	}
+	end := start.Add(time.Duration(previous-offset) * time.Second)
+	return end, t.Before(end)
 }
 
 func sameWallMinute(a, b time.Time) bool {
