@@ -13,13 +13,15 @@ import (
 // only supplies it from configuration and decides when a pass runs:
 //
 //   - the existing maintenance cadences (hourly retention, the worker flush
-//     tick, the daily log prune), and
+//     tick, the daily log prune), which only call requestDiskCheck, and
 //   - a coalesced hint from the log store when a chunk rotates, a run seals or
 //     capture fails, handled by diskBudgetLoop.
 //
 // The loop blocks on a one-slot channel, so there is no timer or wakeup while
-// nothing happens; after a pass it waits out diskCheckCooldown (a timer that
-// exists only then) so a busy daemon runs at most one pass per cooldown.
+// nothing happens. A pass never runs inline in another maintenance loop, so a
+// slow pass cannot delay a worker flush or a retention sweep. After a pass the
+// loop waits out diskCheckCooldown (a timer that exists only then), so every
+// request, whatever its source, yields at most one pass per cooldown.
 var diskCheckCooldown = 10 * time.Second
 
 // applyDiskPolicy installs the configured limits in the log store.
@@ -63,6 +65,10 @@ func (d *Daemon) diskBudgetLoop(ctx context.Context) {
 // enforceDiskBudget runs one pass and records its duration. Without a policy
 // (unit tests, or a store used standalone) it does nothing.
 func (d *Daemon) enforceDiskBudget(ctx context.Context) {
+	if hook := d.diskPassHook; hook != nil {
+		hook(ctx)
+		return
+	}
 	if d.logs == nil {
 		return
 	}

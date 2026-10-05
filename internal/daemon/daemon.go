@@ -51,6 +51,8 @@ type Daemon struct {
 	alerts atomic.Pointer[alerts.Dispatcher]
 	// diskHint carries coalesced requests for a log disk-budget pass (diskbudget.go).
 	diskHint chan struct{}
+	// diskPassHook replaces the disk-budget pass; tests use it to make passes slow.
+	diskPassHook func(context.Context)
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -418,7 +420,7 @@ func (d *Daemon) retentionLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.sweepRetention(ctx)
-			d.enforceDiskBudget(ctx)
+			d.requestDiskCheck() // coalesced; diskBudgetLoop does the work off this loop
 		}
 	}
 }
@@ -515,7 +517,7 @@ func (d *Daemon) workerFlushLoop(ctx context.Context) {
 				slog.Error("orphaned log retry failed", "error", err)
 			}
 			flushed()
-			d.enforceDiskBudget(ctx)
+			d.requestDiskCheck() // coalesced; diskBudgetLoop does the work off this loop
 			if next := d.logFlushInterval(); next != interval {
 				interval = next
 				ticker.Reset(next)
@@ -555,7 +557,7 @@ func (d *Daemon) logPruneLoop(ctx context.Context) {
 			}
 			d.pruneLogs(ctx)
 			d.purgeQuarantine(ctx)
-			d.enforceDiskBudget(ctx)
+			d.requestDiskCheck() // coalesced; diskBudgetLoop does the work off this loop
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -213,4 +214,63 @@ func TestQuarantinePolicyFromConfig(t *testing.T) {
 	if _, err := os.Stat(entry); !os.IsNotExist(err) {
 		t.Fatalf("configured quarantine_keep_for did not purge: %v", err)
 	}
+}
+
+// A slow disk-budget pass (pruning, compaction and a directory walk on slow
+// storage) must not stall the other maintenance loops: the worker flush exists
+// to keep live buffers small exactly when disk is short. The loops only ask for
+// a pass; diskBudgetLoop runs it.
+func TestSlowDiskPassDoesNotDelayMaintenanceLoops(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, _, logs, dir := diskDaemon(t, config.Logs{WorkerFlushInterval: 1, DBKeepFor: 30, DBPruneAt: "00:30"})
+		d.cfg.Scheduler.Timezone = "UTC"
+		release := make(chan struct{})
+		passes := 0
+		d.diskPassHook = func(ctx context.Context) {
+			passes++
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		var wg sync.WaitGroup
+		defer func() { cancel(); wg.Wait() }()
+		for _, loop := range []func(context.Context){d.diskBudgetLoop, d.workerFlushLoop, d.retentionLoop, d.logPruneLoop} {
+			wg.Go(func() { loop(ctx) })
+		}
+		synctest.Wait()
+		if passes != 1 {
+			t.Fatalf("startup passes = %d", passes)
+		}
+		// A finished, unarchived buffer is picked up by the worker-flush tick.
+		w, err := logs.Open("orphan", "job", model.KindJob, logstore.WriterOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Write(logstore.Stdout, []byte("kept"), 0); err != nil {
+			t.Fatal(err)
+		}
+		logs.AttachDB(nil)
+		if err := logs.Close("orphan"); err != nil {
+			t.Fatal(err)
+		}
+		logs.AttachDB(d.ldb)
+		time.Sleep(time.Hour) // flush tick, hourly retention, 00:30 prune: all while the pass hangs
+		synctest.Wait()
+		if _, err := os.Stat(filepath.Join(dir, "logs", "orphan")); !os.IsNotExist(err) {
+			t.Fatalf("worker flush was delayed by a slow disk pass: %v", err)
+		}
+		stats := logs.MaintenanceStats()
+		if stats["retention"].Runs < 2 || stats["log_prune"].Runs < 1 || stats["worker_flush"].Runs < 1 {
+			t.Fatalf("maintenance loops stalled behind the disk pass: %+v", stats)
+		}
+		if passes != 1 {
+			t.Fatalf("loops ran %d passes inline", passes-1)
+		}
+		if len(d.diskHint) != 1 {
+			t.Fatal("the loops did not request a coalesced disk check")
+		}
+		close(release)
+	})
 }
