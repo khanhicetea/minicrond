@@ -26,6 +26,7 @@ import (
 type Config struct {
 	Server        Server             `toml:"server" json:"server"`
 	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
+	Queue         Queue              `toml:"queue" json:"queue"`
 	Storage       Storage            `toml:"storage" json:"storage"`
 	Logs          Logs               `toml:"logs" json:"logs"`
 	Reads         Reads              `toml:"reads" json:"reads"`
@@ -51,6 +52,29 @@ type Scheduler struct {
 	Timezone          string `toml:"timezone" json:"timezone"`
 	MaxConcurrentRuns int    `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
 }
+
+// Queue bounds the durable execution queue and the pending-retry budget
+// (ADR-9). A zero numeric value selects the default.
+type Queue struct {
+	// Enabled false restores the pre-queue behavior: a trigger that finds
+	// max_concurrent_runs full is recorded skipped/queue_full.
+	Enabled *bool `toml:"enabled" json:"enabled,omitempty"`
+	// MaxItems is the total number of queued runs; MaxPerJob the share of one
+	// definition.
+	MaxItems  int `toml:"max_items" json:"max_items"`
+	MaxPerJob int `toml:"max_per_job" json:"max_per_job"`
+	// MaxBytes is measured in KiB of persisted queue payload.
+	MaxBytes int `toml:"max_bytes" json:"max_bytes"`
+	// MaxAge is measured in seconds a run may wait for capacity.
+	MaxAge int `toml:"max_age" json:"max_age"`
+	// DrainRate is the maximum number of queued runs started per second.
+	DrainRate int `toml:"drain_rate" json:"drain_rate"`
+	// MaxPendingRetries caps retries waiting for their retry_delay.
+	MaxPendingRetries int `toml:"max_pending_retries" json:"max_pending_retries"`
+}
+
+func (q Queue) On() bool { return q.Enabled == nil || *q.Enabled }
+
 type Storage struct {
 	KeepRunsDefault int `toml:"keep_runs_default" json:"keep_runs_default"`
 	// KeepForDefault is measured in days.
@@ -361,6 +385,24 @@ func applyConfigDefaults(c *Config) {
 	if c.Scheduler.MaxConcurrentRuns == 0 {
 		c.Scheduler.MaxConcurrentRuns = 32
 	}
+	if c.Queue.MaxItems == 0 {
+		c.Queue.MaxItems = 100
+	}
+	if c.Queue.MaxPerJob == 0 {
+		c.Queue.MaxPerJob = min(25, c.Queue.MaxItems)
+	}
+	if c.Queue.MaxBytes == 0 {
+		c.Queue.MaxBytes = 256
+	}
+	if c.Queue.MaxAge == 0 {
+		c.Queue.MaxAge = 900
+	}
+	if c.Queue.DrainRate == 0 {
+		c.Queue.DrainRate = 5
+	}
+	if c.Queue.MaxPendingRetries == 0 {
+		c.Queue.MaxPendingRetries = 500
+	}
 	if c.Storage.KeepRunsDefault == 0 {
 		c.Storage.KeepRunsDefault = 10000
 	}
@@ -505,6 +547,24 @@ func validateConfig(c *Config) error {
 	}
 	if c.Scheduler.MaxConcurrentRuns < 1 || c.Scheduler.MaxConcurrentRuns > 1024 {
 		return errors.New("scheduler.max_concurrent_runs: must be between 1 and 1024")
+	}
+	if c.Queue.MaxItems < 1 || c.Queue.MaxItems > 10000 {
+		return errors.New("queue.max_items: must be between 1 and 10000")
+	}
+	if c.Queue.MaxPerJob < 1 || c.Queue.MaxPerJob > c.Queue.MaxItems {
+		return errors.New("queue.max_per_job: must be between 1 and queue.max_items")
+	}
+	if c.Queue.MaxBytes < 1 || c.Queue.MaxBytes > 65536 {
+		return errors.New("queue.max_bytes: must be between 1 and 65536 KiB")
+	}
+	if c.Queue.MaxAge < 1 || c.Queue.MaxAge > 7*24*3600 {
+		return errors.New("queue.max_age: must be between 1 and 604800 seconds")
+	}
+	if c.Queue.DrainRate < 1 || c.Queue.DrainRate > 1000 {
+		return errors.New("queue.drain_rate: must be between 1 and 1000 per second")
+	}
+	if c.Queue.MaxPendingRetries < 1 || c.Queue.MaxPendingRetries > 100000 {
+		return errors.New("queue.max_pending_retries: must be between 1 and 100000")
 	}
 	if c.Storage.KeepRunsDefault < 1 || c.Storage.AuditKeep < 1 {
 		return errors.New("storage retention counts must be positive")

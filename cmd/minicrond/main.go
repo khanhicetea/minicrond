@@ -196,10 +196,46 @@ func trigger(args []string) error {
 		}
 	}
 	path := "/api/v1/jobs/" + args[0] + "/trigger"
-	if wait {
-		path += "?wait=true"
+	if !wait {
+		return postPrint(path, nil)
 	}
-	return postPrint(path, nil)
+	var run map[string]any
+	if err := requestJSON("POST", path+"?wait=true", nil, &run); err != nil {
+		return err
+	}
+	// The daemon bounds its own wait, and a run queued behind max_concurrent_runs
+	// may not have finished by then: --wait means "until the result is final".
+	for runActive(run) {
+		id, _ := run["run_id"].(string)
+		if id == "" {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "run %s is %v; waiting for it to finish\n", id, run["status"])
+		if err := triggerWaitSleep(followPollInterval); err != nil {
+			return err
+		}
+		next := map[string]any{}
+		if err := requestJSON("GET", "/api/v1/runs/"+id, nil, &next); err != nil {
+			return err
+		}
+		run = next
+	}
+	b, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return fmt.Errorf("format response: %w", err)
+	}
+	return writeOutput("%s\n", b)
+}
+
+// triggerWaitSleep paces the --wait polling loop; tests replace it.
+var triggerWaitSleep = sleepFor
+
+func runActive(run map[string]any) bool {
+	switch run["status"] {
+	case "queued", "pending", "running":
+		return true
+	}
+	return false
 }
 func logs(args []string) error {
 	if len(args) == 0 {

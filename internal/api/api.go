@@ -552,12 +552,18 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 			databases["logs"] = poolInfo(writer, reader)
 		}
 		diagnostics["log_archive_backlog"] = s.logs.ArchiveBacklog()
+		diagnostics["log_archive"] = s.logs.ArchiveStats()
 		// Tier bytes, capture failures, maintenance durations and writer-lock
 		// waits. Footprints are measured on demand and cached for a few seconds.
 		diagnostics["log_storage"] = s.logs.Diagnostics(r.Context())
 	}
 	if s.exec != nil {
 		diagnostics["terminal_persistence"] = s.exec.PersistenceLag()
+		// Pending-work budgets (ADR-9), computed on demand from the read pool.
+		pending := s.exec.Diagnostics(r.Context())
+		diagnostics["execution_queue"] = pending.Queue
+		diagnostics["pending_retries"] = map[string]any{"count": pending.PendingRetries, "max": pending.MaxPendingRetries, "dropped": pending.RetriesDropped}
+		diagnostics["finalizers"] = map[string]any{"background": pending.Finalizers, "inline": pending.InlineFinalizers, "max": pending.MaxFinalizers}
 	}
 	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)
@@ -751,6 +757,8 @@ type httpError struct {
 	code   string
 	msg    string
 	cause  error
+	// retryAfter, when positive, is sent as a Retry-After header in seconds.
+	retryAfter int
 }
 
 func (e *httpError) Error() string { return e.msg }
@@ -801,6 +809,12 @@ func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string
 			return model.Run{}, false, &httpError{status: 409, code: "trigger_rejected", msg: err.Error()}
 		case errors.Is(err, executor.ErrShutdown):
 			return model.Run{}, false, &httpError{status: 503, code: "not_ready", msg: "daemon is shutting down"}
+		case errors.Is(err, executor.ErrQueueFull):
+			// Over capacity and the bounded queue is full: nothing was accepted.
+			return model.Run{}, false, &httpError{status: 429, code: "queue_full", msg: err.Error(), retryAfter: 30}
+		case errors.Is(err, executor.ErrQueueUnavailable):
+			// The queue could not be persisted, so nothing is claimed durable.
+			return model.Run{}, false, &httpError{status: 503, code: "queue_unavailable", msg: "execution queue storage is unavailable", retryAfter: 5}
 		default:
 			return model.Run{}, false, triggerInternal(fmt.Errorf("trigger definition %s: %w", name, err))
 		}
@@ -820,6 +834,9 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 		if herr.cause != nil {
 			internal(w, r, herr.cause)
 		} else {
+			if herr.retryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(herr.retryAfter))
+			}
 			writeError(w, herr.status, herr.code, herr.msg)
 		}
 		return
@@ -842,28 +859,60 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, run)
 }
 
-// waitForRun waits for an active run to finalize its logs and terminal state.
-// A completed run is no longer active, so read the persisted state directly.
+// queuedWaitPoll is how often a waiting trigger re-reads a run that is queued
+// for capacity (it has no process to wait on yet). The poll lives only as long
+// as the request.
+var queuedWaitPoll = 500 * time.Millisecond
+
+// waitForRun waits for a run to finalize its logs and terminal state, within
+// timeout. A queued run is polled until it starts, then waited on like any
+// other. A completed run is no longer active, so read the persisted state.
 func (s *Server) waitForRun(ctx context.Context, run model.Run, timeout time.Duration) model.Run {
-	if done := s.exec.Wait(run.ID); done != nil {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	var poll *time.Timer
+	defer func() {
+		if poll != nil {
+			poll.Stop()
+		}
+	}()
+	for {
+		if done := s.exec.Wait(run.ID); done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return run
+			case <-deadline.C:
+				return run
+			}
+		}
+		current, err := s.store.Run(ctx, run.ID)
+		if err == nil && model.Terminal(current.Status) {
+			return current
+		}
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("read completed trigger run failed", "run", run.ID, "error", err)
+			}
+			return run
+		}
+		if current.Status != "queued" && current.Status != "pending" {
+			return current
+		}
+		run = current
+		if poll == nil {
+			poll = time.NewTimer(queuedWaitPoll)
+		} else {
+			poll.Reset(queuedWaitPoll)
+		}
 		select {
-		case <-done:
+		case <-poll.C:
 		case <-ctx.Done():
 			return run
-		case <-timer.C:
+		case <-deadline.C:
 			return run
 		}
 	}
-	current, err := s.store.Run(ctx, run.ID)
-	if err == nil && model.Terminal(current.Status) {
-		return current
-	}
-	if err != nil && ctx.Err() == nil {
-		slog.Error("read completed trigger run failed", "run", run.ID, "error", err)
-	}
-	return run
 }
 func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
@@ -1277,7 +1326,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if active == nil {
+		if active == nil && !s.awaitingStart(r.Context(), id) {
 			send(func() error { _, err := fmt.Fprint(w, "event: done\ndata: {}\n\n"); return err })
 			return
 		}
@@ -1297,6 +1346,15 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		case <-timer.C:
 		}
 	}
+}
+
+// awaitingStart reports whether a run has no log writer only because it has not
+// started yet (queued for capacity, or admitted but not opened), so a follower
+// must keep polling instead of being told the run is done. A failed lookup ends
+// the stream as before.
+func (s *Server) awaitingStart(ctx context.Context, id string) bool {
+	run, err := s.store.ReadRun(ctx, id)
+	return err == nil && (run.Status == "queued" || run.Status == "pending")
 }
 func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 	if !s.tcpEnabled {

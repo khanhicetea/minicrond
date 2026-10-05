@@ -65,7 +65,7 @@ a second CSP header cannot relax the daemon's framing restriction.
 | `GET /api/v1/jobs/{name}` | One definition |
 | `PUT /api/v1/jobs/{name}` | Update a definition |
 | `DELETE /api/v1/jobs/{name}` | Delete a definition |
-| `POST /api/v1/jobs/{name}/trigger?wait=true` | Trigger a run now (`wait` blocks for the result) |
+| `POST /api/v1/jobs/{name}/trigger?wait=true` | Trigger a run now (`wait` blocks for the result). `202` with status `queued` when `max_concurrent_runs` is full and the run was durably queued (with `wait=true` a queued run is polled until it starts and finishes, within `timeout`; on timeout the non-final `202` run is returned, and `minicrond run --wait` keeps polling until it is terminal); `429 queue_full` (with `Retry-After`) when the bounded queue refuses it; `503 queue_unavailable` when it cannot be persisted |
 | `POST /api/v1/jobs/{name}/enable` | Enable |
 | `POST /api/v1/jobs/{name}/disable` | Disable (scheduler skips it) |
 | `POST /api/v1/workers/{name}/start` | Start a worker |
@@ -151,4 +151,12 @@ run's retained frames were evicted by `log_on_full = drop_old`.
 Errors are structured JSON (`{"error": {"code", "message"}}`) with proper
 status codes: `400` malformed, `401` unauthenticated, `404` unknown
 resource, `409` state conflict (e.g. overlapping import), `422` validation
-failure with field detail.
+failure with field detail, `429` the execution queue is full (`queue_full`,
+with `Retry-After`), `503` the daemon is not ready or the queue cannot be
+persisted (`queue_unavailable`).
+
+Run `status` also includes `queued` (waiting for capacity, not yet started); a
+queued run that never starts ends `skipped` with an `end_reason` such as
+`queue_expired` (see the operations runbook). `GET /api/v1/daemon`
+`diagnostics` reports `execution_queue`, `pending_retries`, `finalizers` and
+`log_archive`.

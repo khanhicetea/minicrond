@@ -351,7 +351,7 @@ function Row({
       : { text: 'On schedule', dot: 'dot-green' };
 
   const nextFireMs = !isWorker && enabled && definition.next_fire_at ? Date.parse(definition.next_fire_at) : null;
-  const activeCount = lastRun && (lastRun.status === 'running' || lastRun.status === 'pending') ? 1 : 0;
+  const activeCount = lastRun && (lastRun.status === 'running' || lastRun.status === 'pending' || lastRun.status === 'queued') ? 1 : 0;
 
   return (
     <tr>
@@ -399,7 +399,7 @@ function Row({
                 className="text-sky-300 hover:text-sky-200 hover:underline"
                 aria-label={`Open last run ${lastRun.run_id}`}
               >
-                {lastRun.status === 'running' || lastRun.status === 'pending' ? 'Now' : formatDayTime(lastRun.queued_at)}
+                {lastRun.status === 'running' || lastRun.status === 'pending' || lastRun.status === 'queued' ? 'Now' : formatDayTime(lastRun.queued_at)}
               </Link>
             </div>
             <div className="mt-0.5 flex items-center gap-1.5 text-xs">

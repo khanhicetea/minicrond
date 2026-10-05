@@ -163,8 +163,15 @@ type archiver struct {
 	running bool
 	queue   []string
 	queued  map[string]bool
-	wake    chan struct{}
-	stop    chan struct{}
+	// overflow is set when a sealed run was not queued because the queue held
+	// maxArchiveQueue ids; sweeping marks that an orphan sweep is in progress.
+	// The idle archiver then rediscovers sealed buffers from the directory
+	// listing, so no id is ever lost, only deferred. overflowTotal counts them.
+	overflow      bool
+	sweeping      bool
+	overflowTotal int64
+	wake          chan struct{}
+	stop          chan struct{}
 	// ctx is canceled when shutdown runs out of time; every archive step
 	// (database transaction, claim wait, slot wait, sweep) observes it.
 	ctx     context.Context
@@ -454,6 +461,66 @@ func (s *Store) ArchiveBacklog() int {
 	return len(s.archiver.queue)
 }
 
+// maxArchiveQueue bounds the archiver's in-memory list of sealed run ids.
+// Beyond it the buffer simply stays on disk until the idle archiver's orphan
+// sweep (or the periodic one) finds it, so the cap costs delay, not data.
+var maxArchiveQueue = 4096 // a variable only so tests can shrink it
+
+// maxArchiveStatDirs bounds the directory walk behind ArchiveStats.
+const maxArchiveStatDirs = 10000
+
+// ArchiveStats describes the archiver backlog and the sealed buffers still on
+// disk. The directory walk runs per call (diagnostics requests), not in the
+// background.
+type ArchiveStats struct {
+	Queued        int   `json:"queued"`
+	Overflow      bool  `json:"overflow"`
+	OverflowTotal int64 `json:"overflow_total"`
+	SealedRuns    int   `json:"sealed_runs"`
+	SealedBytes   int64 `json:"sealed_bytes"`
+	Truncated     bool  `json:"truncated,omitempty"`
+}
+
+// ArchiveStats reports queued ids, overflow state, and the number and chunk
+// bytes of buffers with no active writer (sealed runs awaiting archival,
+// including ones the queue cap deferred).
+func (s *Store) ArchiveStats() ArchiveStats {
+	s.mu.Lock()
+	st := ArchiveStats{Queued: len(s.archiver.queue), Overflow: s.archiver.overflow, OverflowTotal: s.archiver.overflowTotal}
+	active := make(map[string]bool, len(s.writers))
+	for id := range s.writers {
+		active[id] = true
+	}
+	s.mu.Unlock()
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return st
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || active[e.Name()] {
+			continue
+		}
+		if st.SealedRuns >= maxArchiveStatDirs {
+			st.Truncated = true
+			break
+		}
+		st.SealedRuns++
+		files, err := os.ReadDir(filepath.Join(s.root, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !strings.HasSuffix(f.Name(), ".zst") {
+				continue
+			}
+			if info, err := f.Info(); err == nil {
+				st.SealedBytes += info.Size()
+			}
+		}
+	}
+	return st
+}
+
 // enqueue hands a sealed run to the archiver. It reports false when the
 // archiver is not running.
 func (s *Store) enqueue(runID string) bool {
@@ -464,8 +531,13 @@ func (s *Store) enqueue(runID string) bool {
 		return false
 	}
 	if !a.queued[runID] {
-		a.queued[runID] = true
-		a.queue = append(a.queue, runID)
+		if len(a.queue) >= maxArchiveQueue {
+			a.overflow = true
+			a.overflowTotal++
+		} else {
+			a.queued[runID] = true
+			a.queue = append(a.queue, runID)
+		}
 	}
 	select {
 	case a.wake <- struct{}{}:
@@ -479,15 +551,29 @@ func (s *Store) archiveLoop() {
 	for {
 		s.mu.Lock()
 		var runID string
+		var sweep bool
 		ctx := a.ctx
 		if len(a.queue) > 0 && ctx.Err() == nil {
 			runID = a.queue[0]
 			a.queue[0] = ""
 			a.queue = a.queue[1:]
 			delete(a.queued, runID)
+		} else if a.overflow && !a.sweeping && ctx.Err() == nil && a.running {
+			// Idle with deferred ids: rediscover them from the directory.
+			a.overflow, a.sweeping, sweep = false, true, true
 		}
 		stop := a.stop
 		s.mu.Unlock()
+		if sweep {
+			err := fault.Call(func() error { return s.ArchiveOrphansContext(ctx) })
+			s.mu.Lock()
+			a.sweeping = false
+			s.mu.Unlock()
+			if err != nil && ctx.Err() == nil {
+				slog.Error("log archive sweep after queue overflow failed; the periodic sweep will retry", "error", err)
+			}
+			continue
+		}
 		if runID == "" {
 			select {
 			case <-a.wake:

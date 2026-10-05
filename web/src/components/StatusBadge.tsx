@@ -16,6 +16,7 @@ const STATUS_META: Record<string, StatusMeta> = {
   skipped: { label: 'Skipped', icon: 'pause', cls: 'chip-warn' },
   missed: { label: 'Missed', icon: 'alert-triangle', cls: 'chip-warn' },
   running: { label: 'Running', icon: 'loader', cls: 'chip-info', spin: true },
+  queued: { label: 'Queued', icon: 'clock', cls: 'chip-info' },
   pending: { label: 'Pending', icon: 'clock', cls: 'chip-info' },
 };
 
@@ -38,7 +39,7 @@ export function StatusIcon({ status, size = 14 }: { status: string; size?: numbe
       ? 'text-green-400'
       : status === 'failed' || status === 'timeout'
         ? 'text-red-400'
-        : status === 'running' || status === 'pending'
+        : status === 'running' || status === 'pending' || status === 'queued'
           ? 'text-blue-400'
           : 'text-amber-400';
   return <Icon name={meta.icon} size={size} className={`${color} ${meta.spin ? 'spin' : ''} shrink-0`} />;

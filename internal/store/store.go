@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -165,6 +165,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 8: %w", err)
 		}
 	}
+	if version <= 8 {
+		if _, err := s.db.ExecContext(ctx, migration9); err != nil {
+			return fmt.Errorf("migration 9: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -198,7 +203,7 @@ CREATE INDEX idx_runs_time ON runs(queued_us DESC);
 CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);
 CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
 CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
-CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('pending','running');
+CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
 CREATE UNIQUE INDEX idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
 CREATE TABLE schedule_state (
  definition_id INTEGER PRIMARY KEY REFERENCES definitions(definition_id), schedule_hash TEXT NOT NULL,
@@ -209,7 +214,7 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=8;
+` + execQueueDDL + `PRAGMA user_version=9;
 COMMIT;`
 
 const migration3 = `
@@ -253,6 +258,25 @@ const migration8 = `
 BEGIN;
 CREATE INDEX IF NOT EXISTS idx_runs_end_time ON runs(ended_us DESC);
 PRAGMA user_version=8;
+COMMIT;`
+
+// execQueueDDL creates the durable execution queue (ADR-9). Each row belongs to
+// a run in status 'queued'; both are written and removed in one transaction.
+const execQueueDDL = `CREATE TABLE exec_queue (
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
+ definition_id INTEGER NOT NULL, enqueued_us INTEGER NOT NULL, expires_us INTEGER NOT NULL,
+ payload_bytes INTEGER NOT NULL
+);
+CREATE INDEX idx_exec_queue_definition ON exec_queue(definition_id, seq);
+CREATE INDEX idx_exec_queue_expiry ON exec_queue(expires_us);
+`
+
+const migration9 = `
+BEGIN;
+DROP INDEX IF EXISTS idx_runs_active;
+CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
+` + execQueueDDL + `PRAGMA user_version=9;
 COMMIT;`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
@@ -486,7 +510,8 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 	defer tx.Rollback()
 	var before string
 	var source string
-	if err = tx.QueryRowContext(ctx, "SELECT spec,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&before, &source); err != nil {
+	var definitionID int64
+	if err = tx.QueryRowContext(ctx, "SELECT definition_id,spec,source FROM definitions WHERE name=? AND deleted_us IS NULL", name).Scan(&definitionID, &before, &source); err != nil {
 		return err
 	}
 	if source == "config" {
@@ -497,6 +522,9 @@ func (s *Store) DeleteDefinition(ctx context.Context, name, actor string) error 
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before) VALUES(?,?,?,?,?)", now, actor, "delete", name, before); err != nil {
+		return err
+	}
+	if err = dropDefinitionQueued(ctx, tx, definitionID, "definition_removed", time.UnixMicro(now)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -528,6 +556,11 @@ func (s *Store) SetEnabled(ctx context.Context, name string, enabled bool) error
 	after := fmt.Sprintf(`{"enabled":%t}`, enabled)
 	if _, err = tx.ExecContext(ctx, "INSERT INTO audit(at_us,actor,action,target,before,after) VALUES(?,?,?,?,?,?)", now, "api", "set_enabled", name, nil, after); err != nil {
 		return err
+	}
+	if !enabled {
+		if err = dropDefinitionQueued(ctx, tx, id, "definition_disabled", time.UnixMicro(now)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -654,10 +687,26 @@ func (s *Store) AdmitIdempotentRun(ctx context.Context, r model.Run, principal, 
 		return "", err
 	}
 	defer tx.Rollback()
+	existingID, err := reserveIdempotency(ctx, tx, principal, operation, key, requestHash)
+	if err != nil || existingID != "" {
+		return existingID, err
+	}
+	if _, err = tx.ExecContext(ctx, createRunSQL, runArgs(r)...); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us) VALUES(?,?,?,?,?,?)", principal, operation, key, requestHash, r.ID, time.Now().UnixMicro()); err != nil {
+		return "", err
+	}
+	return "", tx.Commit()
+}
+
+// reserveIdempotency returns the run ID of a still-live key (replay) or clears
+// an expired one so the caller can insert a new reservation in tx.
+func reserveIdempotency(ctx context.Context, tx *sql.Tx, principal, operation, key, requestHash string) (string, error) {
 	now := time.Now()
 	var existingID, existingHash string
 	var created int64
-	err = tx.QueryRowContext(ctx, "SELECT run_id,request_hash,created_us FROM idempotency WHERE principal=? AND operation=? AND key=?", principal, operation, key).Scan(&existingID, &existingHash, &created)
+	err := tx.QueryRowContext(ctx, "SELECT run_id,request_hash,created_us FROM idempotency WHERE principal=? AND operation=? AND key=?", principal, operation, key).Scan(&existingID, &existingHash, &created)
 	if err == nil && created > now.Add(-24*time.Hour).UnixMicro() {
 		if existingHash != requestHash {
 			return "", fmt.Errorf("admit idempotent run: %w", ErrIdempotencyConflict)
@@ -672,13 +721,7 @@ func (s *Store) AdmitIdempotentRun(ctx context.Context, r model.Run, principal, 
 			return "", err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, createRunSQL, runArgs(r)...); err != nil {
-		return "", err
-	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO idempotency(principal,operation,key,request_hash,run_id,created_us) VALUES(?,?,?,?,?,?)", principal, operation, key, requestHash, r.ID, now.UnixMicro()); err != nil {
-		return "", err
-	}
-	return "", tx.Commit()
+	return "", nil
 }
 func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID string, at time.Time) error {
 	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
@@ -726,7 +769,10 @@ func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
 }
 func (s *Store) Recover(ctx context.Context) error {
 	now := time.Now().UnixMicro()
-	_, err := s.db.ExecContext(ctx, "UPDATE runs SET status='interrupted',end_reason='crash_recovery',ended_us=? WHERE status IN ('pending','running')", now)
+	// A queued run without a queue row can never drain or expire (impossible by
+	// construction; repaired here so it cannot stay active forever).
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status='interrupted',end_reason='crash_recovery',ended_us=?
+		WHERE status IN ('pending','running') OR (status='queued' AND run_id NOT IN (SELECT run_id FROM exec_queue))`, now)
 	return err
 }
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {
@@ -752,7 +798,7 @@ func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, fil
 	case "manual":
 		conditions = append(conditions, "trigger='manual'")
 	case "active":
-		conditions = append(conditions, "status IN ('pending','running')")
+		conditions = append(conditions, "status IN ('queued','pending','running')")
 	}
 	if before != "" {
 		var queued int64
@@ -820,7 +866,7 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 	isFailed := func(status string) bool {
 		return status == "failed" || status == "timeout" || status == "interrupted"
 	}
-	isActive := func(status string) bool { return status == "pending" || status == "running" }
+	isActive := func(status string) bool { return status == "queued" || status == "pending" || status == "running" }
 	jobEntry := func(name string) *RunJobMetrics {
 		index, ok := jobStats[name]
 		if !ok {
@@ -833,7 +879,7 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		return jobs[index]
 	}
 
-	rows, err := s.rdb.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('pending','running')`, startUS, startUS)
+	rows, err := s.rdb.QueryContext(ctx, `SELECT job,status,queued_us,started_us,ended_us FROM runs WHERE queued_us>=? OR ended_us>=? OR status IN ('queued','pending','running')`, startUS, startUS)
 	if err != nil {
 		return out, err
 	}
@@ -879,7 +925,7 @@ func (s *Store) RunMetrics(ctx context.Context, since, now time.Time, buckets in
 		if isActive(status) {
 			entry := jobEntry(job)
 			entry.Active++
-			if status == "pending" {
+			if status == "pending" || status == "queued" {
 				out.Queued++
 			} else {
 				out.Active++
@@ -1141,7 +1187,7 @@ ORDER BY sort_us DESC,r.run_id DESC LIMIT ?`,
 	return out, rows.Err()
 }
 func (s *Store) DeleteRun(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running')
+	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE run_id=? AND status NOT IN ('pending','running','queued')
 		AND NOT EXISTS (SELECT 1 FROM idempotency WHERE idempotency.run_id=runs.run_id AND created_us>?)`, id, time.Now().Add(-24*time.Hour).UnixMicro())
 	return err
 }
@@ -1158,7 +1204,7 @@ func (s *Store) DeleteRuns(ctx context.Context, ids []string) error {
 	}
 	args = append(args, time.Now().Add(-24*time.Hour).UnixMicro())
 	query := `DELETE FROM runs WHERE run_id IN (` + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + `)
-		AND status NOT IN ('pending','running')
+		AND status NOT IN ('pending','running','queued')
 		AND NOT EXISTS (SELECT 1 FROM idempotency WHERE idempotency.run_id=runs.run_id AND created_us>?)`
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err

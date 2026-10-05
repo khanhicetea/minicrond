@@ -50,14 +50,16 @@ A run carries:
 | `log_ref` | backend-neutral log location (see `09`) |
 | `run_as` | user[:group] actually used |
 
-**Run status:** `pending` (queued) → `running` → one of `succeeded`,
+**Run status:** `queued` (persisted, waiting for a concurrency slot; ADR-9) →
+`pending` (admitted) → `running` → one of `succeeded`,
 `failed`, `stopped` (operator/policy initiated), `interrupted` (daemon died
 mid-run), `skipped` (overlap policy declined), `missed` (recorded, not
 executed — see catch-up in `06`), `timeout`.
 
 **End reasons** (orthogonal detail on terminal status): `exit`,
 `exit_nonzero`, `signal`, `timeout`, `overlap_skip`, `overlap_replace`,
-`queue_full`, `stop_signal`, `sigkill`, `daemon_shutdown`, `crash_recovery`,
+`queue_full`, `queue_expired`, `queue_cancelled`, `definition_removed`, `definition_disabled`,
+`retry_budget`, `retry_dropped`, `stop_signal`, `sigkill`, `daemon_shutdown`, `crash_recovery`,
 `dst_skip`, `start_error`, `log_overflow`.
 
 Only these words. UI/API/docs use them verbatim.

@@ -87,7 +87,7 @@ export const STREAM_SYSTEM = 3;
 
 /** Run statuses that still need polling. */
 export function isActiveRun(run: Pick<Run, 'status'>): boolean {
-  return run.status === 'pending' || run.status === 'running';
+  return run.status === 'queued' || run.status === 'pending' || run.status === 'running';
 }
 
 export function isTerminalStatus(status: string): boolean {

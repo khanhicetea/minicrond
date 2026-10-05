@@ -100,7 +100,7 @@ func TestTerminalStatePersistsAfterStorageOutage(t *testing.T) {
 // A full concurrency gate is reported distinctly from the overlap policy, and
 // a retry that meets it waits for capacity instead of being dropped.
 func TestCapacityGateSkipsAndDefersRetries(t *testing.T) {
-	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1})
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1, Queue: QueueOptions{Disabled: true}})
 	blocker, blockerHash := putJob(t, st, model.Definition{Name: "blocker", Kind: model.KindJob, Command: "sleep 2", Shell: "/bin/sh", OnOverlap: "parallel", SuccessCodes: []int{0}})
 	flaky, flakyHash := putJob(t, st, model.Definition{Name: "flaky-gate", Kind: model.KindJob, Command: "exit 1", Shell: "/bin/sh", OnOverlap: "skip", Retries: 1, RetryDelay: 1, SuccessCodes: []int{0}})
 
