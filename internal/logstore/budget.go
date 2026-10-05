@@ -361,7 +361,15 @@ func (s *Store) EnforceDiskBudget(ctx context.Context) (DiskStatus, error) {
 	st.Pressure, st.Insufficient = false, false
 	st.Passes++
 	var errs []error
-	defer func() { s.setDiskStatus(st) }()
+	defer func() {
+		if ctx.Err() != nil {
+			// An interrupted pass (shutdown) did not learn whether pressure was
+			// relieved; keep the previous verdict so the next pass neither
+			// reports relief nor repeats the episode's error.
+			st.Pressure, st.Insufficient = prev.Pressure, prev.Insufficient
+		}
+		s.setDiskStatus(st)
+	}()
 
 	s.probe(p, &st)
 	if st.StatfsError != "" && prev.StatfsError == "" {

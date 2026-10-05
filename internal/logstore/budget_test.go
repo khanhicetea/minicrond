@@ -540,3 +540,39 @@ func TestPressureSkipsArchivedChunksOfRunsOwnedByAnotherOperation(t *testing.T) 
 		t.Fatal("a released run stays unreclaimable")
 	}
 }
+
+// Review NIT 2: a pass interrupted by shutdown keeps the previous verdict, so
+// the next pass does not report relief and re-log the episode's error.
+func TestCanceledPassKeepsTheInsufficientVerdict(t *testing.T) {
+	logs := captureLogs(t)
+	f := newBudgetFixture(t)
+	w, err := f.s.Open("live", "j", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.s.Close("live")
+	if err := w.Write(Stdout, payload(100<<10), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.compact()
+	f.disk.capacity = f.used() + 1<<10
+	f.policy(0, 100<<20)
+	if st := f.enforce(); !st.Insufficient {
+		t.Fatalf("setup: %+v", st)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := f.s.EnforceDiskBudget(ctx); err == nil {
+		t.Fatal("a canceled pass reported success")
+	}
+	if st := f.s.DiskStatus(); !st.Insufficient || !st.Pressure || !f.s.DiskPressure() {
+		t.Fatalf("a canceled pass published %+v", st)
+	}
+	f.enforce()
+	if n := logs.count("could not be relieved"); n != 1 {
+		t.Fatalf("episode error logged %d times, want 1", n)
+	}
+	if logs.count("pressure relieved") != 0 {
+		t.Fatal("relief logged for a pressure that never ended")
+	}
+}
