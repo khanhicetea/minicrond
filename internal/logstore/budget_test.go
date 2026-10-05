@@ -576,3 +576,21 @@ func TestCanceledPassKeepsTheInsufficientVerdict(t *testing.T) {
 		t.Fatal("relief logged for a pressure that never ended")
 	}
 }
+
+// Review NIT 4: hidden directories other than the quarantine are not run
+// buffers (the sweeps skip them), so their bytes are not counted as sealed ones
+// that pressure could never reclaim.
+func TestHiddenDirectoriesAreNotCountedAsSealedBuffers(t *testing.T) {
+	f := newBudgetFixture(t)
+	hidden := filepath.Join(f.dir, "logs", ".scratch")
+	if err := os.MkdirAll(hidden, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "x"), payload(64<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u, err := f.s.MeasureDiskUsage(t.Context())
+	if err != nil || u.SealedBytes != 0 || u.SealedRuns != 0 || u.HotBytes != 0 {
+		t.Fatalf("usage = %+v, %v", u, err)
+	}
+}

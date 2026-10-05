@@ -206,6 +206,12 @@ func (s *Store) MeasureDiskUsage(ctx context.Context) (DiskUsage, error) {
 			u.QuarantineBytes, u.QuarantineEntries, u.QuarantineOldest = quarantineUsage(path)
 			continue
 		}
+		// Other hidden directories are not run buffers: the archive sweep and
+		// pruneSealed skip them, so counting them would report pressure that can
+		// never be relieved.
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
 		size := dirBytes(path)
 		if s.Active(e.Name()) != nil {
 			u.HotBytes += size
