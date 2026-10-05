@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/user"
@@ -86,6 +87,22 @@ type Logs struct {
 	// default) groups syncs while output keeps arriving; "frame" syncs every
 	// line, which caps throughput at the disk's fsync rate.
 	Durability string `toml:"durability" json:"durability"`
+}
+
+// MaxDBMaxSizeMiB is the largest accepted logs.db_max_size (1 PiB), far above
+// any real disk yet small enough that the MiB-to-bytes shift cannot overflow.
+const MaxDBMaxSizeMiB = 1 << 30
+
+// MaxSizeBytes converts DBMaxSize to bytes. Out-of-range values saturate
+// instead of wrapping into a negative or tiny budget; 0 disables the budget.
+func (l Logs) MaxSizeBytes() int64 {
+	if l.DBMaxSize <= 0 {
+		return 0
+	}
+	if int64(l.DBMaxSize) > math.MaxInt64>>20 {
+		return math.MaxInt64
+	}
+	return int64(l.DBMaxSize) << 20
 }
 
 type importBundle struct {
@@ -358,8 +375,8 @@ func validateConfig(c *Config) error {
 	if err := ValidateClock(c.Logs.DBPruneAt); err != nil {
 		return fmt.Errorf("logs.db_prune_at: %w", err)
 	}
-	if c.Logs.DBMaxSize < 0 {
-		return errors.New("logs.db_max_size: must be zero (no size budget) or a positive number of MiB")
+	if c.Logs.DBMaxSize < 0 || int64(c.Logs.DBMaxSize) > MaxDBMaxSizeMiB {
+		return fmt.Errorf("logs.db_max_size: must be zero (no size budget) or between 1 and %d MiB", MaxDBMaxSizeMiB)
 	}
 	if c.Logs.Durability != "batch" && c.Logs.Durability != "frame" {
 		return errors.New(`logs.durability: must be "batch" or "frame"`)

@@ -105,8 +105,9 @@
         "db_max_size": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 1073741824,
           "default": 0,
-          "description": "Log archive size budget in MiB; the daily prune removes the oldest chunks above it. 0 disables the budget"
+          "description": "Log archive size budget in MiB (at most 1 PiB); the daily prune removes the oldest chunks above it. 0 disables the budget"
         },
         "durability": {
           "enum": [

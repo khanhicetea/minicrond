@@ -43,7 +43,7 @@ max_line = 256                 # single log line cap in KiB (1..16384)
 worker_flush_interval = 15     # seal+archive cadence for running workers, minutes
 db_keep_for = 30               # log-archive age budget, days (rolling)
 db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
-db_max_size = 0                # log-archive size budget, MiB (0 = none)
+db_max_size = 0                # log-archive size budget, MiB (0 = none, max 1073741824)
 durability = "batch"           # log fsync policy: "batch" or "frame"
 
 [defaults]
@@ -117,7 +117,8 @@ and `max_concurrent_runs` are unitless.
   shorter of the two budgets.
 - `logs.db_max_size` — optional size budget for the log archive, in MiB. When
   the archive's used space exceeds it after the age prune, the oldest chunks
-  are removed until it fits. `0` (the default) disables the budget.
+  are removed until it fits. `0` (the default) disables the budget; values
+  above 1073741824 MiB (1 PiB) are rejected so the byte conversion cannot wrap.
 - `logs.durability` — `"batch"` (the default) writes every log line to the
   buffer file before accepting the next one, so a daemon crash loses nothing,
   but fsyncs as a group: when the child's pipe has no more buffered output, or
