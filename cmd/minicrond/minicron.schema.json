@@ -160,6 +160,34 @@
         }
       }
     },
+    "reads": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Admission limits for expensive diagnostic reads (JSON log pages, raw download pages, run metrics). Excess requests wait briefly, then get HTTP 503 with Retry-After. Requires a daemon restart",
+      "properties": {
+        "slots": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64,
+          "default": 4,
+          "description": "Expensive reads that may run at once"
+        },
+        "budget": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 4096,
+          "default": 32,
+          "description": "MiB of estimated working set shared by the reads running at once (a log page counts 4, run metrics 8)"
+        },
+        "work_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300,
+          "default": 20,
+          "description": "Seconds one request's read or aggregation may run, separate from the socket write deadline"
+        }
+      }
+    },
     "defaults": {
       "$ref": "#/$defs/job_defaults"
     },

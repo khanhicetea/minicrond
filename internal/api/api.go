@@ -60,6 +60,10 @@ type Server struct {
 	tcpEnabled      bool
 	basePath        string
 	streamSlots     chan struct{}
+	readMu          sync.Mutex
+	readGate        *readGate
+	readWork        time.Duration
+	metrics         metricsShare
 	alertChannels   func() []config.AlertChannel
 	jobDefaults     func() model.Definition
 	testAlert       func(context.Context, string) error
@@ -573,7 +577,7 @@ func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"reloaded": true})
 }
 func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
-	defs, err := s.store.Definitions(r.Context())
+	defs, err := s.store.ReadDefinitions(r.Context())
 	if err != nil {
 		internal(w, r, err)
 		return
@@ -594,7 +598,7 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 func (s *Server) workerStates(w http.ResponseWriter, r *http.Request) {
-	defs, err := s.store.Definitions(r.Context())
+	defs, err := s.store.ReadDefinitions(r.Context())
 	if err != nil {
 		internal(w, r, err)
 		return
@@ -608,7 +612,7 @@ func (s *Server) workerStates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": s.super.States(names)})
 }
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
-	d, hash, err := s.store.Definition(r.Context(), r.PathValue("name"))
+	d, hash, err := s.store.ReadDefinition(r.Context(), r.PathValue("name"))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, 404, "not_found", "definition not found")
 		return
@@ -947,7 +951,7 @@ func (s *Server) testAlertChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runAlerts(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.store.Run(r.Context(), r.PathValue("id")); err != nil {
+	if _, err := s.store.ReadRun(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found", "run not found")
 		} else {
@@ -992,12 +996,25 @@ func (s *Server) runMetrics(w http.ResponseWriter, r *http.Request) {
 	if buckets == 0 {
 		buckets = 48
 	}
-	now := time.Now()
-	stats, err := s.store.RunMetrics(r.Context(), now.Add(-window), now, buckets)
+	buckets = min(max(buckets, 1), 288) // the store applies the same clamp
+	// Concurrent and near-simultaneous requests for one view share a single
+	// computation, which holds one admission slot while it runs.
+	stats, err := s.metrics.get(r.Context(), metricsKey{window, buckets}, func(ctx context.Context) (store.RunMetrics, error) {
+		release, err := s.gate().acquire(ctx, metricsCost, readAdmitWait)
+		if err != nil {
+			return store.RunMetrics{}, err
+		}
+		defer release()
+		ctx, cancel := s.readWorkContext(ctx)
+		defer cancel()
+		now := time.Now()
+		return s.store.RunMetrics(ctx, now.Add(-window), now, buckets)
+	})
 	if err != nil {
-		internal(w, r, err)
+		s.writeReadFailure(w, r, err)
 		return
 	}
+	extendWriteDeadline(w, responseWriteTimeout)
 	writeJSON(w, 200, stats)
 }
 
@@ -1031,7 +1048,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": runs, "next_before": nextBefore})
 }
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {
-	run, err := s.store.Run(r.Context(), r.PathValue("id"))
+	run, err := s.store.ReadRun(r.Context(), r.PathValue("id"))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, 404, "not_found", "run not found")
 		return
@@ -1058,24 +1075,107 @@ func (s *Server) log(w http.ResponseWriter, r *http.Request) {
 	if limit == 0 {
 		limit = 1000
 	}
-	frames, err := s.logs.ReadContext(r.Context(), r.PathValue("id"), after, limit)
-	if err != nil {
-		internal(w, r, err)
+	release, ok := s.admitRead(w, r, logPageCost)
+	if !ok {
 		return
 	}
+	defer release()
+	ctx, cancel := s.readWorkContext(r.Context())
+	defer cancel()
+	// A page holds at most about 1 MiB of payload (plus one frame when a
+	// single line is larger); clients continue from the last sequence.
+	frames, err := s.logs.ReadStreamContext(ctx, r.PathValue("id"), after, limit)
+	if err != nil {
+		s.writeReadFailure(w, r, err)
+		return
+	}
+	extendWriteDeadline(w, responseWriteTimeout)
 	writeJSON(w, 200, map[string]any{"items": frames})
 }
 func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
-	if !s.requireRun(w, r, r.PathValue("id")) {
+	id := r.PathValue("id")
+	if !s.requireRun(w, r, id) {
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+r.PathValue("id")+`.log"`)
+	// One slot covers the whole download, which is read and written one page
+	// at a time (about 1 MiB of payload), so memory stays at one page however
+	// large the log is. A stalled client is cut off by the write deadline; a
+	// slow one keeps its slot until it finishes. Downloads are capped below the
+	// slot count (see acquireKind), so they cannot lock out JSON pages and
+	// metrics.
 	// Downloads of any size may take longer than the server write timeout as
 	// long as the client keeps reading.
-	if err := s.logs.RawContext(r.Context(), r.PathValue("id"), &progressWriter{w: w}); err != nil && r.Context().Err() == nil {
-		slog.Error("raw log response failed", "run", r.PathValue("id"), "error", err)
+	release, ok := s.admit(w, r, rawPageCost, true)
+	if !ok {
+		return
 	}
+	defer release()
+	reader := s.logs.NewStreamReader(id)
+	defer reader.Close()
+	out := &progressWriter{w: w}
+	headersSent := false
+	ready := func() {
+		if !headersSent {
+			headersSent = true
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.log"`)
+		}
+	}
+	var after uint64
+	for {
+		err := s.rawPage(r.Context(), out, reader, &after, ready)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if !headersSent {
+			s.writeReadFailure(w, r, err)
+			return
+		}
+		// Part of the file is already out; end the response abnormally so the
+		// client cannot mistake it for a complete download.
+		if r.Context().Err() == nil {
+			slog.Error("raw log response failed", "run", id, "error", err)
+		}
+		panic(http.ErrAbortHandler)
+	}
+}
+
+// rawPage reads and writes one page of a raw download, returning io.EOF once
+// the log is exhausted. ready runs before the first byte (or EOF) is produced,
+// so a failure before it can still be an ordinary error response.
+func (s *Server) rawPage(parent context.Context, out io.Writer, reader *logstore.StreamReader, after *uint64, ready func()) error {
+	ctx, cancel := s.readWorkContext(parent)
+	defer cancel()
+	frames, err := reader.ReadContext(ctx, *after, 5000)
+	if err != nil {
+		return err
+	}
+	ready()
+	if len(frames) == 0 {
+		return io.EOF
+	}
+	for _, f := range frames {
+		switch f.Stream {
+		case logstore.Stderr:
+			_, err = io.WriteString(out, "[err] ")
+		case logstore.System:
+			_, err = io.WriteString(out, "[minicron] ")
+		}
+		if err == nil {
+			_, err = out.Write(f.Payload)
+		}
+		if err == nil {
+			_, err = out.Write([]byte{'\n'})
+		}
+		if err != nil {
+			return err
+		}
+		*after = f.Sequence
+	}
+	return nil
 }
 
 // streamPollInterval is how often a followed log stream looks for newly stored
@@ -1215,7 +1315,7 @@ func (s *Server) rotate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"token": token, "fingerprint": fingerprint(s.currentTokenHash())})
 }
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
-	defs, err := s.store.Definitions(r.Context())
+	defs, err := s.store.ReadDefinitions(r.Context())
 	if err != nil {
 		internal(w, r, err)
 		return
@@ -1444,7 +1544,7 @@ func (s *Server) requireRun(w http.ResponseWriter, r *http.Request, id string) b
 		writeError(w, 400, "invalid_run_id", "run ID must be a canonical UUID")
 		return false
 	}
-	if _, err := s.store.Run(r.Context(), id); err != nil {
+	if _, err := s.store.ReadRun(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, 404, "not_found", "run not found")
 		} else {

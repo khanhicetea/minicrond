@@ -28,6 +28,7 @@ type Config struct {
 	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
 	Storage       Storage            `toml:"storage" json:"storage"`
 	Logs          Logs               `toml:"logs" json:"logs"`
+	Reads         Reads              `toml:"reads" json:"reads"`
 	Defaults      model.Definition   `toml:"defaults" json:"-"`
 	AlertChannels []AlertChannel     `toml:"alert_channel" json:"alert_channels,omitempty"`
 	Init          []model.Definition `toml:"init" json:"-"`
@@ -149,6 +150,21 @@ func (l Logs) QuarantineMaxBytes() int64 { return mebibytes(l.QuarantineMaxSize)
 // quarantined data regardless of age.
 func (l Logs) QuarantineKeepDuration() time.Duration {
 	return time.Duration(max(l.QuarantineKeepFor, 0)) * 24 * time.Hour
+}
+
+// Reads bounds expensive diagnostic reads (JSON log pages, raw download pages
+// and run metrics) so rare viewers cannot compete with job execution. Requests
+// beyond the limits wait briefly, then receive HTTP 503 with Retry-After. A zero
+// value selects the default. Requires a daemon restart.
+type Reads struct {
+	// Slots is how many expensive reads may run at once.
+	Slots int `toml:"slots" json:"slots"`
+	// Budget is measured in MiB: the summed estimated working set of the reads
+	// running at once (a log page is estimated at 4 MiB, metrics at 8 MiB).
+	Budget int `toml:"budget" json:"budget"`
+	// WorkTimeout is measured in seconds: how long one request's read or
+	// aggregation may run, separate from the socket write deadline.
+	WorkTimeout int `toml:"work_timeout" json:"work_timeout"`
 }
 
 // DefinitionInput is the decoded form of a definition supplied through TOML or
@@ -382,6 +398,15 @@ func applyConfigDefaults(c *Config) {
 		defaultMinFree := DefaultDiskMinFreeMiB
 		c.Logs.DiskMinFree = &defaultMinFree
 	}
+	if c.Reads.Slots == 0 {
+		c.Reads.Slots = 4
+	}
+	if c.Reads.Budget == 0 {
+		c.Reads.Budget = 32
+	}
+	if c.Reads.WorkTimeout == 0 {
+		c.Reads.WorkTimeout = 20
+	}
 	if c.Storage.Synchronous == "" {
 		c.Storage.Synchronous = "full"
 	}
@@ -542,6 +567,15 @@ func validateConfig(c *Config) error {
 	}
 	if err := validateDuration("logs.quarantine_keep_for", c.Logs.QuarantineKeepFor, 24*time.Hour); err != nil {
 		return err
+	}
+	if c.Reads.Slots < 1 || c.Reads.Slots > 64 {
+		return errors.New("reads.slots: must be between 1 and 64")
+	}
+	if c.Reads.Budget < 8 || c.Reads.Budget > 4096 {
+		return errors.New("reads.budget: must be between 8 and 4096 MiB")
+	}
+	if c.Reads.WorkTimeout < 1 || c.Reads.WorkTimeout > 300 {
+		return errors.New("reads.work_timeout: must be between 1 and 300 seconds")
 	}
 	if c.Storage.Synchronous != "full" && c.Storage.Synchronous != "normal" {
 		return errors.New(`storage.synchronous: must be "full" or "normal"`)
