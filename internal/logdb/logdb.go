@@ -7,6 +7,7 @@ package logdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -224,7 +225,15 @@ func (l *LogDB) writeConn(ctx context.Context, fn func(*sql.Conn) error) error {
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busySlice.Milliseconds())); err != nil {
 		return err
 	}
-	defer conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA busy_timeout=5000")
+	defer func() {
+		if err := restoreBusyTimeout(context.WithoutCancel(ctx), conn); err != nil {
+			// The pool has a single writer connection: leaving the short wait on
+			// it would make every later writer fail with SQLITE_BUSY. Discard the
+			// connection; a new one starts with the full busy_timeout.
+			slog.Error("restoring the log database busy timeout failed; discarding the connection", "error", err)
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
 	start := time.Now()
 	for {
 		// The writer connection starts transactions with BEGIN IMMEDIATE, so
@@ -250,6 +259,13 @@ func runTx(ctx context.Context, conn *sql.Conn, fn func(*sql.Tx) error) error {
 	if err != nil {
 		tx.Rollback()
 	}
+	return err
+}
+
+// restoreBusyTimeout returns the writer connection to its normal wait. It is a
+// variable so tests can inject a failure.
+var restoreBusyTimeout = func(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=5000")
 	return err
 }
 

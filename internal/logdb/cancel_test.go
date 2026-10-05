@@ -119,3 +119,27 @@ func TestMaintenanceStatementsStopWaitingWhenContextEnds(t *testing.T) {
 		})
 	}
 }
+
+// Review N5: if restoring busy_timeout failed, the single writer connection
+// silently kept the 100 ms slice and later writers saw spurious SQLITE_BUSY.
+func TestFailedBusyTimeoutRestoreDiscardsTheWriterConnection(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	old := restoreBusyTimeout
+	restoreBusyTimeout = func(context.Context, *sql.Conn) error { return errors.New("injected restore failure") }
+	defer func() { restoreBusyTimeout = old }()
+	if err := l.PutChunks(t.Context(), "run", "job", "job", time.Now(), []Chunk{{Number: 1, First: 1, Last: 1, RawBytes: 1, Blob: []byte("x")}}); err != nil {
+		t.Fatal(err)
+	}
+	restoreBusyTimeout = old
+	var timeout int
+	if err := l.db.QueryRowContext(t.Context(), "PRAGMA busy_timeout").Scan(&timeout); err != nil {
+		t.Fatal(err)
+	}
+	if timeout != 5000 {
+		t.Fatalf("writer connection kept busy_timeout=%d ms after a failed restore", timeout)
+	}
+}
