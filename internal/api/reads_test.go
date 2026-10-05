@@ -723,3 +723,101 @@ func TestMetricsEndpointSharesConcurrentRequests(t *testing.T) {
 		t.Fatalf("16 identical metrics requests held %d slots at once, want one shared computation", peak)
 	}
 }
+
+// Raw downloads hold their slot for as long as the client reads, so they are
+// capped below the slot count: however many are running, a JSON page or a
+// metrics request still finds a slot.
+func TestDownloadsCannotLockOutOtherReads(t *testing.T) {
+	ctx := t.Context()
+	g := newReadGate(ReadLimits{Slots: 4, BudgetBytes: 1 << 30})
+	var held []func()
+	for i := range 3 {
+		release, err := g.acquireKind(ctx, 1, 0, true)
+		if err != nil {
+			t.Fatalf("download %d: %v", i, err)
+		}
+		held = append(held, release)
+	}
+	start := time.Now()
+	if _, err := g.acquireKind(ctx, 1, time.Minute, true); !errors.Is(err, errReadBusy) || time.Since(start) > time.Second {
+		t.Fatalf("fourth download = %v after %v, want an immediate refusal", err, time.Since(start))
+	}
+	release, err := g.acquire(ctx, 1, 0)
+	if err != nil {
+		t.Fatalf("log page beside %d downloads: %v", len(held), err)
+	}
+	release()
+	held[0]()
+	held[0]() // idempotent: must not free a second download slot
+	r, err := g.acquireKind(ctx, 1, 0, true)
+	if err != nil {
+		t.Fatalf("download after one finished: %v", err)
+	}
+	if _, err := g.acquireKind(ctx, 1, 0, true); !errors.Is(err, errReadBusy) {
+		t.Fatalf("double release freed an extra download slot: %v", err)
+	}
+	r()
+	held[1]()
+	held[2]()
+	if inflight, _, _ := g.stats(); inflight != 0 || g.downloads != 0 {
+		t.Fatalf("gate not empty: %d in flight, %d downloads", inflight, g.downloads)
+	}
+	// One slot still allows one download (it is the only capacity there is).
+	one := newReadGate(ReadLimits{Slots: 1})
+	if release, err := one.acquireKind(ctx, 1, 0, true); err != nil {
+		t.Fatalf("download on a single-slot gate: %v", err)
+	} else {
+		release()
+	}
+}
+
+// End to end: with every download slot taken by clients that are not reading,
+// metrics and JSON pages are still served and a further download is refused.
+func TestStalledDownloadsLeaveCapacityForDiagnostics(t *testing.T) {
+	fastReads(t)
+	s, _, _ := setup(t)
+	s.SetReadLimits(ReadLimits{Slots: 3})
+	id, w := storedRun(t, s, "downloads")
+	const lines, size = 100, 200 << 10 // 20 MiB: more than socket buffers hold
+	writeLines(t, w, lines, size)
+	server := newRealServer(t, s, 10*time.Second)
+	var bodies []io.ReadCloser
+	for range 2 { // max(1, 3-1) downloads, none of them reading
+		resp, err := http.Get(server.URL + "/api/v1/runs/" + id + "/log/raw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, resp.Body)
+	}
+	defer func() {
+		for _, b := range bodies {
+			b.Close()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for inflight, _, _ := s.gate().stats(); inflight < 2; inflight, _, _ = s.gate().stats() {
+		if time.Now().After(deadline) {
+			t.Fatal("the downloads never took their slots")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	for _, path := range []string{"/api/v1/runs/" + id + "/log", "/api/v1/metrics/runs"} {
+		resp, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Errorf("%s beside two stalled downloads = %d, want 200", path, resp.StatusCode)
+		}
+	}
+	resp, err := http.Get(server.URL + "/api/v1/runs/" + id + "/log/raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 503 || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("a download beyond the cap = %d, want a retryable 503", resp.StatusCode)
+	}
+}

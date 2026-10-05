@@ -156,7 +156,9 @@ and `max_concurrent_runs` are unitless.
   `read_timeout` when exceeded; it is separate from the socket write deadline,
   which is renewed for the response. A raw download holds its slot until it
   finishes, so a slow client occupies one slot; a stalled one is cut off by the
-  write deadline. Defaults suit about 1 CPU / 512 MiB. `0` selects the default.
+  write deadline. At most `max(1, slots-1)` downloads run at once and a further
+  one is refused immediately (`503 read_busy`), so downloads cannot lock out
+  JSON pages and metrics (with `slots = 1` a download necessarily does). Defaults suit about 1 CPU / 512 MiB. `0` selects the default.
   Changing them requires a daemon restart (reload rejects the change).
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`

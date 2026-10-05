@@ -69,7 +69,9 @@ type readGate struct {
 	slots        int
 	budget       int64
 	maxWaiters   int
+	maxDownloads int // downloads hold a slot for their whole length; see acquireDownload
 	inflight     int
+	downloads    int
 	bytes        int64
 	waiting      int
 	changed      chan struct{} // closed and replaced whenever capacity is released
@@ -84,7 +86,7 @@ func newReadGate(l ReadLimits) *readGate {
 	if l.BudgetBytes <= 0 {
 		l.BudgetBytes = DefaultReadBudgetBytes
 	}
-	return &readGate{slots: l.Slots, budget: l.BudgetBytes, maxWaiters: 4 * l.Slots, changed: make(chan struct{})}
+	return &readGate{slots: l.Slots, budget: l.BudgetBytes, maxWaiters: 4 * l.Slots, maxDownloads: max(1, l.Slots-1), changed: make(chan struct{})}
 }
 
 // acquire reserves one slot and cost bytes, waiting up to wait. It returns
@@ -93,6 +95,17 @@ func newReadGate(l ReadLimits) *readGate {
 // is always admitted when nothing else runs, so an undersized budget cannot
 // lock out all reads.
 func (g *readGate) acquire(ctx context.Context, cost int64, wait time.Duration) (release func(), err error) {
+	return g.acquireKind(ctx, cost, wait, false)
+}
+
+// acquireKind is acquire for a normal read or, with download set, a raw
+// download. A download holds its slot for as long as its client keeps reading,
+// so at most max(1, slots-1) run at once: with more than one slot, a JSON page
+// or metrics request always has capacity left however many downloads are in
+// progress. A download beyond that cap is refused at once rather than queued,
+// because waiting for another download to finish would outlast any sensible
+// admission wait.
+func (g *readGate) acquireKind(ctx context.Context, cost int64, wait time.Duration, download bool) (release func(), err error) {
 	var timer *time.Timer
 	var timeout <-chan time.Time
 	waiting := false
@@ -107,8 +120,15 @@ func (g *readGate) acquire(ctx context.Context, cost int64, wait time.Duration) 
 			g.waiting--
 			waiting = false
 		}
+		if download && g.downloads >= g.maxDownloads {
+			g.mu.Unlock()
+			return nil, errReadBusy
+		}
 		if g.inflight < g.slots && (g.inflight == 0 || g.bytes+cost <= g.budget) {
 			g.inflight++
+			if download {
+				g.downloads++
+			}
 			g.bytes += cost
 			g.peakBytes = max(g.peakBytes, g.bytes)
 			g.peakInflight = max(g.peakInflight, g.inflight)
@@ -118,6 +138,9 @@ func (g *readGate) acquire(ctx context.Context, cost int64, wait time.Duration) 
 				once.Do(func() {
 					g.mu.Lock()
 					g.inflight--
+					if download {
+						g.downloads--
+					}
 					g.bytes -= cost
 					close(g.changed)
 					g.changed = make(chan struct{})
@@ -220,7 +243,11 @@ func writeBusy(w http.ResponseWriter, code, message string) {
 // admitRead reserves capacity for one expensive read, reporting a refusal
 // through writeReadFailure.
 func (s *Server) admitRead(w http.ResponseWriter, r *http.Request, cost int64) (release func(), ok bool) {
-	release, err := s.gate().acquire(r.Context(), cost, readAdmitWait)
+	return s.admit(w, r, cost, false)
+}
+
+func (s *Server) admit(w http.ResponseWriter, r *http.Request, cost int64, download bool) (release func(), ok bool) {
+	release, err := s.gate().acquireKind(r.Context(), cost, readAdmitWait, download)
 	if err != nil {
 		s.writeReadFailure(w, r, err)
 		return nil, false

@@ -1094,11 +1094,12 @@ func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
 	// One slot covers the whole download, which is read and written one page
 	// at a time (about 1 MiB of payload), so memory stays at one page however
 	// large the log is. A stalled client is cut off by the write deadline; a
-	// slow one keeps its slot until it finishes, and other expensive reads are
-	// refused with a retryable 503 meanwhile instead of competing with it.
+	// slow one keeps its slot until it finishes. Downloads are capped below the
+	// slot count (see acquireKind), so they cannot lock out JSON pages and
+	// metrics.
 	// Downloads of any size may take longer than the server write timeout as
 	// long as the client keeps reading.
-	release, ok := s.admitRead(w, r, rawPageCost)
+	release, ok := s.admit(w, r, rawPageCost, true)
 	if !ok {
 		return
 	}
