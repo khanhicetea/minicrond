@@ -73,7 +73,11 @@ drained; output that cannot be stored is discarded. The run is flagged
 index records `dropped_frames`/`dropped_bytes`/`sync_failures`. Capture retries
 on a fresh chunk with a growing delay (1 s up to 30 s, evaluated when the next
 line arrives) and, once storage works again, writes a `system` line stating how
-many lines were not stored. Timeouts and stop requests are unaffected.
+many lines were not stored. Lines discarded while capture is down do not
+consume sequence numbers, but the single frame whose write failed does (it may
+be partly on disk), so a failure shows up as one skipped sequence — which an
+SSE `gap` event can report — plus the `system` line. Timeouts and stop requests
+are unaffected.
 
 Corrupt buffers: an orphaned chunk that cannot be decoded at all is never
 deleted. It stays in place, the sweep reports an error, and after repeated

@@ -126,8 +126,9 @@ streaming right now. The SSE stream replays from the `after` cursor (or
 output, so display lag is up to about two seconds. Events: `line` (`id` = frame
 sequence), `backlog_done`, `done` (sent only after the run's final frames), and
 `gap` (`{"after":N,"first":M}`, `id` = M-1) when frames between the cursor and
-`M` were removed by retention; reconnecting with the `gap` id resumes without
-a gap. `dropped` is no longer sent by the server (no per-viewer queue exists
+`M` were removed by retention, or — rarely — when the one frame being written at
+the moment log storage failed consumed a sequence number but was not stored;
+reconnecting with the `gap` id resumes without a gap. `dropped` is no longer sent by the server (no per-viewer queue exists
 that could overflow); clients may still handle it. Sequences can skip when a
 run's retained frames were evicted by `log_on_full = drop_old`.
 
