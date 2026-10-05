@@ -380,18 +380,31 @@ func (s *Store) StartArchiver() {
 }
 
 // StopArchiver drains queued archival and stops the workers; it also runs the
-// final group sync of an orderly shutdown. If ctx ends first, the archiver's
-// own context is canceled: the transaction, claim wait, slot wait or sweep in
-// progress aborts and the workers exit, so no archive operation touches the
-// database after StopArchiver returns. Remaining buffers are archived by the
-// next orphan sweep.
+// final group sync of an orderly shutdown, under the same deadline: fsync
+// cannot be interrupted, so on a stalled disk the sync is abandoned (it only
+// touches buffer files, never the archive database) and ctx's error is
+// returned. If ctx ends first, the archiver's own context is canceled: the
+// transaction, claim wait, slot wait or sweep in progress aborts and the
+// workers exit, so no archive operation touches the database after
+// StopArchiver returns. Remaining buffers are archived by the next orphan
+// sweep.
 func (s *Store) StopArchiver(ctx context.Context) error {
-	s.SyncAll()
+	var syncErr error
+	syncDone := make(chan struct{})
+	go func() {
+		s.SyncAll()
+		close(syncDone)
+	}()
+	select {
+	case <-syncDone:
+	case <-ctx.Done():
+		syncErr = ctx.Err()
+	}
 	s.mu.Lock()
 	a := &s.archiver
 	if !a.running {
 		s.mu.Unlock()
-		return nil
+		return syncErr
 	}
 	a.running = false
 	close(a.stop)
@@ -404,7 +417,7 @@ func (s *Store) StopArchiver(ctx context.Context) error {
 	select {
 	case <-done:
 		a.cancel()
-		return nil
+		return syncErr
 	case <-ctx.Done():
 		a.cancel()
 		<-done

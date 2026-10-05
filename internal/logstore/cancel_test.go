@@ -255,3 +255,46 @@ func TestStopArchiverCancelsArchiveTransactionBlockedOnDatabase(t *testing.T) {
 		t.Fatalf("buffer must remain for the next sweep: %v", err)
 	}
 }
+
+// Review S1: the final group sync ran before StopArchiver looked at its
+// context, so a stalled disk could hold shutdown past its deadline.
+func TestStopArchiverFinalSyncHonorsDeadline(t *testing.T) {
+	s, _, _ := newArchiveStore(t)
+	s.SetGroupSync(time.Hour, 0)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	s.syncFile = func(f *os.File) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return nil
+	}
+	defer close(release)
+	s.StartArchiver()
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(Stdout, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	var stopErr error
+	start := time.Now()
+	withinTime(t, 3*time.Second, "StopArchiver with a stalled fsync", func() { stopErr = s.StopArchiver(ctx) })
+	if !errors.Is(stopErr, context.DeadlineExceeded) {
+		t.Fatalf("StopArchiver = %v, want the deadline error", stopErr)
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("the stalled fsync was never reached")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("StopArchiver took %v", took)
+	}
+	s.archiver.workers.Wait() // archive workers are gone even though the sync is stuck
+}
