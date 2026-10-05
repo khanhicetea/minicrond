@@ -131,7 +131,8 @@ and `max_concurrent_runs` are unitless.
   restart (a restart never re-queues a run that may have started); the current
   definition is used when an item is taken, and a deleted/disabled one is dropped
   (`skipped` / `definition_removed` or `definition_disabled`). `enabled = false`
-  restores the old skip-on-full behavior. `max_pending_retries` bounds retries that
+  restores the old skip-on-full behavior (items already queued still drain or
+  expire). `max_pending_retries` bounds retries that
   are waiting for `retry_delay`; an overflowing retry is dropped with a
   `skipped` / `retry_dropped` run. Workers and `[[init]]` jobs are never queued.
   A zero numeric value selects its default. Changing any `[queue]` value requires a

@@ -531,3 +531,33 @@ func TestShutdownLeavesQueuedItemsDurable(t *testing.T) {
 		t.Fatalf("stats = %+v, %v", stats, err)
 	}
 }
+
+// Disabling the queue stops new items only; items persisted earlier still drain.
+func TestDisabledQueueStillDrainsLeftoverItems(t *testing.T) {
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1})
+	blocker, bh := putJob(t, st, parallelJob("blocker", "sleep 30"))
+	a, ah := putJob(t, st, parallelJob("a", "echo leftover"))
+	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := s.Trigger(t.Context(), a, ah, "manual", nil)
+	if err != nil || queued.Status != "queued" {
+		t.Fatalf("queue = %s, %v", queued.Status, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	s2 := New(st, s.logs, Options{MaxConcurrentRuns: 1, Queue: QueueOptions{Disabled: true, DrainRate: 100}})
+	t.Cleanup(func() { s2.Shutdown(context.Background()) })
+	if err := s2.ResumeQueue(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitTerminal(t, st, queued.ID, 10*time.Second); got.Status != "succeeded" {
+		t.Fatalf("leftover item = %s/%s", got.Status, got.EndReason)
+	}
+}

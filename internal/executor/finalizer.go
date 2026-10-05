@@ -59,6 +59,7 @@ func (s *Service) addFinalizer(r model.Run, d model.Definition, t terminal) fina
 	s.finalizing[r.ID] = &finalItem{r: r, d: d, t: t}
 	s.mu.Unlock()
 	if !s.startLoop(&s.finals.started, s.finalizeLoop) {
+		s.dropFinalizer(r.ID)
 		return finalizerClosing
 	}
 	signal(s.finals.wake)

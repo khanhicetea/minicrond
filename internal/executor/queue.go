@@ -147,10 +147,10 @@ func (s *Service) enqueue(ctx context.Context, d model.Definition, hash, trigger
 // ResumeQueue counts the persisted queue after a restart and arms the drain
 // loop when it is not empty. Items still queued were never started; the usual
 // rate, capacity and expiry rules apply, so a backlog cannot start as a storm.
+//
+// Items left by an earlier run drain (or expire) even if the queue has since been
+// disabled: disabling only stops new items from being queued.
 func (s *Service) ResumeQueue(ctx context.Context) error {
-	if s.queueOpt.Disabled {
-		return nil
-	}
 	st, err := s.store.QueueStats(ctx)
 	if err != nil {
 		return fmt.Errorf("read execution queue: %w", err)
@@ -419,7 +419,7 @@ func (s *Service) Diagnostics(ctx context.Context) Diagnostics {
 		MaxAgeSeconds: o.MaxAge.Seconds(), DrainRate: o.DrainRate, Expired: s.queue.expired.Load(), Rejected: s.queue.rejected.Load(),
 		Unavailable: s.queue.unavailable.Load(), Dropped: s.queue.dropped.Load(),
 	}
-	if !o.Disabled {
+	if !o.Disabled || q.Depth > 0 {
 		if st, err := s.store.QueueStatsRead(ctx); err == nil {
 			q.Depth, q.Bytes = st.Depth, st.Bytes
 			if st.OldestUS > 0 {

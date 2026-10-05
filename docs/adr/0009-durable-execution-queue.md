@@ -41,7 +41,7 @@ occurrence index and retention all work unchanged. Queue wait is
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | `false` restores the old behavior: over-capacity triggers are skipped `queue_full` |
+| `enabled` | `true` | `false` restores the old behavior: over-capacity triggers are skipped `queue_full` (items already queued still drain or expire) |
 | `max_items` | 100 | total queued items |
 | `max_per_job` | 25 | queued items per definition, so one noisy job cannot occupy the queue |
 | `max_bytes` | 256 (KiB) | persisted payload bytes (`payload_bytes` = identity strings of the item: job, hash, idempotency key, parent, plus a fixed row overhead) |
