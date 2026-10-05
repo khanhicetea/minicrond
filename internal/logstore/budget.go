@@ -117,6 +117,7 @@ type diskState struct {
 
 	usageMu    sync.Mutex // coalesces on-demand usage measurements
 	usage      DiskUsage
+	usageErr   error
 	usageValid bool
 	usageAt    time.Time
 }
@@ -232,11 +233,14 @@ func (s *Store) DiskUsageCached(ctx context.Context, maxAge time.Duration) (Disk
 	d.usageMu.Lock()
 	defer d.usageMu.Unlock()
 	if d.usageValid && time.Since(d.usageAt) < maxAge {
-		return d.usage, nil
+		return d.usage, d.usageErr
 	}
 	u, err := s.MeasureDiskUsage(ctx)
-	if err == nil {
-		d.usage, d.usageValid, d.usageAt = u, true, time.Now()
+	if ctx.Err() == nil {
+		// A partial result with its error is cached too, so a persistent
+		// problem (an unreadable directory, a missing WAL stat) cannot turn
+		// every diagnostics call into a fresh walk. A canceled walk is not.
+		d.usage, d.usageErr, d.usageValid, d.usageAt = u, err, true, time.Now()
 	}
 	return u, err
 }
@@ -464,7 +468,7 @@ func (s *Store) measureInto(ctx context.Context, st *DiskStatus) error {
 	st.Usage = u
 	if err == nil {
 		s.disk.usageMu.Lock()
-		s.disk.usage, s.disk.usageValid, s.disk.usageAt = u, true, time.Now()
+		s.disk.usage, s.disk.usageErr, s.disk.usageValid, s.disk.usageAt = u, nil, true, time.Now()
 		s.disk.usageMu.Unlock()
 	}
 	return err

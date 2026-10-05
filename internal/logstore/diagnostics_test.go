@@ -1,7 +1,10 @@
 package logstore
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -196,5 +199,34 @@ func TestMaintenanceDurationsAreRecorded(t *testing.T) {
 	got["retention"] = MaintenanceStat{}
 	if s.MaintenanceStats()["retention"].Runs != 2 {
 		t.Fatal("MaintenanceStats returned shared state")
+	}
+}
+
+// Review NIT 5: a measurement that fails (here a vanished archive file) is cached
+// with its error, so polling diagnostics does not re-walk on every call.
+func TestDiskUsageCachesAPartialResultWithItsError(t *testing.T) {
+	f := newBudgetFixture(t)
+	f.completedRun("r", 10<<10)
+	if err := os.Remove(filepath.Join(f.dir, "minicron-logs.db")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DiskUsageCached(t.Context(), time.Hour); err == nil {
+		t.Fatal("expected a measurement error")
+	}
+	addQuarantined(t, f.s, "late.corrupt", 5000, time.Hour)
+	u, err := f.s.DiskUsageCached(t.Context(), time.Hour)
+	if err == nil {
+		t.Fatal("the cached error was dropped")
+	}
+	if u.QuarantineBytes != 0 {
+		t.Fatalf("a failed measurement was not cached: the second call walked again (%d quarantine bytes)", u.QuarantineBytes)
+	}
+	// A canceled walk is never cached.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	f.s.disk.usageValid = false
+	_, _ = f.s.DiskUsageCached(ctx, time.Hour)
+	if f.s.disk.usageValid {
+		t.Fatal("a canceled walk was cached")
 	}
 }
