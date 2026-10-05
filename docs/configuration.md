@@ -31,6 +31,15 @@ allow_insecure_remote = false  # required true for a non-loopback bind
 timezone = "UTC"               # IANA name; default schedule timezone
 max_concurrent_runs = 32       # global gate across all definitions
 
+[queue]                        # durable queue for triggers that find the gate full (ADR-9; restart to change)
+enabled = true                 # false: over-capacity triggers are skipped (queue_full) as before
+max_items = 100                # total queued runs (1..10000)
+max_per_job = 25               # queued runs per definition (1..max_items)
+max_bytes = 256                # persisted queue payload, KiB (1..65536)
+max_age = 900                  # seconds a run may wait before it expires (1..604800)
+drain_rate = 5                 # queued runs started per second at most (1..1000)
+max_pending_retries = 500      # retries waiting for retry_delay (1..100000)
+
 [storage]
 keep_runs_default = 10000      # default per-definition run history length
 keep_for_default = 7           # default per-definition run age retention, days
@@ -108,8 +117,25 @@ and `max_concurrent_runs` are unitless.
   `X-Frame-Options` and CSP's `frame-ancestors` directive. Restart the daemon
   after changing it.
 - `scheduler.max_concurrent_runs` — 1..1024. When the cap is reached,
-  scheduled fires wait; see `catch_up` below for how missed fires are
-  handled.
+  job triggers (`schedule`, `manual`, `retry`) are queued durably, see
+  `[queue]` below; `[[init]]` startup jobs are never queued. See `catch_up`
+  below for how missed fires are handled.
+- `[queue]` — the bounded durable execution queue ([ADR-9](adr/0009-durable-execution-queue.md)).
+  A queued trigger is a run with status `queued`, persisted before the trigger is
+  acknowledged and started later, oldest first with round-robin fairness across
+  definitions, at most `drain_rate` per second and only into a free
+  `max_concurrent_runs` slot. A run that waits longer than `max_age` becomes
+  `skipped` with end reason `queue_expired`. When `max_items`, `max_per_job` or
+  `max_bytes` is reached a manual trigger is refused (HTTP 429 `queue_full`) and a
+  scheduled/retry trigger is recorded `skipped` / `queue_full`. Items survive a
+  restart (a restart never re-queues a run that may have started); the current
+  definition is used when an item is taken, and a deleted/disabled one is dropped
+  (`skipped` / `definition_removed` or `definition_disabled`). `enabled = false`
+  restores the old skip-on-full behavior. `max_pending_retries` bounds retries that
+  are waiting for `retry_delay`; an overflowing retry is dropped with a
+  `skipped` / `retry_dropped` run. Workers and `[[init]]` jobs are never queued.
+  A zero numeric value selects its default. Changing any `[queue]` value requires a
+  daemon restart.
 - `logs.db_keep_for` / `logs.db_prune_at` — the SQLite log archive has a
   rolling age budget; chunks older than `db_keep_for` are pruned once a day
   at `db_prune_at` (scheduler timezone). Pruning deletes in small batches,

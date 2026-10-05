@@ -43,6 +43,60 @@
         }
       }
     },
+    "queue": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Bounded durable queue for job triggers that find max_concurrent_runs full, and the pending-retry budget (ADR-9). Restart required.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "false skips over-capacity triggers (skipped/queue_full) instead of queueing them"
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 100,
+          "description": "Maximum queued runs"
+        },
+        "max_per_job": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 25,
+          "description": "Maximum queued runs per definition (at most max_items)"
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 256,
+          "description": "Maximum persisted queue payload in KiB"
+        },
+        "max_age": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 604800,
+          "default": 900,
+          "description": "Seconds a queued run may wait for capacity before it expires (skipped/queue_expired)"
+        },
+        "drain_rate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 5,
+          "description": "Maximum queued runs started per second"
+        },
+        "max_pending_retries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "default": 500,
+          "description": "Maximum retries waiting for their retry_delay; beyond it a retry is dropped with a skipped/retry_dropped run"
+        }
+      }
+    },
     "storage": {
       "type": "object",
       "additionalProperties": false,
