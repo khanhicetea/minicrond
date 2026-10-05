@@ -30,6 +30,7 @@ type Scheduler struct {
 	mu      sync.Mutex
 	loops   sync.WaitGroup
 	running map[string]scheduledLoop
+	stopped bool // set by Stop; Reload then refuses to start loops
 }
 
 type scheduledLoop struct {
@@ -37,6 +38,9 @@ type scheduledLoop struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 }
+
+// ErrStopped is returned by Reload after Stop.
+var ErrStopped = errors.New("scheduler stopped")
 
 func New(st *store.Store, ex *executor.Service) *Scheduler {
 	return &Scheduler{store: st, exec: ex, running: make(map[string]scheduledLoop)}
@@ -46,6 +50,9 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.stopped {
+		return ErrStopped
 	}
 	// Keep indexes into defs: copying these large definitions into map values
 	// allocates once per job, even when every scheduling loop is unchanged.
@@ -447,6 +454,7 @@ func maxTime(a, b time.Time) time.Time {
 func (s *Scheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopped = true
 	for _, loop := range s.running {
 		loop.cancel()
 	}

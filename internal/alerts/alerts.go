@@ -75,8 +75,9 @@ type Dispatcher struct {
 	// Notify only appends under dropMu (no I/O); the batch goroutine records
 	// them. dropWake coalesces wakeups.
 	dropMu       sync.Mutex
-	drops        []Record
-	dropOverflow int
+	drops        []Record // ring of the newest maxDropObservations drops
+	dropStart    int      // index of the oldest entry when the ring is full
+	dropOverflow int      // older drops overwritten since the last flush
 	dropWake     chan struct{}
 	wg           sync.WaitGroup
 	ctx          context.Context
@@ -186,13 +187,17 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	}
 }
 
-// observeDrop notes a shed alert without I/O or blocking. Beyond
-// maxDropObservations only a counter grows; it is logged when flushed.
+// observeDrop notes a shed alert without I/O or blocking. The list keeps the
+// newest maxDropObservations drops; each older one overwritten only bumps a
+// counter that is logged when flushed.
 func (d *Dispatcher) observeDrop(runID, name, reason string) {
 	d.dropMu.Lock()
+	rec := Record{RunID: runID, Channel: name, Status: "dropped", Reason: reason}
 	if len(d.drops) < maxDropObservations {
-		d.drops = append(d.drops, Record{RunID: runID, Channel: name, Status: "dropped", Reason: reason})
+		d.drops = append(d.drops, rec)
 	} else {
+		d.drops[d.dropStart] = rec
+		d.dropStart = (d.dropStart + 1) % maxDropObservations
 		d.dropOverflow++
 	}
 	d.dropMu.Unlock()
@@ -207,7 +212,10 @@ func (d *Dispatcher) observeDrop(runID, name, reason string) {
 func (d *Dispatcher) flushDrops() {
 	d.dropMu.Lock()
 	records, overflow := d.drops, d.dropOverflow
-	d.drops, d.dropOverflow = nil, 0
+	if d.dropStart > 0 { // restore oldest-first order
+		records = append(records[d.dropStart:len(records):len(records)], records[:d.dropStart]...)
+	}
+	d.drops, d.dropStart, d.dropOverflow = nil, 0, 0
 	d.dropMu.Unlock()
 	if overflow > 0 {
 		slog.Warn("alert drop observations discarded under overload", "count", overflow)

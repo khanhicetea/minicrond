@@ -113,12 +113,10 @@ func TestTimeoutNotDelayedByBlockedSystemLog(t *testing.T) {
 	unblock := make(chan struct{})
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(unblock) }) })
-	orig := systemLog
-	systemLog = func(w *logstore.Writer, runID, message string) {
+	s.systemLog = func(w *logstore.Writer, runID, message string) {
 		<-unblock
-		orig(w, runID, message)
+		writeSystem(w, runID, message)
 	}
-	t.Cleanup(func() { systemLog = orig })
 	def, pidFile, release := gatedJob(t, "blocked-log", 1)
 	d, hash := putJob(t, st, def)
 	run, err := s.Trigger(t.Context(), d, hash, "manual", nil)
@@ -192,5 +190,94 @@ func TestShutdownDoesNotWaitForStuckAdmission(t *testing.T) {
 	runs, err := st.Runs(t.Context(), d.Name, 10)
 	if err != nil || len(runs) != 1 || runs[0].Status != "failed" {
 		t.Fatalf("runs = %+v, %v; want the refused run finalized as failed", runs, err)
+	}
+}
+
+// Review: a stalled system-line write must not hold run finalization forever.
+func TestStalledSystemLogDoesNotBlockFinalization(t *testing.T) {
+	_, st, s := resilienceService(t, Options{})
+	unblock := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(unblock) }) }
+	t.Cleanup(release)
+	s.systemLog = func(w *logstore.Writer, runID, message string) { <-unblock }
+	s.systemWriteJoin = 300 * time.Millisecond
+	def, _, release2 := gatedJob(t, "stalled-sink", 1)
+	d, hash := putJob(t, st, def)
+	run, err := s.Trigger(t.Context(), d, hash, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release2()
+	eventually(t, 8*time.Second, "run stayed unfinalized behind a stalled system-line write", func() bool {
+		r, err := st.Run(t.Context(), run.ID)
+		return err == nil && r.Status == "timeout"
+	})
+	release()
+}
+
+// Review: BeginShutdown releases triggers queued behind a slow admission and
+// they create no run rows.
+func TestBeginShutdownReleasesQueuedTriggers(t *testing.T) {
+	dir, st, s := resilienceService(t, Options{})
+	d, hash := putJob(t, st, model.Definition{Name: "queued-admission", Kind: model.KindJob, Command: "sleep 30", Shell: "/bin/sh", OnOverlap: "parallel", SuccessCodes: []int{0}})
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saboteur.Close()
+	tx, err := saboteur.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { _, err := s.Trigger(context.Background(), d, hash, "manual", nil); first <- err }()
+	time.Sleep(300 * time.Millisecond) // first now holds admission, blocked in CreateRun
+	second := make(chan error, 1)
+	go func() { _, err := s.Trigger(context.Background(), d, hash, "manual", nil); second <- err }()
+	time.Sleep(200 * time.Millisecond)
+	s.BeginShutdown()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrShutdown) {
+			t.Fatalf("queued trigger = %v, want ErrShutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued trigger stayed blocked on admission after BeginShutdown")
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; !errors.Is(err, ErrShutdown) {
+		t.Fatalf("in-flight trigger = %v, want ErrShutdown", err)
+	}
+	runs, err := st.Runs(t.Context(), d.Name, 10)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %d (%v); the queued trigger must not create a row", len(runs), err)
+	}
+}
+
+// Review (S5, ADR-8 2A): a Seal failure keeps the real execution status and
+// marks the logs truncated.
+func TestSealFailureKeepsExecutionStatus(t *testing.T) {
+	_, st, s := resilienceService(t, Options{})
+	s.sealHook = func(id string) error {
+		_ = s.logs.Seal(id)
+		return errors.New("injected seal failure")
+	}
+	d, hash := putJob(t, st, model.Definition{Name: "seal-fails", Kind: model.KindJob, Command: "echo hi", Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
+	run, err := s.Trigger(t.Context(), d, hash, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := s.Wait(run.ID); done != nil {
+		<-done
+	}
+	stored, err := st.Run(t.Context(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "succeeded" || stored.EndReason != "exit" || !stored.LogTruncated {
+		t.Fatalf("run = %s/%s truncated=%v; want succeeded/exit truncated", stored.Status, stored.EndReason, stored.LogTruncated)
 	}
 }

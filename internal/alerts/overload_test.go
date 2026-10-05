@@ -19,6 +19,7 @@ func TestNotifyOverloadDoesNotWaitForDropRecording(t *testing.T) {
 	started := make(chan struct{}, 1)
 	var mu sync.Mutex
 	dropped := 0
+	seen := map[string]bool{}
 	t.Setenv("BOT_TOKEN", "test")
 	channels := []config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}
 	d, err := New(channels, func(ctx context.Context, records []Record) error {
@@ -36,6 +37,7 @@ func TestNotifyOverloadDoesNotWaitForDropRecording(t *testing.T) {
 		for _, r := range records {
 			if r.Status == "dropped" {
 				dropped++
+				seen[r.RunID] = true
 			}
 		}
 		return nil
@@ -101,10 +103,14 @@ func TestNotifyOverloadDoesNotWaitForDropRecording(t *testing.T) {
 	for {
 		mu.Lock()
 		got := dropped
+		newest := seen[fmt.Sprint("run-", failures-1)]
 		mu.Unlock()
 		if got >= maxDropObservations {
 			if got != maxDropObservations {
 				t.Fatalf("recorded %d drop observations, want at most %d", got, maxDropObservations)
+			}
+			if !newest {
+				t.Fatal("newest drop was not kept: observations must be newest-wins")
 			}
 			return
 		}

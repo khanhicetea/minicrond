@@ -36,13 +36,18 @@ import (
 // those APIs are context-aware; see runShutdown for what can still overrun.
 const shutdownBudget = 45 * time.Second
 
+// alertDrainFloor is the minimum time alert delivery gets at shutdown.
+const alertDrainFloor = 5 * time.Second
+
 // executorShutdownBudget is how long runs get to stop gracefully at shutdown
 // before they are force-killed. A variable so tests can shorten it.
 var executorShutdownBudget = 15 * time.Second
 
 // lockContext acquires mu or gives up when ctx ends. sync.Mutex has no
 // context-aware Lock, so it polls TryLock at a few-millisecond cadence; this
-// is only used on rare reload/shutdown paths.
+// is only used on rare reload/shutdown paths. It is not fair: it does not
+// queue behind blocked Lock callers, so a steady stream of API reloads could
+// starve one waiter until its context ends.
 func lockContext(ctx context.Context, mu *sync.Mutex) bool {
 	if mu.TryLock() {
 		return true
@@ -347,7 +352,8 @@ type shutdownParts struct {
 //     refuse new API work, mark the daemon stopping, and signal worker
 //     supervision so a reload waiting on an old worker's grace period unblocks.
 //  2. Wait for an in-flight reload (bounded) so it cannot restart loops after
-//     the scheduler stops, then stop the scheduler.
+//     the scheduler stops, then refuse executor work and stop the scheduler
+//     (bounded, 5s).
 //  3. Executor shutdown (15s), supervisor join (5s), maintenance join (10s),
 //     alert drain (20s), HTTP (5s), each capped by ctx.
 //
@@ -371,7 +377,24 @@ func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
 	if !locked {
 		slog.Warn("reload still in progress at shutdown; stopping without waiting for it")
 	}
-	p.sched.Stop()
+	// Refuse new executor work first: a scheduler loop blocked in Trigger
+	// (queued behind a slow admission) is released with ErrShutdown, so
+	// Scheduler.Stop can join it. Stop itself is also bounded; its loops are
+	// already canceled and only wait for calls that return on their own.
+	p.exec.BeginShutdown()
+	schedStopped := make(chan struct{})
+	go func() {
+		p.sched.Stop()
+		close(schedStopped)
+	}()
+	schedCtx, cancelSched := context.WithTimeout(ctx, 5*time.Second)
+	select {
+	case <-schedStopped:
+	case <-schedCtx.Done():
+		slog.Warn("scheduler loops did not stop within the shutdown budget")
+		err = errors.Join(err, fmt.Errorf("scheduler shutdown: %w", schedCtx.Err()))
+	}
+	cancelSched()
 	if locked {
 		d.reloadMu.Unlock()
 	}
@@ -396,7 +419,13 @@ func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
 		err = errors.Join(err, fmt.Errorf("maintenance shutdown: %w", maintCtx.Err()))
 	}
 	cancelMaint()
-	alertCtx, cancelAlerts := context.WithTimeout(ctx, 20*time.Second)
+	// Failure alerts for runs killed at shutdown are the ones most worth
+	// delivering: keep a floor even when earlier stages used the budget.
+	alertBudget := alertDrainFloor
+	if deadline, ok := ctx.Deadline(); ok {
+		alertBudget = min(max(time.Until(deadline), alertDrainFloor), 20*time.Second)
+	}
+	alertCtx, cancelAlerts := context.WithTimeout(context.WithoutCancel(ctx), alertBudget)
 	err = errors.Join(err, p.dispatcher.Close(alertCtx))
 	cancelAlerts()
 	// HTTP cleanup keeps its own slice even when a job used the run budget.

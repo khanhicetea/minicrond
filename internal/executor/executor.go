@@ -48,8 +48,11 @@ type Service struct {
 	onFinished func(model.Run, model.Definition)
 	// admission serializes overlap/capacity decisions between triggers. It is
 	// held across storage and log setup, so shutdown and completion must never
-	// wait for it; they use mu and closing instead.
-	admission sync.Mutex
+	// wait for it; they use mu and closing instead. It is a one-slot semaphore
+	// so waiting triggers can be released by their context or by shutdown.
+	admission chan struct{}
+	// stopping is closed by BeginShutdown to release triggers queued on admission.
+	stopping chan struct{}
 	// mu guards closing, active, byJob and finalizing.
 	mu         sync.Mutex
 	closing    bool
@@ -62,6 +65,13 @@ type Service struct {
 	retryStop  chan struct{}
 	retryDone  chan struct{}
 	retryWG    sync.WaitGroup
+	// sealHook, when set, replaces logs.Seal for the normal and start-error
+	// completion paths (tests only).
+	sealHook func(string) error
+	// systemLog and systemWriteJoin override system-line writing and its join
+	// bound (tests only).
+	systemLog       func(*logstore.Writer, string, string)
+	systemWriteJoin time.Duration
 }
 type activeRun struct {
 	cancel context.CancelCauseFunc
@@ -100,7 +110,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	if bootID == "" {
 		bootID = uuid.NewV7().String()
 	}
-	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), finalizing: make(map[string]struct{}), retryStop: make(chan struct{}), retryDone: make(chan struct{})}
+	return &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]struct{}), retryStop: make(chan struct{}), retryDone: make(chan struct{})}
 }
 func (s *Service) Active(job string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.byJob[job] }
 
@@ -123,6 +133,30 @@ func (s *Service) beginAdmission() bool {
 	}
 	s.admissions.Add(1)
 	return true
+}
+
+// acquireAdmission takes the admission slot, giving up when ctx ends or
+// shutdown begins. A free slot is taken without consulting either.
+func (s *Service) acquireAdmission(ctx context.Context) error {
+	select {
+	case s.admission <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case s.admission <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.stopping:
+		return ErrShutdown
+	}
+}
+
+func (s *Service) isClosing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closing
 }
 
 // Wait closes after process cleanup, log finalization, and terminal-state
@@ -155,15 +189,24 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		return model.Run{}, false, ErrShutdown
 	}
 	defer s.admissions.Done()
-	s.admission.Lock()
+	if err := s.acquireAdmission(ctx); err != nil {
+		return model.Run{}, false, err
+	}
 	var failedStart *model.Run
 	defer func() {
-		s.admission.Unlock()
+		<-s.admission
 		if failedStart != nil {
 			s.notifyFinished(*failedStart, d)
 			s.scheduleRetry(*failedStart, d)
 		}
 	}()
+	// Re-check after the wait: a trigger queued behind a slow one must not
+	// create a run row (or consume an idempotency key or scheduled occurrence)
+	// once shutdown has begun. Only a trigger already past this point can still
+	// be refused at registration, which leaves a failed/start_error row.
+	if s.isClosing() {
+		return model.Run{}, false, ErrShutdown
+	}
 	if err := ctx.Err(); err != nil {
 		return model.Run{}, false, err
 	}
@@ -406,7 +449,9 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	go func() { pumps <- fault.Call(func() error { return w.Pipe(logstore.Stderr, stderrR) }) }()
 	// Persist the running state and write the first system line concurrently
 	// with supervision, each bounded; the select loop below can stop the
-	// child regardless of how long they take.
+	// child regardless of how long they take. Because system lines are written
+	// concurrently with pump output and stop notes, their position among the
+	// stored frames is not guaranteed (sequence numbers stay monotonic).
 	persisted := make(chan error, 1)
 	startDone := make(chan struct{})
 	go func() {
@@ -418,7 +463,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		})
 		persisted <- err
 		if err == nil {
-			systemLog(w, r.ID, "process started as "+identity)
+			s.sysLog(w, r.ID, "process started as "+identity)
 		}
 	}()
 	persistedCh := (<-chan error)(persisted)
@@ -449,16 +494,16 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 			if pumpErr != nil && !errors.Is(pumpErr, os.ErrClosed) {
 				cause = fmt.Errorf("log pump failed: %w", pumpErr)
 				logFailure("run log pump failed", cause, "run", r.ID)
-				waitErr = stopWithNote(w, r.ID, "log pump error; stopping process", pgid, d, wait, a.force)
+				waitErr = s.stopWithNote(w, r.ID, "log pump error; stopping process", pgid, d, wait, a.force)
 				leaderDone = true
 			}
 		case <-timer:
 			cause = context.DeadlineExceeded
-			waitErr = stopWithNote(w, r.ID, "timeout reached, stopping", pgid, d, wait, a.force)
+			waitErr = s.stopWithNote(w, r.ID, "timeout reached, stopping", pgid, d, wait, a.force)
 			leaderDone = true
 		case <-ctx.Done():
 			cause = context.Cause(ctx)
-			waitErr = stopWithNote(w, r.ID, "stop requested", pgid, d, wait, a.force)
+			waitErr = s.stopWithNote(w, r.ID, "stop requested", pgid, d, wait, a.force)
 			leaderDone = true
 		}
 	}
@@ -499,19 +544,22 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	}
 	if startErr != nil {
 		logFailure("starting run failed", startErr, "run", r.ID, "job", d.Name)
-		systemLog(w, r.ID, "start error: "+startErr.Error())
+		noted := make(chan struct{})
+		go func() { defer close(noted); s.sysLog(w, r.ID, "start error: "+startErr.Error()) }()
+		s.joinBounded(noted, r.ID, "start-error system line")
 		status, reason, code, signal = "failed", "start_error", nil, ""
 	}
-	// The start-up system line must land before the sink is closed.
-	<-startDone
+	// The start-up system line should land before the sink is closed, but a
+	// stalled sink must not hold the terminal transition forever.
+	s.joinBounded(startDone, r.ID, "start-up system line")
 	// Close the log sink before the terminal transition so a wait=true
 	// reader can never observe a finished run with an unfinalized tail.
 	bytes, truncated := w.Stats()
-	if err := s.logs.Seal(r.ID); err != nil {
-		slog.Error("finalizing run logs failed", "run", r.ID, "error", err)
-		if startErr == nil {
-			status, reason = "failed", "log_error"
-		}
+	if err := s.sealLogs(r.ID); err != nil {
+		// ADR-8 2A: a log-storage failure never changes the execution result.
+		// Keep the real status, record that output may be incomplete.
+		logFailure("finalizing run logs failed; keeping execution status, marking logs truncated", err, "run", r.ID)
+		truncated = true
 	}
 	s.complete(r, d, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
 }
@@ -520,8 +568,9 @@ func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.
 	logFailure("starting run failed", err, "run", r.ID, "job", d.Name)
 	writeSystem(w, r.ID, "start error: "+err.Error())
 	bytes, truncated := w.Stats()
-	if closeErr := s.logs.Seal(r.ID); closeErr != nil {
+	if closeErr := s.sealLogs(r.ID); closeErr != nil {
 		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
+		truncated = true
 	}
 	s.complete(r, d, terminal{status: "failed", reason: "start_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
 }
@@ -1077,6 +1126,25 @@ func (s *Service) Stop(id string) error {
 	return nil
 }
 
+// BeginShutdown stops admission without waiting for anything: new triggers
+// and triggers queued behind a slow one fail with ErrShutdown, and pending
+// retries stop. The daemon calls it before stopping the scheduler so a
+// scheduler loop blocked in Trigger is released. Safe to call repeatedly.
+func (s *Service) BeginShutdown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return
+	}
+	s.closing = true
+	close(s.stopping)
+	close(s.retryStop)
+	go func() {
+		s.retryWG.Wait()
+		close(s.retryDone)
+	}()
+}
+
 // Shutdown stops admission, cancels every active run, and waits for runs,
 // in-flight admissions and finalizers until ctx ends. It never waits for the
 // admission mutex, so a trigger stuck in storage or log setup cannot delay
@@ -1085,15 +1153,8 @@ func (s *Service) Stop(id string) error {
 // outlive the returned error, which callers must treat as "databases may still
 // be in use".
 func (s *Service) Shutdown(ctx context.Context) error {
+	s.BeginShutdown()
 	s.mu.Lock()
-	if !s.closing {
-		s.closing = true
-		close(s.retryStop)
-		go func() {
-			s.retryWG.Wait()
-			close(s.retryDone)
-		}()
-	}
 	runs := make([]*activeRun, 0, len(s.active))
 	for _, a := range s.active {
 		runs = append(runs, a)
@@ -1150,21 +1211,54 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 }
 
-// systemLog writes a run's system line. It is a variable so tests can stall
-// the log sink.
-var systemLog = writeSystem
+// sysLog writes a run's system line; tests replace it per Service to stall the
+// log sink.
+func (s *Service) sysLog(w *logstore.Writer, runID, message string) {
+	if s.systemLog != nil {
+		s.systemLog(w, runID, message)
+		return
+	}
+	writeSystem(w, runID, message)
+}
 
 // stopWithNote terminates the process group and writes a system line
 // concurrently: log I/O must never delay the signal, only the cleanup after it.
-func stopWithNote(w *logstore.Writer, runID, note string, pgid int, d model.Definition, wait <-chan error, force <-chan struct{}) error {
+func (s *Service) stopWithNote(w *logstore.Writer, runID, note string, pgid int, d model.Definition, wait <-chan error, force <-chan struct{}) error {
 	noted := make(chan struct{})
 	go func() {
 		defer close(noted)
-		systemLog(w, runID, note)
+		s.sysLog(w, runID, note)
 	}()
 	err := stopGroup(pgid, d, wait, force)
-	<-noted
+	s.joinBounded(noted, runID, "stop system line")
 	return err
+}
+
+// systemWriteJoin bounds how long run cleanup waits for a system-line write
+// before sealing the log. An abandoned write finishes (or fails against the
+// sealed writer) on its own; Seal itself remains bounded only by the log store.
+const defaultSystemWriteJoin = 5 * time.Second
+
+func (s *Service) joinBounded(done <-chan struct{}, runID, what string) {
+	limit := defaultSystemWriteJoin
+	if s.systemWriteJoin > 0 {
+		limit = s.systemWriteJoin
+	}
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		slog.Error("log sink stalled; not waiting for system line write", "run", runID, "write", what)
+	}
+}
+
+// sealLogs closes a run's log sink; sealHook lets tests inject failures.
+func (s *Service) sealLogs(id string) error {
+	if s.sealHook != nil {
+		return s.sealHook(id)
+	}
+	return s.logs.Seal(id)
 }
 
 func logFailure(message string, err error, attrs ...any) {
