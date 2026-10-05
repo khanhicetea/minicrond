@@ -544,7 +544,7 @@ func (d *Daemon) logPruneLoop(ctx context.Context) {
 func (d *Daemon) pruneLogs(ctx context.Context) {
 	d.mu.Lock()
 	keepFor := d.cfg.Logs.DBKeepFor
-	maxSize := int64(d.cfg.Logs.DBMaxSize) << 20
+	maxSize := d.cfg.Logs.MaxSizeBytes()
 	d.mu.Unlock()
 	defer func() {
 		if err := d.ldb.Compact(ctx); err != nil && ctx.Err() == nil {
