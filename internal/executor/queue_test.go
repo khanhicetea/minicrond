@@ -561,3 +561,67 @@ func TestDisabledQueueStillDrainsLeftoverItems(t *testing.T) {
 		t.Fatalf("leftover item = %s/%s", got.Status, got.EndReason)
 	}
 }
+
+// S1: a retry that meets a full (or unavailable) queue is re-deferred, not
+// recorded skipped, so its retry chain survives.
+func TestRetryMeetingFullQueueIsRedeferred(t *testing.T) {
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1, Queue: QueueOptions{MaxItems: 1, DrainRate: 100}})
+	blocker, bh := putJob(t, st, parallelJob("blocker", "sleep 30"))
+	filler, fh := putJob(t, st, parallelJob("filler", "true"))
+	flakyDef := parallelJob("flaky-full", "exit 1")
+	flakyDef.Retries, flakyDef.RetryDelay = 1, 1
+	flaky, flh := putJob(t, st, flakyDef)
+	first, err := s.Trigger(t.Context(), flaky, flh, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, first.ID)
+	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.Trigger(t.Context(), filler, fh, "manual", nil); err != nil || r.Status != "queued" {
+		t.Fatalf("filler = %s, %v", r.Status, err)
+	}
+	// Let several retry delays pass against the full queue.
+	eventually(t, 10*time.Second, "retry was never attempted against the full queue", func() bool {
+		return s.Diagnostics(t.Context()).Queue.Rejected >= 2
+	})
+	runs, err := st.Runs(t.Context(), "flaky-full", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range runs {
+		if r.Attempt == 2 {
+			t.Fatalf("retry was recorded as %s/%s instead of being re-deferred", r.Status, r.EndReason)
+		}
+	}
+	eventually(t, 5*time.Second, "deferred retry not pending", func() bool { return s.PendingRetries() == 1 })
+}
+
+func TestRetryMeetingUnavailableQueueIsRedeferred(t *testing.T) {
+	dir, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1})
+	blocker, bh := putJob(t, st, parallelJob("blocker", "sleep 30"))
+	flakyDef := parallelJob("flaky-unavail", "exit 1")
+	flakyDef.Retries, flakyDef.RetryDelay = 1, 1
+	flaky, flh := putJob(t, st, flakyDef)
+	first, err := s.Trigger(t.Context(), flaky, flh, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, first.ID)
+	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
+		t.Fatal(err)
+	}
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saboteur.Close()
+	if _, err := saboteur.Exec("ALTER TABLE exec_queue RENAME TO exec_queue_offline"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "retry never met the unavailable queue", func() bool {
+		return s.Diagnostics(t.Context()).Queue.Unavailable >= 2
+	})
+	eventually(t, 5*time.Second, "deferred retry not pending", func() bool { return s.PendingRetries() == 1 })
+}

@@ -128,6 +128,12 @@ func (s *Service) enqueue(ctx context.Context, d model.Definition, hash, trigger
 		return s.recordSkipped(ctx, d, hash, trigger, scheduled, idem, attempt, parent, "overlap_skip")
 	case errors.Is(err, store.ErrQueueFull):
 		s.queue.rejected.Add(1)
+		if trigger == "retry" {
+			// Recording skipped would silently end the retry chain: let the
+			// retry scheduler defer it another retry_delay (bounded by
+			// max_pending_retries, with drop evidence).
+			return model.Run{}, false, errCapacity
+		}
 		if trigger == "manual" {
 			return model.Run{}, false, fmt.Errorf("%w: %w", ErrQueueFull, err)
 		}
@@ -141,6 +147,9 @@ func (s *Service) enqueue(ctx context.Context, d model.Definition, hash, trigger
 		}
 	}
 	s.queue.unavailable.Add(1)
+	if trigger == "retry" {
+		return model.Run{}, false, errCapacity
+	}
 	return model.Run{}, false, fmt.Errorf("%w: %w", ErrQueueUnavailable, err)
 }
 
