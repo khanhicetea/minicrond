@@ -94,8 +94,11 @@ minicrond logs RUN_ID [--follow | -f]
 
 Prints tagged frames (stderr lines are prefixed `[err] `); `--follow`
 keeps polling every 2 seconds once caught up (no polling without it), reusing
-one connection for the whole command. Reads merge the SQLite archive, live buffer
-files, and the in-memory tail transparently.
+one connection for the whole command. Reads merge the SQLite archive and live
+buffer files transparently. When the daemon is busy with other expensive reads
+(HTTP 503 `read_busy`/`read_timeout`), the command waits the advertised
+`Retry-After` (clamped to 1–10 s) and retries the same page: up to 5 times in a
+row, or indefinitely with `--follow`.
 
 ### `export` / `import` — definition bundles
 
