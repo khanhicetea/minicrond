@@ -36,6 +36,68 @@ P1 = fix before relying on the affected feature in production; P2 = important co
 | A16 | P2 | Alert overload synchronously blocks run completion | Lost capacity/storage contention | Source trace |
 | A17 | P3 | Archive size conversion can overflow and disable pruning | Disk-budget failure | Reproduced |
 
+## Implementation status
+
+- **Status date:** 2026-10-06
+- **Merged revision described:** `57063ba` (`main`, "Merge feat/queue"; merges `fix/exec` 3cdcf48, `fix/logstore` bbd55c3, `fix/config` bd6575f, `fix/cmd` e9e0f96, `fix/sched` fc50f6d, `feat/disk` e815a97, `feat/reads` 3117652, `feat/queue` 57063ba; range `b785adb..57063ba`)
+- **How to read this document now:** every finding, probe, benchmark number and code location in the rest of this file was observed at the audited revision `7198673` and is kept unchanged as the original evidence. The statuses below describe the **post-fix tree** (`57063ba`); file/line references in the findings are no longer valid there. Words such as "not implemented", "current behavior" and "documentation only" in the original text refer to `7198673`.
+- **Counts:** 17 original findings: **14 fixed, 3 partially fixed (A04, A09, A15), 0 not implemented**. Severity counts (7 P1, 8 P2, 2 P3) are unchanged because they classify the original findings.
+- **What was validated:** each stream added regression tests for its findings (listed in `status/<stream>.md`) and reported `gofmt`, `go vet`, `go build`, `go test ./...` and `go test -race` on the packages it touched, plus independent code reviews of the logstore, exec, disk, reads and queue streams. These are per-branch results; the final merged-tree commands for this documentation pass are in `status/docs.md`. The few measurements taken are listed after the tables with their caveats; everything else is test coverage, not a performance claim.
+
+### Per-finding status
+
+| ID | Status | Where | Residual gaps (precise) |
+|---|---|---|---|
+| A01 | Fixed | `0c8ce4b` (`fix/logstore`) | Payload subscriptions, history and queues are removed; SSE reads stored frames and polls every 2 s per connection. The bundled web UI does not render the new `gap` event and the embedded bundle in `internal/api/assets` was **not rebuilt** (no `node_modules` offline): run `make build-web` before release. Each SSE poll re-decodes the active chunk under the shared run lock (accepted downside, bounded by the 64-stream cap and 1 MiB pages). |
+| A02 | Fixed | `af215ca` (`fix/exec`), `203d27a` (workers always use the background finalizer) | Supervision waits (backoff 500 ms→30 s) until the run is terminal. If the run is still nonterminal and no finalizer owns it (only possible at shutdown) the lifetime is treated as failed. |
+| A03 | Fixed (per-user install) | `b04f80a` (`fix/cmd`) | Descriptor-relative `openat`/`O_NOFOLLOW` for `--user` installs. The root-only ownership branches (existing directory owned by another uid) are **untested as non-root**. `checkPortConflicts`/`installedDaemonPorts` still read unit-referenced configs with path-based `os.ReadFile` (read-only, returns a port number). Home directories with group/other-writable modes are accepted. The root daemon path (`/etc/minicrond`) is unchanged (root-controlled). A swapped-in empty root-owned 0700 directory during the mkdir→open window of a newly created directory could theoretically be chowned; owner/mode/empty checks mitigate it. |
+| A04 | **Partially fixed** | `e94ede3`, `ec59f91`, `af215ca`, `a8b9edb`, `0c8ce4b`, `c659a0b`, `a60e678`, `0e73398`, `a4261b7` | Items 1–5 are addressed: maintenance gets a context and is joined last; `reloadMu` is context-aware; executor admission is a context-aware semaphore with `BeginShutdown`; supervisor join is bounded; `StopArchiver` cancels and joins workers. **Residuals:** (a) `LogDB.usedBytes` is a read on the writer connection that still relies on SQLite's 5 s busy handler (all log DB *writes* are context-sliced); (b) inline archival in `Store.Close`/`finalize` uses `context.Background()`; (c) an fsync already in progress cannot be interrupted: `StopArchiver` abandons the final group sync at its deadline; (d) the 45 s shutdown budget is a target, not a guarantee, and if the maintenance join times out (10 s) the daemon deliberately leaves the databases open instead of closing them under a running sweep; (e) executor runs that outlive the forced-kill join (3 s) can still touch the store afterwards (errors only). |
+| A05 | Fixed | `0c8ce4b`, `8e052ee` | Undecodable nonempty chunks are copied to `.quarantine/<run>-<chunk>.zst.corrupt` and removed from the buffer at once; valid siblings are archived; torn tails are still salvaged. If the quarantine move itself fails the chunk stays and the older three-sweep whole-buffer quarantine applies. |
+| A06 | Fixed | `600bd6e` (`feat/disk`) | Sequence-oriented seek on `idx_log_chunks_seq`; relies on chunk numbers and last sequences growing together within a run (true for the writer). Benchmarks: see measurements. |
+| A07 | Fixed | `ba7d11a` (`fix/cmd`), `6a07f51` (503 `read_busy`/`read_timeout` retry) | One client/transport per command; `logs -f` polls every 2 s once caught up. |
+| A08 | Fixed | `8e50e1c` (`fix/sched`) | Any candidate in the second copy of a backward transition is suppressed, including for a job whose anchor lies inside that copy (it waits for the next valid time). |
+| A09 | **Partially fixed** | `8e50e1c` | The first overdue occurrence is recovered and `latest` is the exact latest occurrence beyond 10,000 ticks. **Residual:** under `catch_up=none` the missed count is enumerated only up to 100,000; beyond that it is a lower bound and is **only warn-logged** (`missed occurrence count is incomplete`), with no "incomplete" flag in the run model or API. |
+| A10 | Fixed | `ec59f91` | Timeout armed right after `cmd.Start`; pumps start first; `StartRun` is bounded at 10 s and runs off the select loop. |
+| A11 | Fixed | `0c8ce4b` | — |
+| A12 | Fixed | `695cee4` (`fix/config`) | Presence-aware only for `timeout` and `retries` (the audited fields). `GET /api/v1/jobs` (list) still returns plain definitions, so an explicit zero is omitted there; the detail endpoint and export spell it out. |
+| A13 | Fixed (import) | `d5c38bc` | Import reconciles on a caller-independent context with 4 bounded attempts; persistent failure still returns 500 and the import stays committed. `putJob`/`deleteJob`/`enable` keep their single `WithoutCancel` reconcile (no retry); there is no periodic reconciliation. |
+| A14 | Fixed | `1de8fb2`, `3aa6811`, `7d40147`, `1845e1f`, `6a07f51` (`feat/reads`) | Shared admission (`[reads]`: 4 slots, 32 MiB estimated working set, 20 s work timeout), 503 `read_busy`/`read_timeout`, downloads capped at `max(1, slots-1)`, 1 MiB JSON pages, coalesced metrics (3 s TTL). Per-request memory costs are fixed estimates, not measurements. The coalescing benchmark shows cache hits versus recomputation, not a cheaper computation. The audit's mixed-load test (peak heap, DB waits, run-admission latency under concurrent reads and writers) was **not run**. The web `copyError` change is in an unrebuilt bundle (see A01). |
+| A15 | **Partially fixed** | `786bb99`, `45f3a67`, `3c5fc6d`, `203d27a`, `0c57549` (`feat/queue`, `feat/disk`) | One bounded retry scheduler (`max_pending_retries`), bounded finalizer map, capped archiver id queue with sweep rediscovery, counts exported in `GET /api/v1/daemon` diagnostics. **Residuals:** pending retries are still **in memory** and lost on restart; finalizer caps (256 soft, 4× hard, 2 min inline hold) and the archiver cap (4096) are constants, not configuration; past the hard cap a job's finalizer keeps holding its capacity slot (backpressure, nothing discarded); the audit's "disk-pressure admission controls" are **not implemented** (admission is not wired to `DiskPressure()`). |
+| A16 | Fixed | `029585c` (`fix/exec`) | Drops go to a bounded newest-wins ring (256) recorded off the completion path; drop recording at shutdown is best effort. |
+| A17 | Fixed | `d3c11f5` (`fix/config`) | `logs.db_max_size` is limited to `1<<30` MiB; byte conversion saturates. |
+| D01 | Implemented | `0c8ce4b` | No viewer-only payload history; no read-time cache was added (not justified). |
+| D02 | Implemented (see 1B) | `0c8ce4b`, `6c92cbf` | The 15-minute worker archive checkpoint is unchanged. |
+| D03 | Implemented | `0c8ce4b`, `1de8fb2` | Stored-cursor reads, per-connection poll timer, `gap` event on retention loss, final tail before `done`; bounded read admission (A14). Web UI `gap` rendering: see A01. |
+
+### ADR-8 choices
+
+| Choice | Status | Where | Residual gaps (precise) |
+|---|---|---|---|
+| 1B batched fsync | Fixed | `0c8ce4b`, `6c92cbf`, `aedaf75`, `c659a0b` | Defaults `logs.sync_interval = 2000` ms (100–60000) and `logs.sync_max_dirty = 1024` KiB (1–65536); one shared timer armed only while a writer is dirty; final sync on EOF/seal/`StopArchiver`; `logs.durability = "frame"` stays strict. **No power-loss test was run**; the OS-crash window is nominal and stalls can extend it. A degraded writer recovers only when a later line arrives or at close (no timers by design). |
+| 2A continue on capture failure | Fixed | `0c8ce4b`, `4ce9b7e`, `ebc9173`, `1b13977` | Pipe write/sync failures degrade, discard and later recover with a summary line; `Seal`/pump errors keep the real run status and set `log_truncated`. A pump *read* error while the child still runs still stops that child (it can no longer be drained). The public `Write` (system lines) keeps sticky errors. A capture failure consumes one sequence number and can show as a `gap`. |
+| 3A disk budget before retention age | Fixed | `b7027c1`, `ef06454`, `683a6f9` (`feat/disk`), ADR-10 | `logs.disk_min_free` = 512 MiB **on by default** (clamped to a quarter of the filesystem; explicit `0` disables), `logs.disk_budget` off by default, quarantine kept forever unless `quarantine_keep_for`/`quarantine_max_size` are set. **Residuals:** admission is **not** wired to `DiskPressure()` (only log output is dropped under 2A, so "new queued work follows 4B" is not implemented); reclamation latency on a large archive over slow storage is unmeasured; pressure caused by other data on the same filesystem also deletes logs; a pruned run keeps its run record and reads empty without a flag. |
+| 4B bounded durable queue | Fixed | `d602d7c`, `786bb99`, `5530bc1` (`feat/queue`), ADR-9 | Defaults `[queue]` `max_items` 100, `max_per_job` 25, `max_bytes` 256 KiB (accounted ceiling, not real bytes), `max_age` 900 s, `drain_rate` 5/s, `max_pending_retries` 500; restart required. Expiry/rejection are `skipped` rows with an `end_reason`, not a new status. **Residuals:** pending retries are in memory (see A15); queue/rejection counters are process-lifetime (the `skipped` rows are the durable evidence); a crash between dequeue and spawn leaves an `interrupted` run (never replayed); queue/finalizer idle cost is structural, not benchmarked. |
+| 5A small-server-first | **Partially fixed** | ADR-9/10/11 defaults | The 1 CPU / 512 MiB, 10 workers, four jobs profile was used only to choose conservative defaults. **No benchmark or profile of that fixture has been run**; it is not a capacity guarantee or a runtime limit. |
+
+### Additional capacity observations
+
+1. `log_max` is not a total disk quota — **addressed** by the disk budget (3A); `disk_budget` is off by default, `disk_min_free` on.
+2. Metadata file size does not shrink; soft-deleted definitions never purged — **not addressed**.
+3. Quarantine has no budget — **addressed** as an opt-in purge policy (default keeps forever).
+4. Read/archive pages can delay a run's log writes — **partially**: writer-lock waits and maintenance durations are exported; lock ownership was not shortened and archive-induced writer blocking was not measured.
+5. Metadata reads on the writer connection — **partially**: API-facing reads and retention selection moved to the read pool; state-feeding paths (executor, supervisor, scheduler) still use the writer connection.
+6. Physical storage testing — **partially**: sparse-output fsync count was measured on one ext4 virtual disk (below); no power-loss test, no SSD/HDD characterization.
+7. Workers outside the job concurrency budget — **unchanged by design**.
+
+### Measurements taken during implementation
+
+All on Go 1.27.0, 4 vCPU, KVM guest; real ext4 disk (`/dev/sda1`, `TMPDIR` off tmpfs) for the first two; serial runs, medians of repeated samples. They are not production data, not power-loss tests, and not a whole-daemon CPU/heap profile.
+
+- **A06** (warm page cache, 1-byte blobs, so index traversal only): final page at 10,000 chunks 859 µs → 44 µs; full pagination at 100,000 chunks 58.6 s → 1.24 s (raw files in `docs/benchmarks/2026-10-05-a06-archive-cursor/`).
+- **1B** (`BenchmarkSparsePipe/batch`, 200 lines 1 ms apart, no viewer): 1.000 → 0.005 fsyncs/line; strict mode unchanged at 1.000. `Write` microbenchmarks dropped from ~1.8 ms to ~8 µs per call mostly because `Write` no longer fsyncs per call in batch mode, so they are not the same guarantee.
+- **A14** (tmpfs, CPU/allocation only): `RunMetrics` per-computation cost is at parity (about 31–33 ms and 7 MB at 30,000 rows); `BenchmarkMetricsEndpointParallel` shows coalesced requests at about 61–69 µs versus about 1.4 ms uncoalesced, i.e. the effect of coalescing and TTL cache hits.
+- Not measured: the 5A small-server profile, active zero-viewer capture CPU/heap/GC at daemon level, queue/retry/finalizer cost, disk-pass reclamation latency, `BenchmarkWorkerLiveSSE`, `BenchmarkActiveWriters64` (prints `NaN`; pre-existing).
+
 ## Background-first design decisions
 
 ### Decision rule
@@ -55,13 +117,13 @@ Choose correctness/security and recoverable history first, then bounded resource
 
 ### Owner-approved choices — 1B, 2A, 3A, 4B, 5A
 
-**Accepted direction, not implemented.** The owner selected batched log fsync (1B), continued execution despite log-storage failure (2A), disk budget ahead of retention age (3A), a bounded durable execution queue rather than immediate skipping (4B), and small-server-first tuning (5A). See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for the decision record.
+**Accepted direction; implemented since this section was written (see [Implementation status](#implementation-status)).** The owner selected batched log fsync (1B), continued execution despite log-storage failure (2A), disk budget ahead of retention age (3A), a bounded durable execution queue rather than immediate skipping (4B), and small-server-first tuning (5A). See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for the decision record.
 
 - **Durability boundary:** preserve daemon-only crash recovery; do not keep accepted frames solely in RAM/compression buffers. The accepted OS/power-loss window is nominal, not a hard guarantee under stalled I/O. Metadata/queue SQLite durability and archive commit-before-unlink ordering are not weakened by this choice.
 - **Failure boundary:** continue draining stdout/stderr even when output must be discarded; report missing output when possible through a bounded path. Timeouts, cancellation, and required execution-state persistence still apply. Quarantine needs an explicit separate purge policy, not silent deletion as ordinary history.
 - **Queue boundary:** persist before acknowledging durable enqueue; reject explicitly if full or unable to persist, expose expiry, and drain at a bounded rate after recovery. Define crash/replay and definition-change behavior before coding; no exactly-once promise or blind replay of possibly started commands. Preserve overlap/retry/catch-up policies.
 - **Tuning target:** roughly 1 CPU / 512 MiB, 10 workers, four concurrent jobs, and modest output as a benchmark profile, not guaranteed capacity or fixed runtime limits. Child resources are additional. Prefer conservative caches, small queues, and limited archive concurrency.
-- **Still to specify:** exact sync interval/byte threshold, disk budget/watermarks and eligible data, queue count/byte/age limits and expiry/replay outcomes, and measured log-volume fixtures. The earlier 5 GiB example is not an approved default. Update runtime/configuration/operations contracts and tests with implementation, not ahead of it.
+- **Still to specify:** exact sync interval/byte threshold, disk budget/watermarks and eligible data, queue count/byte/age limits and expiry/replay outcomes, and measured log-volume fixtures. The earlier 5 GiB example is not an approved default. Update runtime/configuration/operations contracts and tests with implementation, not ahead of it. *(Resolved by ADR-8's implementation status and ADR-9/10/11; the chosen defaults are listed in the ADR-8 table above.)*
 
 ### D01 — Remove speculative live-tail work from the zero-viewer path
 
@@ -89,7 +151,7 @@ Readers must not require the producer to wait for them. Bound read admission, pa
 
 ### Re-review evidence boundary
 
-The re-review checked the current capture/read/archive paths, SSE handler, worker finalization, maintenance cadence, durability tests, and benchmark fixtures against the unchanged revision. The design recommendations above are **not implemented or benchmark-proven**. All test/probe/benchmark outcomes below are retained from the original audit, not new runs. In particular, the original idle result does not establish the cost of active logging with zero viewers.
+*Original text, revision `7198673`; see Implementation status for the post-fix tree.* The re-review checked the current capture/read/archive paths, SSE handler, worker finalization, maintenance cadence, durability tests, and benchmark fixtures against the unchanged revision. The design recommendations above are **not implemented or benchmark-proven**. All test/probe/benchmark outcomes below are retained from the original audit, not new runs. In particular, the original idle result does not establish the cost of active logging with zero viewers.
 
 ### Original baseline checks
 
@@ -500,11 +562,13 @@ These are risks/design limits rather than newly demonstrated correctness defects
 
 ## Remediation order
 
-1. **Unattended correctness and safety:** repair worker finalization (A02), timeout/shutdown enforcement (A10/A04), orphan preservation (A05), and DST/catch-up semantics (A08/A09). Harden root provisioning (A03) before that installation path is used. These are not acceptable live-lag trade-offs.
-2. **Background capacity and configuration correctness:** implement the approved bounded durable execution queue and bound independent pending work/disk pressure (A15); remove synchronous alert-overload persistence from completion (A16); fix post-commit reconciliation and explicit-zero defaults (A13/A12). Preserve truthful truncation flags and size validation (A11/A17), especially for later diagnosis.
-3. **Zero-viewer logging cost:** make payload history demand-driven or eliminate it (D01); measure physical-storage capture/archival contention and implement the approved batched-fsync contract with recovery tests (D02). Preserve the low-idle baseline; do not trade it for always-on timers or refresh work.
-4. **Reader isolation, not instant UX:** eliminate or byte-bound subscriber payload queues (A01), add expensive-read admission limits (A14), and reuse the CLI transport with slower follow polling (A07). A01 remains a safety gate before relying on live subscriptions; ship a small guard early if the larger redesign must wait.
-5. **On-demand retrieval efficiency:** repair archive cursor seeks (A06) and add request-scoped caching/coalescing only where measured. Optimize large historical retrieval without charging continuous maintenance to all background runs.
+Markers reflect the post-fix tree `57063ba` (2026-10-06): **[done]**, **[partial]**, **[remaining]**.
+
+1. **Unattended correctness and safety:** repair worker finalization (A02) **[done]**, timeout/shutdown enforcement (A10 **[done]**, A04 **[partial]**: residuals a–e above), orphan preservation (A05) **[done]**, and DST/catch-up semantics (A08 **[done]**, A09 **[partial]**: missed count above 100,000 is only warn-logged). Harden root provisioning (A03) **[done]** for per-user installs (root-only branches untested as non-root; `checkPortConflicts` still path-based). These are not acceptable live-lag trade-offs.
+2. **Background capacity and configuration correctness:** implement the approved bounded durable execution queue (4B) **[done]** and bound independent pending work/disk pressure (A15 **[partial]**: retries still in memory, no admission control from disk pressure); remove synchronous alert-overload persistence from completion (A16) **[done]**; fix post-commit reconciliation and explicit-zero defaults (A13/A12) **[done]**. Preserve truthful truncation flags and size validation (A11/A17) **[done]**, especially for later diagnosis.
+3. **Zero-viewer logging cost:** make payload history demand-driven or eliminate it (D01) **[done]**; implement the approved batched-fsync contract with recovery tests (D02/1B) **[done]**; measure physical-storage capture/archival contention **[remaining]** (one sparse-output fsync-count measurement on a KVM virtual disk exists; no power-loss test, no daemon-level zero-viewer benchmark, no archive-induced writer-blocking measurement). Preserve the low-idle baseline; do not trade it for always-on timers or refresh work.
+4. **Reader isolation, not instant UX:** eliminate or byte-bound subscriber payload queues (A01) **[done]**, add expensive-read admission limits (A14) **[done]**, and reuse the CLI transport with slower follow polling (A07) **[done]**. Remaining: rebuild the embedded web bundle and render the `gap` event; run the A14 mixed-load interference test.
+5. **On-demand retrieval efficiency:** repair archive cursor seeks (A06) **[done]**; request-scoped caching/coalescing was added only for metrics. Remaining overall: 5A small-server benchmarks, disk-pressure admission (3A/4B), durable retry timers if wanted, and the metadata-growth and writer-connection observations (2, 4, 5 above).
 
 This is the revised investment order, not a requirement to delay small safety fixes behind a larger refactor. Keep severity and feature exposure visible.
 
