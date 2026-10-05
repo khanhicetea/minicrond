@@ -253,6 +253,9 @@ func BenchmarkEndTimeIndexMigration(b *testing.B) {
 			if _, err := s.db.ExecContext(b.Context(), "DROP INDEX idx_runs_end_time"); err != nil {
 				b.Fatal(err)
 			}
+			if _, err := s.db.ExecContext(b.Context(), "DROP TABLE exec_queue"); err != nil {
+				b.Fatal(err)
+			}
 			if _, err := s.db.ExecContext(b.Context(), "PRAGMA user_version=7"); err != nil {
 				b.Fatal(err)
 			}
