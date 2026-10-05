@@ -49,6 +49,8 @@ type Daemon struct {
 	// alerts is read lock-free by run completion callbacks. Taking a daemon
 	// lock there would deadlock with a reload waiting for a worker to exit.
 	alerts atomic.Pointer[alerts.Dispatcher]
+	// diskHint carries coalesced requests for a log disk-budget pass (diskbudget.go).
+	diskHint chan struct{}
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -98,6 +100,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	logs.AttachDB(ldb)
 	logs.SetFrameSync(cfg.Logs.Durability == "frame")
 	logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
+	d.diskHint = make(chan struct{}, 1)
+	d.applyDiskPolicy(cfg.Logs)
+	logs.SetPressureHook(d.requestDiskCheck)
 	// Finished runs are archived in the background. Stop the archiver after
 	// the executor (deferred calls run in reverse) and before the archive
 	// database closes; anything still queued is swept at the next start.
@@ -273,8 +278,8 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	apiServer.SetReady(true)
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	var maintenance sync.WaitGroup
-	maintenanceErrors := make(chan error, 3)
-	for name, loop := range map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop} {
+	maintenanceErrors := make(chan error, 4)
+	for name, loop := range map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop, "log disk budget": d.diskBudgetLoop} {
 		maintenance.Go(func() {
 			if err := fault.Call(func() error {
 				loop(maintenanceCtx)
@@ -348,6 +353,8 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	d.mu.Unlock()
 	d.logs.SetFrameSync(cfg.Logs.Durability == "frame")
 	d.logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
+	d.applyDiskPolicy(cfg.Logs)
+	d.requestDiskCheck()
 	return d.reconcile(ctx)
 }
 
@@ -411,11 +418,13 @@ func (d *Daemon) retentionLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.sweepRetention(ctx)
+			d.enforceDiskBudget(ctx)
 		}
 	}
 }
 func (d *Daemon) sweepRetention(ctx context.Context) {
 	const pageSize = 128
+	defer d.timed("retention")()
 	d.mu.Lock()
 	storageCfg := d.cfg.Storage
 	d.mu.Unlock()
@@ -497,6 +506,7 @@ func (d *Daemon) workerFlushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			flushed := d.timed("worker_flush")
 			if err := d.logs.FlushActiveContext(ctx); err != nil {
 				return
 			}
@@ -504,6 +514,8 @@ func (d *Daemon) workerFlushLoop(ctx context.Context) {
 			if err := d.logs.ArchiveOrphansContext(ctx); err != nil && ctx.Err() == nil {
 				slog.Error("orphaned log retry failed", "error", err)
 			}
+			flushed()
+			d.enforceDiskBudget(ctx)
 			if next := d.logFlushInterval(); next != interval {
 				interval = next
 				ticker.Reset(next)
@@ -542,10 +554,13 @@ func (d *Daemon) logPruneLoop(ctx context.Context) {
 				continue // hourly re-check, prune time not reached yet
 			}
 			d.pruneLogs(ctx)
+			d.purgeQuarantine(ctx)
+			d.enforceDiskBudget(ctx)
 		}
 	}
 }
 func (d *Daemon) pruneLogs(ctx context.Context) {
+	defer d.timed("log_prune")()
 	d.mu.Lock()
 	keepFor := d.cfg.Logs.DBKeepFor
 	maxSize := d.cfg.Logs.MaxSizeBytes()
