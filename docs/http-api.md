@@ -88,7 +88,7 @@ be combined.
 | `POST /api/v1/runs/{id}/stop` | Operator stop (status `stopped`) |
 | `GET /api/v1/runs/{id}/log?after=N&limit=N` | Tagged log frames (JSON, base64 payload, stream tag) |
 | `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download) |
-| `GET /api/v1/runs/{id}/log/stream` | **SSE** live tail — frames as they are ingested |
+| `GET /api/v1/runs/{id}/log/stream` | **SSE** follow — frames read from stored chunks by cursor, delivered in batches about every 2 s while the run is active |
 
 `GET /api/v1/metrics/runs?range=15m|1h|24h|7d|30d&buckets=N` — run-count
 time series by outcome.
@@ -119,10 +119,18 @@ time series by outcome.
 
 Frames carry `sequence` (per-run, gapless accounting), `stream` (`1` =
 stdout, `2` = stderr), and base64-encoded `payload`. Reads are consistent
-across the hybrid tiers — SQLite archive, live buffer files, and the
-byte-bounded in-memory tail are merged transparently, so a run looks the
-same whether it finished an hour ago or is streaming right now. The SSE
-stream replays from sequence 0 and then follows live output.
+across the hybrid tiers — SQLite archive and live buffer files are merged
+transparently, so a run looks the same whether it finished an hour ago or is
+streaming right now. The SSE stream replays from the `after` cursor (or
+`Last-Event-ID`; default sequence 0) and then follows the run by polling stored
+output, so display lag is up to about two seconds. Events: `line` (`id` = frame
+sequence), `backlog_done`, `done` (sent only after the run's final frames), and
+`gap` (`{"after":N,"first":M}`, `id` = M-1) when frames between the cursor and
+`M` were removed by retention, or — rarely — when the one frame being written at
+the moment log storage failed consumed a sequence number but was not stored;
+reconnecting with the `gap` id resumes without a gap. `dropped` is no longer sent by the server (no per-viewer queue exists
+that could overflow); clients may still handle it. Sequences can skip when a
+run's retained frames were evicted by `log_on_full = drop_old`.
 
 ## Errors
 

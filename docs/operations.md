@@ -31,9 +31,16 @@ Log storage is two-tier (ADR-6):
 1. **Live tier** — running runs write compressed chunk files under
    `data/logs/<run_id>/`. Every accepted frame is written to the chunk file
    before the next line is read, so a daemon crash loses no accepted output.
-   With `logs.durability = "batch"` (default) fsyncs are grouped while output
-   keeps arriving (when the pipe drains, or after 256 KiB / 50 ms);
-   `"frame"` fsyncs every line. `log_max` defaults to `100MiB` and bounds raw frame bytes
+   With `logs.durability = "batch"` (default, ADR-8 1B) the fsync is grouped:
+   one shared timer, armed only while some run holds unsynced output, syncs all
+   dirty buffers `logs.sync_interval` (default 2 s) after the first unsynced
+   write, and a run syncs at once when it holds `logs.sync_max_dirty` (default
+   1 MiB) of unsynced output. A sparse run is synced by the timer without
+   another line arriving; pipe EOF, run completion and orderly shutdown always
+   sync. An **OS crash or power loss can lose output newer than the last sync**
+   (nominally the sync interval, longer if the disk stalls); a daemon crash loses
+   nothing. `"frame"` is the strict mode: every line is fsynced before the next
+   is read. `log_max` defaults to `100MiB` and bounds raw frame bytes
    in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
    archive. Successful archival frees buffer capacity for either policy.
 2. **Archive tier** — finished runs are sealed on completion and archived
@@ -54,7 +61,42 @@ between batches. `GET /api/v1/daemon` reports the archive backlog under
 (`diagnostics.databases`, writer and read pool) to show whether SQLite is the
 bottleneck.
 Reads synchronize with migration and share one page budget across the
-database, files, and memory tail.
+database and the buffer files (the active chunk included, since it is written
+through on every frame). The daemon keeps **no in-memory payload tail or
+per-viewer queue**: a log viewer reads stored chunks on demand, so an
+unwatched run costs nothing extra and a stalled viewer holds no memory.
+
+Accepted downside of following a run (ADR-8 / audit D03): each SSE poll (every
+2 s per viewer) re-decodes the active chunk from its start — up to 1 MiB of raw
+output, more only for oversized lines — and holds that run's shared read lock
+for the page, so the run's writer waits for the decode, once per poll per
+viewer. The cost exists only while someone watches, is bounded by the 64-stream
+limit and the 1 MiB page budget, and ends when the viewer disconnects; display
+lag of up to about two seconds is the price of paying nothing for unwatched runs.
+
+Log storage failures (ADR-8 2A): if writing or fsyncing a run's log fails (disk
+full, I/O error), the run keeps executing and its stdout/stderr keep being
+drained; output that cannot be stored is discarded. The run is flagged
+`log_truncated`, the failure is logged once (not per line), and the buffer's
+index records `dropped_frames`/`dropped_bytes`/`sync_failures`. Capture retries
+on a fresh chunk with a growing delay (1 s up to 30 s, evaluated when the next
+line arrives) and, once storage works again, writes a `system` line stating how
+many lines were not stored. Lines discarded while capture is down do not
+consume sequence numbers, but the single frame whose write failed does (it may
+be partly on disk), so a failure shows up as one skipped sequence — which an
+SSE `gap` event can report — plus the `system` line. Timeouts and stop requests
+are unaffected.
+
+Corrupt buffers: an orphaned chunk that cannot be decoded at all is never
+deleted. It is moved at once to `data/logs/.quarantine/<run>-<chunk>.zst.corrupt`,
+the run's valid chunks are archived (so the run stays readable), and the sweep
+reports the quarantine once. A chunk corrupt after a valid prefix has the prefix
+archived and the original bytes copied to the same
+`.quarantine/<run>-<chunk>.zst.corrupt` name. If the quarantine move itself
+fails, the chunk stays in place and fails each sweep; after repeated failures the
+whole buffer moves to `.quarantine/<run>/`. Torn tails left by a crash are still
+salvaged up to the last intact frame. Quarantined files are never pruned
+automatically; remove them deliberately.
 
 Retention:
 

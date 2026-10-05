@@ -210,6 +210,11 @@ func (p *servicePlan) unit(execPath string) string {
 // writeServiceConfig creates the default config with the planned bind port.
 // An existing config is kept as-is.
 func writeServiceConfig(p *servicePlan) error {
+	bind := net.JoinHostPort("127.0.0.1", strconv.Itoa(p.port))
+	if p.runAs != nil {
+		return writeUserServiceConfig(p, defaultConfigTOML(bind))
+	}
+	// Root daemon: /etc/minicrond is root-controlled, so path-based calls are fine.
 	if _, err := os.Stat(p.configPath); err == nil {
 		if existing := configBindPort(p.configPath); existing != 0 && existing != p.port {
 			return fmt.Errorf("config %s already binds port %d but %d was requested; edit or remove the config, or retry with --port %d", p.configPath, existing, p.port, existing)
@@ -217,32 +222,39 @@ func writeServiceConfig(p *servicePlan) error {
 		fmt.Printf("config %s already exists; keeping it\n", p.configPath)
 		return nil
 	}
-	dir := filepath.Dir(p.configPath)
-	dirPerm := os.FileMode(0o755)
-	if p.runAs != nil {
-		dirPerm = 0o700
-	}
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p.configPath), 0o755); err != nil {
 		return err
 	}
-	bind := net.JoinHostPort("127.0.0.1", strconv.Itoa(p.port))
 	if err := os.WriteFile(p.configPath, []byte(defaultConfigTOML(bind)), 0o600); err != nil {
 		return err
 	}
-	if p.runAs != nil {
-		uid, err := strconv.Atoi(p.runAs.Uid)
-		if err != nil {
-			return err
+	fmt.Printf("created %s\n", p.configPath)
+	return nil
+}
+
+// writeUserServiceConfig installs a per-user config. The path lies below the
+// target user's home and is user-controlled, so it is walked with
+// descriptor-relative no-symlink operations (see service_fs.go) instead of
+// path-based os calls that root would run through user-planted symlinks.
+func writeUserServiceConfig(p *servicePlan, content string) error {
+	uid, err := strconv.Atoi(p.runAs.Uid)
+	if err != nil {
+		return err
+	}
+	gid, err := strconv.Atoi(p.runAs.Gid)
+	if err != nil {
+		return err
+	}
+	existing, created, err := installUserConfig(p.runAs.HomeDir, p.configPath, uid, gid, content)
+	if err != nil {
+		return err
+	}
+	if !created {
+		if existing != 0 && existing != p.port {
+			return fmt.Errorf("config %s already binds port %d but %d was requested; edit or remove the config, or retry with --port %d", p.configPath, existing, p.port, existing)
 		}
-		gid, err := strconv.Atoi(p.runAs.Gid)
-		if err != nil {
-			return err
-		}
-		for _, path := range []string{dir, p.configPath} {
-			if err := os.Chown(path, uid, gid); err != nil {
-				return err
-			}
-		}
+		fmt.Printf("config %s already exists; keeping it\n", p.configPath)
+		return nil
 	}
 	fmt.Printf("created %s\n", p.configPath)
 	return nil
@@ -342,19 +354,7 @@ func configBindPort(configPath string) int {
 	if err != nil {
 		return 0
 	}
-	m := bindPattern.FindSubmatch(b)
-	if m == nil {
-		return 0
-	}
-	_, port, err := net.SplitHostPort(string(m[1]))
-	if err != nil {
-		return 0
-	}
-	p, err := strconv.Atoi(port)
-	if err != nil {
-		return 0
-	}
-	return p
+	return bindPortFromContent(b)
 }
 
 var userNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.-]*\$?$`)

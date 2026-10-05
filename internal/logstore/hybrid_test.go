@@ -155,8 +155,8 @@ func TestArchivalReleasesBufferCapacity(t *testing.T) {
 				if err := w.Flush(s); err != nil {
 					t.Fatal(err)
 				}
-				if w.buffered != 0 || len(w.idx.Chunks) != 0 || len(w.history) != 0 {
-					t.Fatalf("archived buffer retained accounting: bytes=%d chunks=%d tail=%d", w.buffered, len(w.idx.Chunks), len(w.history))
+				if w.buffered != 0 || len(w.idx.Chunks) != 0 {
+					t.Fatalf("archived buffer retained accounting: bytes=%d chunks=%d", w.buffered, len(w.idx.Chunks))
 				}
 				total, truncated := w.Stats()
 				if total != int64((i+1)*28) || truncated {
@@ -371,7 +371,7 @@ func TestArchiveBatchBounds(t *testing.T) {
 			s.claimWait("run")
 			lock := s.lockRun("run", true)
 			w.mu.Lock()
-			more, err := s.archiveBatchLocked(w, tc.count)
+			more, err := s.archiveBatchLocked(context.Background(), w, tc.count)
 			w.mu.Unlock()
 			s.unlockRun("run", lock, true)
 			s.release("run")

@@ -67,9 +67,12 @@ The executor pumps pipes into `StreamWriter`; the HTTP layer reads through
   (cheap, few per run); crash mid-run leaves complete chunks only — the
   recovery pass marks the run `interrupted` and appends a closing system
   line.
-- Reads use the index and stable sequence IDs. Live tail uses a bounded
-  in-process backlog-to-live broadcaster; clients subscribe before reading
-  backlog and deduplicate by sequence, so the handoff has no gap.
+- Reads use the index and stable sequence IDs. Following a live run (SSE or
+  polling) is a cursor read of stored chunks every 1–3 s: every frame is
+  written through to the active chunk, so there is no in-process broadcaster,
+  subscriber queue, or payload tail (ADR-8, audit A01/D01/D03). Clients resume
+  by sequence; a cursor behind retention is told where the retained range
+  starts (`gap`).
 
 ## S3Sink [v0.3] (D-4 as amended)
 

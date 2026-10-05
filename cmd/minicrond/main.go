@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,7 @@ func main() {
 	}
 }
 func run() error {
+	defer closeClient()
 	args := os.Args[1:]
 	if len(args) == 0 {
 		return runDaemon(nil)
@@ -208,6 +210,23 @@ func logs(args []string) error {
 			follow = true
 		}
 	}
+	return followLogs(args[0], follow, sleepFor)
+}
+
+// followPollInterval is the pause between polls once a followed log has been
+// caught up. Display lag of 1–3 s is acceptable (ADR-8); a tight loop is not.
+const followPollInterval = 2 * time.Second
+
+// sleepFor is the production wait used between follow polls.
+func sleepFor(d time.Duration) error {
+	time.Sleep(d)
+	return nil
+}
+
+// followLogs prints a run's log frames in pages. Without follow it returns once
+// the stored log is exhausted and never polls. With follow it waits
+// followPollInterval via wait between polls; wait returning an error stops it.
+func followLogs(runID string, follow bool, wait func(time.Duration) error) error {
 	var after uint64
 	for {
 		var response struct {
@@ -217,7 +236,7 @@ func logs(args []string) error {
 				Payload  string `json:"payload"`
 			} `json:"items"`
 		}
-		if err := requestJSON("GET", fmt.Sprintf("/api/v1/runs/%s/log?after=%d&limit=1000", args[0], after), nil, &response); err != nil {
+		if err := requestJSON("GET", fmt.Sprintf("/api/v1/runs/%s/log?after=%d&limit=1000", runID, after), nil, &response); err != nil {
 			return err
 		}
 		for _, f := range response.Items {
@@ -240,7 +259,9 @@ func logs(args []string) error {
 		if !follow {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		if err := wait(followPollInterval); err != nil {
+			return err
+		}
 	}
 }
 func token(args []string) error {
@@ -351,7 +372,12 @@ func requestJSON(method, path string, body, out any) (err error) {
 	return nil
 }
 
+// maxDrainBytes bounds how much unread response is discarded so the
+// connection can be reused for the next request.
+const maxDrainBytes = 64 << 10
+
 func closeResponse(body io.ReadCloser, result *error) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, maxDrainBytes))
 	if err := body.Close(); err != nil {
 		*result = errors.Join(*result, fmt.Errorf("close response body: %w", err))
 	}
@@ -372,15 +398,56 @@ func writeOutput(format string, args ...any) error {
 	}
 	return nil
 }
+
+// The CLI keeps one client (and therefore one transport and connection pool)
+// per command invocation, keyed by its target so tests that change the
+// environment get a fresh one. run() closes its idle connections on exit.
+var cliHTTP struct {
+	mu     sync.Mutex
+	key    string
+	client *http.Client
+}
+
 func client() *http.Client {
-	if os.Getenv("MINICRON_URL") != "" {
-		return &http.Client{Timeout: 5 * time.Minute}
-	}
+	baseURL := os.Getenv("MINICRON_URL")
 	socket := filepath.Join(env("MINICRON_DATA", defaultDataDir()), "minicron.sock")
-	tr := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
-	}}
-	return &http.Client{Transport: tr, Timeout: 5 * time.Minute}
+	key := "unix:" + socket
+	if baseURL != "" {
+		key = "url:" + baseURL
+	}
+	cliHTTP.mu.Lock()
+	defer cliHTTP.mu.Unlock()
+	if cliHTTP.client != nil {
+		if cliHTTP.key == key {
+			return cliHTTP.client
+		}
+		cliHTTP.client.CloseIdleConnections()
+	}
+	var tr *http.Transport
+	if baseURL != "" {
+		tr = http.DefaultTransport.(*http.Transport).Clone()
+	} else {
+		tr = &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		}}
+	}
+	// Requests are sequential, so a couple of idle connections is plenty.
+	tr.MaxIdleConns = 2
+	tr.MaxIdleConnsPerHost = 2
+	tr.IdleConnTimeout = 30 * time.Second
+	cliHTTP.key = key
+	cliHTTP.client = &http.Client{Transport: tr, Timeout: 5 * time.Minute}
+	return cliHTTP.client
+}
+
+// closeClient closes idle connections of the shared CLI client and drops it.
+func closeClient() {
+	cliHTTP.mu.Lock()
+	defer cliHTTP.mu.Unlock()
+	if cliHTTP.client != nil {
+		cliHTTP.client.CloseIdleConnections()
+		cliHTTP.client = nil
+	}
 }
 func apiBaseURL() string {
 	if url := os.Getenv("MINICRON_URL"); url != "" {

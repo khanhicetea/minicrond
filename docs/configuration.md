@@ -43,8 +43,10 @@ max_line = 256                 # single log line cap in KiB (1..16384)
 worker_flush_interval = 15     # seal+archive cadence for running workers, minutes
 db_keep_for = 30               # log-archive age budget, days (rolling)
 db_prune_at = "03:30"          # daily prune sweep, local time HH:MM
-db_max_size = 0                # log-archive size budget, MiB (0 = none)
+db_max_size = 0                # log-archive size budget, MiB (0 = none, max 1073741824)
 durability = "batch"           # log fsync policy: "batch" or "frame"
+sync_interval = 2000           # batch: ms until dirty log buffers are fsynced (100..60000)
+sync_max_dirty = 1024          # batch: KiB of unsynced output that forces an fsync (1..65536)
 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
@@ -117,15 +119,26 @@ and `max_concurrent_runs` are unitless.
   shorter of the two budgets.
 - `logs.db_max_size` — optional size budget for the log archive, in MiB. When
   the archive's used space exceeds it after the age prune, the oldest chunks
-  are removed until it fits. `0` (the default) disables the budget.
+  are removed until it fits. `0` (the default) disables the budget; values
+  above 1073741824 MiB (1 PiB) are rejected so the byte conversion cannot wrap.
 - `logs.durability` — `"batch"` (the default) writes every log line to the
   buffer file before accepting the next one, so a daemon crash loses nothing,
-  but fsyncs as a group: when the child's pipe has no more buffered output, or
-  after 256 KiB or 50 ms of output. An OS crash or power loss can lose at most
-  that window. `"frame"` fsyncs every line; a child that prints faster than
-  the disk can sync (a few hundred lines per second on many disks) is then
-  slowed down, because it blocks writing to its full pipe. Reloadable; applies
-  to runs started afterwards.
+  but fsyncs as a group (see `logs.sync_interval` and `logs.sync_max_dirty`).
+  An OS crash or power loss can lose output newer than the last sync —
+  nominally `sync_interval`, longer if the disk stalls. `"frame"` is the strict
+  mode: it fsyncs every line; a child that prints faster than the disk can sync
+  (a few hundred lines per second on many disks) is then slowed down, because
+  it blocks writing to its full pipe. Reloadable; applies to runs started
+  afterwards.
+- `logs.sync_interval` — batch durability: milliseconds between the first
+  unsynced log write and the group fsync of every dirty run buffer (default
+  2000, range 100–60000). One timer is shared by all runs and exists only while
+  some run is dirty; idle runs and an idle daemon schedule nothing. Reloadable.
+  `0` selects the default and does not disable batching or syncing; values below
+  100 are rejected. Use `logs.durability = "frame"` for per-line fsync.
+- `logs.sync_max_dirty` — batch durability: KiB of unsynced output after which a
+  run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
+  `0` selects the default and does not mean "no limit".
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
@@ -173,7 +186,7 @@ schema below.
 | `timezone` | scheduler's | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions) |
 | `catch_up` | `none` | job | `none`: skip missed fires; `latest`: fire only the most recent miss and mark intermediate ones `missed` |
 | `on_overlap` | `skip` | job | `skip`: a new fire is recorded `skipped` while one runs; `parallel`: allow concurrent runs |
-| `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run |
+| `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run. An explicit `retries = 0` overrides a nonzero `[defaults]` value; omitting the key inherits it |
 | `retry_delay` | `5` | job | Seconds before each retry (1..86400; 0 uses default 5); constant delay; timeouts and stopped runs are not retried |
 | `run_as` | daemon user | both | `user`, `uid`, or `user:group`. **Root daemon only** |
 | `working_dir` | daemon cwd | both | Absolute working directory for the process |
@@ -181,7 +194,7 @@ schema below.
 | `env` | `{}` | both | Literal environment map |
 | `secret_env` | `{}` | both | Values must be `env:NAME` or `file:/abs/path`, resolved at spawn |
 | `env_file` | — | both | Absolute path to a KEY=VALUE file (≤ 1 MiB) |
-| `timeout` | `0` (none) | both | Maximum runtime in seconds; a timeout is reported even if the process then exits 0 |
+| `timeout` | `0` (none) | both | Maximum runtime in seconds; a timeout is reported even if the process then exits 0. An explicit `timeout = 0` (no timeout) overrides a nonzero `[defaults]` value; omitting the key inherits it |
 | `grace` | `10` | both | Seconds to wait after `stop_signal` before SIGKILL to the process group |
 | `stop_signal` | `SIGTERM` | both | INT, HUP, QUIT, USR1, USR2, TERM, or KILL |
 | `success_codes` | `[0]` | both | Exit codes counted as success |

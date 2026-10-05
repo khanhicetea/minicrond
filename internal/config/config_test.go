@@ -160,6 +160,26 @@ func TestLogArchiveDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestLogSyncWindowDefaultsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "minicron.toml")
+	mustWrite(t, path, "")
+	cfg, err := Load(path)
+	if err != nil || cfg.Logs.SyncInterval != 2000 || cfg.Logs.SyncMaxDirty != 1024 {
+		t.Fatalf("sync window defaults: %#v, error %v", cfg.Logs, err)
+	}
+	mustWrite(t, path, "[logs]\nsync_interval=500\nsync_max_dirty=4096\n")
+	cfg, err = Load(path)
+	if err != nil || cfg.Logs.SyncInterval != 500 || cfg.Logs.SyncMaxDirty != 4096 {
+		t.Fatalf("explicit sync window: %#v, error %v", cfg.Logs, err)
+	}
+	for _, logs := range []string{"sync_interval=-1", "sync_interval=99", "sync_interval=60001", "sync_interval='2s'", "sync_max_dirty=-1", "sync_max_dirty=65537"} {
+		mustWrite(t, path, "[logs]\n"+logs+"\n")
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected invalid logs config for %s", logs)
+		}
+	}
+}
+
 func TestTelegramAlertChannel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "minicron.toml")
 	mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\n")

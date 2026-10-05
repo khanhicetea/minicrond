@@ -211,6 +211,12 @@ func (s *Server) SetAlertChannels(list func() []config.AlertChannel)    { s.aler
 func (s *Server) SetAlertTest(test func(context.Context, string) error) { s.testAlert = test }
 func (s *Server) SetAlertQueueDepth(depth func() int)                   { s.alertQueueDepth = depth }
 
+func (s *Server) currentJobDefaults() model.Definition {
+	if s.jobDefaults != nil {
+		return s.jobDefaults()
+	}
+	return model.Definition{}
+}
 func (s *Server) validateAlerts(defs []model.Definition) error {
 	if s.alertChannels == nil {
 		return nil
@@ -606,7 +612,7 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", strconv.FormatInt(d.Revision, 10))
-	response := map[string]any{"definition": d, "hash": hash, "active_runs": s.exec.Active(d.Name)}
+	response := map[string]any{"definition": config.EditableInput(d, s.currentJobDefaults()), "hash": hash, "active_runs": s.exec.Active(d.Name)}
 	if d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
 		next, err := s.store.ScheduleNext(r.Context(), d.ID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -623,23 +629,22 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, response)
 }
 func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
-	var d model.Definition
-	if err := decodeJSON(r.Body, &d); err != nil {
+	// Timeout and retries are presence-aware: omitted inherits the daemon
+	// defaults, an explicit 0 overrides them.
+	var in config.DefinitionInput
+	if err := decodeJSON(r.Body, &in); err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
 	if name := r.PathValue("name"); name != "" {
-		d.Name = name
+		in.Name = name
 	}
-	if d.Kind == "" {
-		d.Kind = model.KindJob
+	if in.Kind == "" {
+		in.Kind = model.KindJob
 	}
-	d.Source = ""
-	var defaults model.Definition
-	if s.jobDefaults != nil {
-		defaults = s.jobDefaults()
-	}
-	if err := config.ValidateDefinition(&d, defaults); err != nil {
+	in.Source = ""
+	d, err := config.ValidateDefinitionInput(in, s.currentJobDefaults())
+	if err != nil {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
@@ -666,7 +671,6 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var saved model.Definition
-	var err error
 	if createOnly {
 		saved, err = s.store.CreateDefinition(r.Context(), d, "api")
 	} else {
@@ -1067,6 +1071,17 @@ func (s *Server) raw(w http.ResponseWriter, r *http.Request) {
 		slog.Error("raw log response failed", "run", r.PathValue("id"), "error", err)
 	}
 }
+
+// streamPollInterval is how often a followed log stream looks for newly stored
+// output. Following is a cursor read on a per-connection timer (ADR-8, audit
+// D03): the daemon queues no payload for a viewer, wakes for no viewer, and the
+// timer ends with the connection. Display lag is bounded by this interval.
+var streamPollInterval = 2 * time.Second
+
+// stream serves a run's log as SSE. Frames are read from stored chunks by
+// sequence cursor in bounded pages and delivered in batches; the event names,
+// ids and Last-Event-ID resume contract are unchanged. A cursor that has fallen
+// behind retention gets a "gap" event naming the first retained sequence.
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if !s.requireRun(w, r, r.PathValue("id")) {
 		return
@@ -1087,91 +1102,93 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if q, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64); q > after {
 		after = q
 	}
-	var live <-chan logstore.Frame
-	var dropped <-chan struct{}
-	var unsubscribe func()
-	if active := s.logs.Active(r.PathValue("id")); active != nil {
-		live, dropped, unsubscribe = active.Subscribe(after)
-		defer unsubscribe()
-	}
+	id := r.PathValue("id")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
-	reader := s.logs.NewStreamReader(r.PathValue("id"))
+	reader := s.logs.NewStreamReader(id)
 	defer reader.Close()
 	controller := http.NewResponseController(w)
-	for {
-		backlog, err := reader.ReadContext(r.Context(), after, 5000)
-		if err != nil {
-			internal(w, r, err)
-			return
-		}
-		if len(backlog) == 0 {
-			break
-		}
+	started, lastWrite := false, time.Now()
+	// send runs a write under a fresh write deadline and flushes it.
+	send := func(write func() error) bool {
 		_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		for _, f := range backlog {
-			if err := writeSSE(w, "line", f.Sequence, f); err != nil {
+		started = true
+		if err := write(); err != nil {
+			return false
+		}
+		flusher.Flush()
+		lastWrite = time.Now()
+		return true
+	}
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	backlogDone := false
+	for {
+		// Look at the writer before reading. If it is already gone, everything
+		// it accepted is stored, so the drain below delivers the final tail
+		// before "done" is sent.
+		active := s.logs.Active(id)
+		if active == nil || active.Sequence() > after {
+			for {
+				frames, err := reader.ReadContext(r.Context(), after, 5000)
+				if err != nil {
+					if !started && r.Context().Err() == nil {
+						internal(w, r, err)
+					}
+					return
+				}
+				if len(frames) == 0 {
+					break
+				}
+				if after > 0 && frames[0].Sequence > after+1 {
+					gap := map[string]uint64{"after": after, "first": frames[0].Sequence}
+					if !send(func() error { return writeSSE(w, "gap", frames[0].Sequence-1, gap) }) {
+						return
+					}
+				}
+				if !send(func() error {
+					for _, f := range frames {
+						if err := writeSSE(w, "line", f.Sequence, f); err != nil {
+							return err
+						}
+					}
+					return nil
+				}) {
+					return
+				}
+				after = frames[len(frames)-1].Sequence
+			}
+			// Free the decoder while waiting; a poll rebuilds it on demand.
+			reader.Close()
+		}
+		if !backlogDone {
+			backlogDone = true
+			if !send(func() error { _, err := fmt.Fprint(w, "event: backlog_done\ndata: {}\n\n"); return err }) {
 				return
 			}
-			after = f.Sequence
 		}
-		flusher.Flush()
-	}
-	reader.Close()
-	_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if _, err := fmt.Fprint(w, "event: backlog_done\ndata: {}\n\n"); err != nil {
-		return
-	}
-	flusher.Flush()
-	if live == nil {
-		_, _ = fmt.Fprint(w, "event: done\ndata: {}\n\n")
-		flusher.Flush()
-		return
-	}
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-	for {
+		if active == nil {
+			send(func() error { _, err := fmt.Fprint(w, "event: done\ndata: {}\n\n"); return err })
+			return
+		}
+		if time.Since(lastWrite) >= 15*time.Second {
+			if !send(func() error { _, err := fmt.Fprint(w, ": heartbeat\n\n"); return err }) {
+				return
+			}
+		}
+		if timer == nil {
+			timer = time.NewTimer(streamPollInterval)
+		} else {
+			timer.Reset(streamPollInterval)
+		}
 		select {
 		case <-r.Context().Done():
 			return
-		case f, ok := <-live:
-			if !ok {
-				_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				caseDropped := false
-				select {
-				case <-dropped:
-					caseDropped = true
-				default:
-				}
-				if caseDropped {
-					_, _ = fmt.Fprintf(w, "event: dropped\ndata: {\"after\":%d}\n\n", after)
-				} else {
-					_, _ = fmt.Fprint(w, "event: done\ndata: {}\n\n")
-				}
-				flusher.Flush()
-				return
-			}
-			if f.Sequence > after {
-				_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-				if err := writeSSE(w, "line", f.Sequence, f); err != nil {
-					return
-				}
-				after = f.Sequence
-				flusher.Flush()
-			}
-		case <-dropped:
-			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "event: dropped\ndata: {\"after\":%d}\n\n", after); err != nil {
-				return
-			}
-			flusher.Flush()
-			return
-		case <-heartbeat.C:
-			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
+		case <-timer.C:
 		}
 	}
 }
@@ -1205,7 +1222,12 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	}
 	defs = editable
 	if r.URL.Query().Get("format") == "json" {
-		writeJSON(w, 200, map[string]any{"definitions": defs})
+		inputs := make([]config.DefinitionInput, len(defs))
+		defaults := s.currentJobDefaults()
+		for i, d := range defs {
+			inputs[i] = config.EditableInput(d, defaults)
+		}
+		writeJSON(w, 200, map[string]any{"definitions": inputs})
 		return
 	}
 	bundle := struct {
@@ -1291,11 +1313,44 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		internal(w, r, err)
 		return
 	}
-	if err = s.reconcile(r.Context()); err != nil {
-		internal(w, r, err)
+	// The import is committed; reconcile independently of the caller so a
+	// disconnect cannot leave the database and the running loops disagreeing.
+	if err = s.reconcileCommitted(context.WithoutCancel(r.Context())); err != nil {
+		internal(w, r, fmt.Errorf("reconcile imported definitions: %w", err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"content_hash": actual, "applied": len(defs)})
+}
+
+// Post-commit reconciliation is bounded: each attempt has a deadline and the
+// retries back off, so a failing scheduler reload cannot pin a handler.
+const (
+	reconcileAttempts       = 4
+	reconcileAttemptTimeout = 30 * time.Second
+)
+
+var reconcileBackoff = 200 * time.Millisecond
+
+// reconcileCommitted reconciles after a committed mutation on a context the
+// HTTP caller cannot cancel, retrying transient failures.
+func (s *Server) reconcileCommitted(ctx context.Context) error {
+	var err error
+	for attempt := 0; attempt < reconcileAttempts; attempt++ {
+		if attempt > 0 {
+			if s.closing.Load() {
+				break
+			}
+			time.Sleep(reconcileBackoff << (attempt - 1))
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, reconcileAttemptTimeout)
+		err = s.reconcile(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		slog.Warn("post-commit reconcile failed", "attempt", attempt+1, "error", err)
+	}
+	return err
 }
 
 func (s *Server) asset(w http.ResponseWriter, r *http.Request) {

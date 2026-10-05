@@ -61,6 +61,15 @@ On startup, for each job, compute schedule fires between
 | `latest` | execute one run now (with `trigger = schedule`, annotated `caught_up`) |
 | `all` | deferred to v0.2; rejected by v0.1 validation |
 
+Fires are counted from the last recorded fire or, if the job has never fired,
+from its persisted anchor (a restart before the first fire still catches up).
+`latest` is always the true latest missed occurrence, however long the
+downtime. For `none`, the missed count is enumerated up to a CPU safety bound
+(100,000 occurrences); beyond it the count is a lower bound and a warning is
+logged. Every occurrence in the second copy of a DST fold is suppressed (not
+just the adjacent wall minute), so multi-fire schedules never repeat a wall
+minute.
+
 Disabled jobs and workers skip catch-up entirely.
 
 ## Jitter

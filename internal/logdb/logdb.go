@@ -7,6 +7,7 @@ package logdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -156,13 +157,12 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 	if len(chunks) == 0 {
 		return nil
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return l.writeTx(ctx, func(tx *sql.Tx) error { return putChunks(ctx, tx, runID, job, kind, at, chunks) })
+}
+
+func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time.Time, chunks []Chunk) error {
 	now := at.UnixMicro()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
 		ON CONFLICT(run_id) DO UPDATE SET job=COALESCE(NULLIF(excluded.job,''),log_runs.job),
 		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
 		return err
@@ -192,7 +192,85 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// Archive and deletion transactions wait for the SQLite write lock in short
+// slices and retry, instead of one long busy wait: SQLite's own busy handler
+// ignores context cancellation, so a stuck lock holder would otherwise keep a
+// shutting-down caller (and the database it must close) busy for the whole
+// busy_timeout. The overall wait stays the connection's usual five seconds.
+const (
+	busySlice = 100 * time.Millisecond
+	busyTotal = 5 * time.Second
+)
+
+// writeTx runs fn in a transaction on the writer connection, retrying the
+// whole transaction while SQLite reports the database busy, and giving up as
+// soon as ctx ends.
+func (l *LogDB) writeTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return l.writeConn(ctx, func(conn *sql.Conn) error { return runTx(ctx, conn, fn) })
+}
+
+// writeConn runs fn on the writer connection with the sliced busy wait, retrying
+// it as a whole while SQLite reports the database busy. fn must be safe to
+// repeat. Every statement that can wait for the write lock (archive, delete,
+// prune, vacuum, checkpoint) goes through here so shutdown can interrupt it.
+func (l *LogDB) writeConn(ctx context.Context, fn func(*sql.Conn) error) error {
+	conn, err := l.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busySlice.Milliseconds())); err != nil {
+		return err
+	}
+	defer func() {
+		if err := restoreBusyTimeout(context.WithoutCancel(ctx), conn); err != nil {
+			// The pool has a single writer connection: leaving the short wait on
+			// it would make every later writer fail with SQLITE_BUSY. Discard the
+			// connection; a new one starts with the full busy_timeout.
+			slog.Error("restoring the log database busy timeout failed; discarding the connection", "error", err)
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	start := time.Now()
+	for {
+		// The writer connection starts transactions with BEGIN IMMEDIATE, so
+		// the busy wait usually happens in BeginTx itself.
+		err := fn(conn)
+		if err == nil || !isBusy(err) || time.Since(start) >= busyTotal {
+			return err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%w: %w", ctxErr, err)
+		}
+	}
+}
+
+func runTx(ctx context.Context, conn *sql.Conn, fn func(*sql.Tx) error) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err = fn(tx); err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		tx.Rollback()
+	}
+	return err
+}
+
+// restoreBusyTimeout returns the writer connection to its normal wait. It is a
+// variable so tests can inject a failure.
+var restoreBusyTimeout = func(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, "PRAGMA busy_timeout=5000")
+	return err
+}
+
+func isBusy(err error) bool {
+	return strings.Contains(err.Error(), "SQLITE_BUSY") || strings.Contains(err.Error(), "database is locked")
 }
 
 // EachChunk iterates archived chunks of a run in order. Chunks whose last
@@ -235,25 +313,22 @@ func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
 	if len(runIDs) == 0 {
 		return nil
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for start := 0; start < len(runIDs); start += 128 {
-		page := runIDs[start:min(start+128, len(runIDs))]
-		args := make([]any, len(page))
-		for i, id := range page {
-			args[i] = id
-		}
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(page)), ",")
-		for _, table := range []string{"log_chunks", "log_runs"} {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE run_id IN ("+placeholders+")", args...); err != nil {
-				return err
+	return l.writeTx(ctx, func(tx *sql.Tx) error {
+		for start := 0; start < len(runIDs); start += 128 {
+			page := runIDs[start:min(start+128, len(runIDs))]
+			args := make([]any, len(page))
+			for i, id := range page {
+				args[i] = id
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(page)), ",")
+			for _, table := range []string{"log_chunks", "log_runs"} {
+				if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE run_id IN ("+placeholders+")", args...); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // pruneBatch bounds each prune transaction. Chunks are up to about 1 MiB, so
@@ -295,55 +370,63 @@ func (l *LogDB) PruneToSize(ctx context.Context, maxBytes int64) (int64, error) 
 // deleteOldest deletes the oldest chunks whose blobs add up to at least
 // excess bytes, at most one batch per call, in one transaction.
 func (l *LogDB) deleteOldest(ctx context.Context, excess int64) (int64, error) {
-	rows, err := l.db.QueryContext(ctx, "SELECT rowid, LENGTH(blob) FROM log_chunks ORDER BY archived_us, rowid LIMIT ?", pruneBatch)
-	if err != nil {
-		return 0, err
-	}
-	var ids []any
-	var freed int64
-	for rows.Next() && freed < excess {
-		var id, size int64
-		if err := rows.Scan(&id, &size); err != nil {
-			rows.Close()
-			return 0, err
+	var deleted int64
+	err := l.writeTx(ctx, func(tx *sql.Tx) error {
+		deleted = 0
+		rows, err := tx.QueryContext(ctx, "SELECT rowid, LENGTH(blob) FROM log_chunks ORDER BY archived_us, rowid LIMIT ?", pruneBatch)
+		if err != nil {
+			return err
 		}
-		ids = append(ids, id)
-		freed += size
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(ids) == 0 {
-		return 0, err
-	}
-	res, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+		var ids []any
+		var freed int64
+		for rows.Next() && freed < excess {
+			var id, size int64
+			if err := rows.Scan(&id, &size); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+			freed += size
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(ids) == 0 {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
+		if err != nil {
+			return err
+		}
+		deleted, err = res.RowsAffected()
+		return err
+	})
+	return deleted, err
 }
 
 // Compact returns pages freed by pruning to the filesystem, a step at a time,
 // and truncates the WAL that the deletions grew.
 func (l *LogDB) Compact(ctx context.Context) error {
-	for {
-		var free int64
-		if err := l.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
-			return err
+	return l.writeConn(ctx, func(conn *sql.Conn) error {
+		for {
+			var free int64
+			if err := conn.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&free); err != nil {
+				return err
+			}
+			if free == 0 {
+				break
+			}
+			if _, err := conn.ExecContext(ctx, "PRAGMA incremental_vacuum(1024)"); err != nil {
+				return err
+			}
+			var after int64
+			if err := conn.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&after); err != nil {
+				return err
+			}
+			if after >= free {
+				break // Auto-vacuum is off for this file; nothing can be released.
+			}
 		}
-		if free == 0 {
-			break
-		}
-		if _, err := l.db.ExecContext(ctx, "PRAGMA incremental_vacuum(1024)"); err != nil {
-			return err
-		}
-		var after int64
-		if err := l.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&after); err != nil {
-			return err
-		}
-		if after >= free {
-			break // Auto-vacuum is off for this file; nothing can be released.
-		}
-	}
-	_, err := l.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
-	return err
+		_, err := conn.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+		return err
+	})
 }
 
 // deleteChunks deletes every chunk selected by a rowid query whose last
@@ -363,19 +446,29 @@ func (l *LogDB) deleteChunkBatch(ctx context.Context, selectRows string, args ..
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	res, err := l.db.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+selectRows+")", append(args, pruneBatch)...)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	var n int64
+	err := l.writeTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+selectRows+")", append(args, pruneBatch)...)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 func (l *LogDB) deleteEmptyRuns(ctx context.Context) (int64, error) {
-	res, err := l.db.ExecContext(ctx, "DELETE FROM log_runs WHERE NOT EXISTS (SELECT 1 FROM log_chunks WHERE log_chunks.run_id=log_runs.run_id)")
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
+	var n int64
+	err := l.writeTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, "DELETE FROM log_runs WHERE NOT EXISTS (SELECT 1 FROM log_chunks WHERE log_chunks.run_id=log_runs.run_id)")
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // usedBytes is the size of the pages that hold data, excluding free pages.

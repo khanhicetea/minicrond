@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/khanhicetea/minicrond/internal/logdb"
 	"github.com/khanhicetea/minicrond/internal/model"
@@ -75,97 +74,63 @@ func TestRotatedChunksDecodeIndependently(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		frames := salvageFrames(blob)
-		if len(frames) != 1 || frames[0].Sequence != uint64(i+1) ||
+		frames, err := salvageFrames(blob)
+		if err != nil || len(frames) != 1 || frames[0].Sequence != uint64(i+1) ||
 			!bytes.Equal(frames[0].Payload, bytes.Repeat([]byte{byte('a' + i)}, 600<<10)) {
 			t.Fatalf("chunk %d did not decode independently", chunk.Number)
 		}
 	}
 }
 
-func TestBacklogToLiveSubscriptionHasStableSequence(t *testing.T) {
+// With no payload tail or subscriber queue, a cursor read of the active run
+// sees every accepted frame, in sequence order, straight from the chunk file.
+func TestActiveRunReadsFromWrittenThroughChunk(t *testing.T) {
 	s, _ := New(t.TempDir())
 	w, _ := s.Open("run", "test", "job", WriterOptions{MaxBytes: 1 << 20, MaxLine: 1024})
 	if err := w.Write(Stdout, []byte("backlog"), 0); err != nil {
 		t.Fatal(err)
 	}
-	live, _, unsubscribe := w.Subscribe(0)
-	defer unsubscribe()
+	backlog, err := s.Read("run", 0, 10)
+	if err != nil || len(backlog) != 1 || backlog[0].Sequence != 1 {
+		t.Fatalf("active backlog = %v, %v", backlog, err)
+	}
 	if err := w.Write(Stderr, []byte("handoff"), 0); err != nil {
 		t.Fatal(err)
 	}
-	backlog, err := s.Read("run", 0, 10)
+	next, err := s.Read("run", backlog[0].Sequence, 10)
+	if err != nil || len(next) != 1 || next[0].Sequence != 2 || string(next[0].Payload) != "handoff" {
+		t.Fatalf("cursor read = %v, %v", next, err)
+	}
+	if w.Sequence() != 2 {
+		t.Fatalf("Sequence hint = %d", w.Sequence())
+	}
+}
+
+// The caller may reuse its buffer as soon as Write returns.
+func TestWritePayloadOwnership(t *testing.T) {
+	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(backlog) != 2 || backlog[0].Sequence != 1 || backlog[1].Sequence != 2 {
-		t.Fatalf("active backlog = %v", backlog)
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{MaxLine: 1024})
+	if err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case frame := <-live:
-		if frame.Sequence != 2 {
-			t.Fatalf("live sequence = %d", frame.Sequence)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("live frame lost")
+	defer s.Close("run")
+	payload := []byte("original")
+	if err := w.Write(Stdout, payload, 0); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestWritePayloadOwnershipWithAndWithoutTail(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		tail       bool
-		subscriber bool
-	}{
-		{"disk_only", false, false},
-		{"subscriber_only", false, true},
-		{"live_tail", true, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s, err := New(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !tc.tail {
-				s.tailLimit = 0
-			}
-			w, err := s.Open("run", "job", model.KindJob, WriterOptions{MaxLine: 1024})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer s.Close("run")
-			var live <-chan Frame
-			if tc.subscriber {
-				var unsubscribe func()
-				live, _, unsubscribe = w.Subscribe(0)
-				defer unsubscribe()
-			}
-			payload := []byte("original")
-			if err := w.Write(Stdout, payload, 0); err != nil {
-				t.Fatal(err)
-			}
-			copy(payload, "mutated!")
-			frames, err := s.Read("run", 0, 10)
-			if err != nil || len(frames) != 1 || string(frames[0].Payload) != "original" {
-				t.Fatalf("read after caller reuse = %v, %v", frames, err)
-			}
-			if tc.subscriber {
-				frame := <-live
-				if string(frame.Payload) != "original" {
-					t.Fatalf("subscriber saw reused payload %q", frame.Payload)
-				}
-			}
-			if tc.tail {
-				frames = w.Snapshot(0, 10)
-				if len(frames) != 1 || string(frames[0].Payload) != "original" {
-					t.Fatalf("tail saw reused payload %v", frames)
-				}
-			}
-		})
+	copy(payload, "mutated!")
+	frames, err := s.Read("run", 0, 10)
+	if err != nil || len(frames) != 1 || string(frames[0].Payload) != "original" {
+		t.Fatalf("read after caller reuse = %v, %v", frames, err)
 	}
 }
 
-func TestOversizedFrameEvictsEarlierLiveTail(t *testing.T) {
+// A maximum-size frame in the active chunk is readable and does not hide
+// earlier or later frames.
+func TestOversizedFrameInActiveChunkIsReadable(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -175,20 +140,23 @@ func TestOversizedFrameEvictsEarlierLiveTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close("run")
-	if err := w.Write(Stdout, []byte("old"), 0); err != nil {
-		t.Fatal(err)
+	for _, p := range [][]byte{[]byte("old"), make([]byte, maxFramePayload), []byte("new")} {
+		if err := w.Write(Stdout, p, 0); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := w.Write(Stdout, make([]byte, maxFramePayload), 0); err != nil {
-		t.Fatal(err)
+	// The page byte budget splits the maximum-size frame onto its own page.
+	var frames []Frame
+	for after := uint64(0); len(frames) < 3; {
+		page, err := s.Read("run", after, 10)
+		if err != nil || len(page) == 0 {
+			t.Fatalf("page after %d: %d frames, %v", after, len(page), err)
+		}
+		frames = append(frames, page...)
+		after = page[len(page)-1].Sequence
 	}
-	if frames := w.Snapshot(0, 10); len(frames) != 0 {
-		t.Fatalf("oversized frame left %d older tail frames", len(frames))
-	}
-	if err := w.Write(Stdout, []byte("new"), 0); err != nil {
-		t.Fatal(err)
-	}
-	if frames := w.Snapshot(0, 10); len(frames) != 1 || frames[0].Sequence != 3 {
-		t.Fatalf("tail after oversized frame = %v", frames)
+	if len(frames) != 3 || len(frames[1].Payload) != maxFramePayload || string(frames[2].Payload) != "new" {
+		t.Fatalf("frames = %d", len(frames))
 	}
 }
 
@@ -208,46 +176,6 @@ func TestInvalidUTF8IsFlaggedAndPreserved(t *testing.T) {
 	}
 	if len(frames) != 1 || frames[0].Flags&FlagInvalidUTF8 == 0 || !bytes.Equal(frames[0].Payload, []byte{0xff}) {
 		t.Fatalf("frame = %#v", frames)
-	}
-}
-
-func TestLiveTailWrapAndDiscard(t *testing.T) {
-	s := &Store{tailLimit: 64 << 20}
-	w := &Writer{store: s}
-	for seq := uint64(1); seq <= 2*historyLimit; seq++ {
-		w.appendHistory(Frame{Sequence: seq, Payload: []byte("line")})
-	}
-	if w.historyCount != historyLimit || w.historyBytes != historyLimit*28 || s.tailBytes != int64(w.historyBytes) {
-		t.Fatalf("tail accounting: count=%d bytes=%d global=%d", w.historyCount, w.historyBytes, s.tailBytes)
-	}
-	frames := w.Snapshot(0, historyLimit)
-	if len(frames) != historyLimit || frames[0].Sequence != historyLimit+1 || frames[len(frames)-1].Sequence != 2*historyLimit {
-		t.Fatalf("wrapped tail sequence: first=%d last=%d count=%d", frames[0].Sequence, frames[len(frames)-1].Sequence, len(frames))
-	}
-	w.discardHistoryThrough(historyLimit + 2500)
-	frames = w.Snapshot(historyLimit+2500, historyLimit)
-	if len(frames) != 2500 || frames[0].Sequence != historyLimit+2501 {
-		t.Fatalf("discarded tail: count=%d first=%d", len(frames), frames[0].Sequence)
-	}
-	for i := 1; i <= 2500; i++ {
-		if w.history[(w.historyHead-i+len(w.history))%len(w.history)].Payload != nil {
-			t.Fatal("evicted payload remains referenced")
-		}
-	}
-	w.discardHistoryThrough(2 * historyLimit)
-	if w.history != nil || w.historyBytes != 0 || s.tailBytes != 0 {
-		t.Fatalf("tail not released: storage=%d bytes=%d global=%d", len(w.history), w.historyBytes, s.tailBytes)
-	}
-}
-
-func TestLiveTailByteLimit(t *testing.T) {
-	s := &Store{tailLimit: 64 << 20}
-	w := &Writer{store: s}
-	w.appendHistory(Frame{Sequence: 1, Payload: make([]byte, 10<<20)})
-	w.appendHistory(Frame{Sequence: 2, Payload: make([]byte, 10<<20)})
-	frames := w.Snapshot(0, 10)
-	if len(frames) != 1 || frames[0].Sequence != 2 || s.tailBytes != int64(w.historyBytes) {
-		t.Fatalf("byte-limited tail: frames=%d bytes=%d global=%d", len(frames), w.historyBytes, s.tailBytes)
 	}
 }
 
@@ -623,33 +551,5 @@ func TestDropNewKeepsHistoryWhenFull(t *testing.T) {
 	}
 	if len(frames) != 1 || string(frames[0].Payload) != "abcd" {
 		t.Fatalf("drop_new must keep the first frame, got %#v", frames)
-	}
-}
-
-// The in-memory tail is bounded: writing far past historyLimit must not grow
-// the snapshot window (and must not renumber sequences).
-func TestHistoryTailStaysBounded(t *testing.T) {
-	s, _ := New(t.TempDir())
-	w, err := s.Open("run", "test", model.KindJob, WriterOptions{MaxBytes: 1 << 40, MaxLine: 1 << 20})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range historyLimit*3 + 100 {
-		if err := w.Write(Stdout, []byte("x"), 0); err != nil {
-			t.Fatal(err)
-		}
-		if i%997 == 0 { // spot-check the bound while writing
-			if got := len(w.Snapshot(0, 1<<30)); got > historyLimit+historyLimit/4 {
-				t.Fatalf("history grew to %d during writes", got)
-			}
-		}
-	}
-	frames := w.Snapshot(0, 1<<30)
-	if len(frames) > historyLimit+historyLimit/4 {
-		t.Fatalf("history tail = %d, want <= %d", len(frames), historyLimit+historyLimit/4)
-	}
-	last := frames[len(frames)-1]
-	if last.Sequence != uint64(historyLimit*3+100) {
-		t.Fatalf("last sequence = %d", last.Sequence)
 	}
 }
