@@ -156,13 +156,12 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 	if len(chunks) == 0 {
 		return nil
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return l.writeTx(ctx, func(tx *sql.Tx) error { return putChunks(ctx, tx, runID, job, kind, at, chunks) })
+}
+
+func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time.Time, chunks []Chunk) error {
 	now := at.UnixMicro()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
 		ON CONFLICT(run_id) DO UPDATE SET job=COALESCE(NULLIF(excluded.job,''),log_runs.job),
 		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
 		return err
@@ -192,7 +191,62 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// Archive and deletion transactions wait for the SQLite write lock in short
+// slices and retry, instead of one long busy wait: SQLite's own busy handler
+// ignores context cancellation, so a stuck lock holder would otherwise keep a
+// shutting-down caller (and the database it must close) busy for the whole
+// busy_timeout. The overall wait stays the connection's usual five seconds.
+const (
+	busySlice = 100 * time.Millisecond
+	busyTotal = 5 * time.Second
+)
+
+// writeTx runs fn in a transaction on the writer connection, retrying the
+// whole transaction while SQLite reports the database busy, and giving up as
+// soon as ctx ends.
+func (l *LogDB) writeTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	conn, err := l.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout=%d", busySlice.Milliseconds())); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA busy_timeout=5000")
+	start := time.Now()
+	for {
+		// The writer connection starts transactions with BEGIN IMMEDIATE, so
+		// the busy wait usually happens in BeginTx itself.
+		err := runTx(ctx, conn, fn)
+		if err == nil || !isBusy(err) || time.Since(start) >= busyTotal {
+			return err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("%w: %w", ctxErr, err)
+		}
+	}
+}
+
+func runTx(ctx context.Context, conn *sql.Conn, fn func(*sql.Tx) error) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err = fn(tx); err == nil {
+		err = tx.Commit()
+	}
+	if err != nil {
+		tx.Rollback()
+	}
+	return err
+}
+
+func isBusy(err error) bool {
+	return strings.Contains(err.Error(), "SQLITE_BUSY") || strings.Contains(err.Error(), "database is locked")
 }
 
 // EachChunk iterates archived chunks of a run in order. Chunks whose last
@@ -235,25 +289,22 @@ func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
 	if len(runIDs) == 0 {
 		return nil
 	}
-	tx, err := l.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for start := 0; start < len(runIDs); start += 128 {
-		page := runIDs[start:min(start+128, len(runIDs))]
-		args := make([]any, len(page))
-		for i, id := range page {
-			args[i] = id
-		}
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(page)), ",")
-		for _, table := range []string{"log_chunks", "log_runs"} {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE run_id IN ("+placeholders+")", args...); err != nil {
-				return err
+	return l.writeTx(ctx, func(tx *sql.Tx) error {
+		for start := 0; start < len(runIDs); start += 128 {
+			page := runIDs[start:min(start+128, len(runIDs))]
+			args := make([]any, len(page))
+			for i, id := range page {
+				args[i] = id
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(page)), ",")
+			for _, table := range []string{"log_chunks", "log_runs"} {
+				if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE run_id IN ("+placeholders+")", args...); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // pruneBatch bounds each prune transaction. Chunks are up to about 1 MiB, so
