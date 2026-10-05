@@ -32,9 +32,17 @@ import (
 // executor, supervisor, maintenance, alerts). Each stage also has its own
 // smaller budget. HTTP cleanup and the archiver stop keep small reserved
 // slices (5s and at least 2s) so they still run when the budget is spent.
-// Stages that call logstore maintenance/archive APIs are only as bounded as
-// those APIs are context-aware; see runShutdown for what can still overrun.
+// The budget is a target, not a hard guarantee: see runShutdown for what can
+// still overrun. The one guarantee kept strictly is that the databases are
+// never closed under a maintenance loop that failed to stop.
 const shutdownBudget = 45 * time.Second
+
+// maintenanceJoinBudget bounds the wait for maintenance loops after they have
+// been canceled. A variable so tests can shorten it.
+var maintenanceJoinBudget = 10 * time.Second
+
+// extraMaintenanceLoop, when set (tests only), runs as one more maintenance loop.
+var extraMaintenanceLoop func(context.Context)
 
 // alertDrainFloor is the minimum time alert delivery gets at shutdown.
 const alertDrainFloor = 5 * time.Second
@@ -106,6 +114,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.cfg = cfg
 	d.mu.Unlock()
+	// Set by the shutdown path when a maintenance loop outlives its join
+	// budget; the database closers below then leave the databases open.
+	var maintenanceStuck atomic.Bool
 	dbOptions := sqlite.Options{Synchronous: cfg.Storage.Synchronous}
 	st, err := store.Open(ctx, d.DataDir, dbOptions)
 	if err != nil {
@@ -114,7 +125,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Lock()
 	d.store = st
 	d.mu.Unlock()
-	defer func() { runErr = errors.Join(runErr, st.Close()) }()
+	defer func() {
+		if maintenanceStuck.Load() {
+			slog.Error("not closing the metadata database: a maintenance loop is still running; SQLite recovers at the next start")
+			return
+		}
+		runErr = errors.Join(runErr, st.Close())
+	}()
 	if err := st.InterruptAlerts(ctx); err != nil {
 		return fmt.Errorf("mark interrupted alerts: %w", err)
 	}
@@ -129,7 +146,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	defer func() { runErr = errors.Join(runErr, ldb.Close()) }()
+	defer func() {
+		if maintenanceStuck.Load() {
+			slog.Error("not closing the log database: a maintenance loop is still running; SQLite recovers at the next start")
+			return
+		}
+		runErr = errors.Join(runErr, ldb.Close())
+	}()
 	d.mu.Lock()
 	d.ldb = ldb
 	d.logs = logs
@@ -263,13 +286,14 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		deadline, _ := overall.Deadline()
 		shutdownBy = deadline
 		runErr = errors.Join(runErr, d.runShutdown(overall, shutdownParts{
-			stopMaintenance: stopMaintenance,
-			maintenance:     &maintenance,
-			api:             apiServer,
-			sched:           sched,
-			super:           super,
-			exec:            execService,
-			dispatcher:      dispatcher,
+			stopMaintenance:  stopMaintenance,
+			maintenance:      &maintenance,
+			maintenanceStuck: &maintenanceStuck,
+			api:              apiServer,
+			sched:            sched,
+			super:            super,
+			exec:             execService,
+			dispatcher:       dispatcher,
 		}))
 	}()
 	for _, init := range cfg.Init {
@@ -314,8 +338,12 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.running = true
 	d.mu.Unlock()
 	apiServer.SetReady(true)
-	maintenanceErrors := make(chan error, 3)
-	for name, loop := range map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop} {
+	maintenanceErrors := make(chan error, 4)
+	loops := map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop}
+	if extraMaintenanceLoop != nil {
+		loops["test"] = extraMaintenanceLoop
+	}
+	for name, loop := range loops {
 		maintenance.Go(func() {
 			if err := fault.Call(func() error {
 				loop(maintenanceCtx)
@@ -338,13 +366,14 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 
 // shutdownParts are the components runShutdown stops, in dependency order.
 type shutdownParts struct {
-	stopMaintenance context.CancelFunc
-	maintenance     *sync.WaitGroup
-	api             *api.Server
-	sched           *scheduler.Scheduler
-	super           *supervisor.Supervisor
-	exec            *executor.Service
-	dispatcher      *alerts.Dispatcher
+	stopMaintenance  context.CancelFunc
+	maintenance      *sync.WaitGroup
+	maintenanceStuck *atomic.Bool
+	api              *api.Server
+	sched            *scheduler.Scheduler
+	super            *supervisor.Supervisor
+	exec             *executor.Service
+	dispatcher       *alerts.Dispatcher
 }
 
 // runShutdown stops the daemon within ctx, in this order:
@@ -358,11 +387,13 @@ type shutdownParts struct {
 //  3. Executor shutdown (15s), supervisor join (5s), maintenance join (10s),
 //     alert drain (20s), HTTP (5s), each capped by ctx.
 //
-// Remaining unbounded work: executor runs that ignore a forced kill beyond
-// forcedRunJoin, and logstore maintenance/archive calls (FlushActive,
-// ArchiveOrphans, DeleteRuns, StopArchiver) until those take contexts; a
-// stage that times out is reported and the next stage still runs, so the
-// databases can close while such a call is in flight.
+// Maintenance and archive calls take the shutdown-canceled context
+// (FlushActiveContext, ArchiveOrphansContext, DeleteRunsContext, retention and
+// prune queries) and StopArchiver takes its own deadline. What can still
+// overrun: executor runs that ignore a forced kill beyond forcedRunJoin, and
+// uncancelable file/fsync work. A stage that times out is reported and the next
+// stage still runs, except that a maintenance loop that fails to stop makes the
+// daemon leave the databases open instead of closing them underneath it.
 func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
 	var err error
 	p.stopMaintenance()
@@ -412,11 +443,15 @@ func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
 		p.maintenance.Wait()
 		close(joined)
 	}()
-	maintCtx, cancelMaint := context.WithTimeout(ctx, 10*time.Second)
+	maintCtx, cancelMaint := context.WithTimeout(ctx, maintenanceJoinBudget)
 	select {
 	case <-joined:
 	case <-maintCtx.Done():
-		slog.Warn("maintenance loops did not stop within the shutdown budget")
+		// Strict: the loops were canceled and the log store honors that, so
+		// a loop that is still running is stuck in uncancelable work. Do not
+		// close the databases under it.
+		p.maintenanceStuck.Store(true)
+		slog.Error("maintenance loops did not stop within the shutdown budget; databases will be left open")
 		err = errors.Join(err, fmt.Errorf("maintenance shutdown: %w", maintCtx.Err()))
 	}
 	cancelMaint()
