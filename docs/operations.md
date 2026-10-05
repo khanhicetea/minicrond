@@ -80,10 +80,13 @@ SSE `gap` event can report — plus the `system` line. Timeouts and stop request
 are unaffected.
 
 Corrupt buffers: an orphaned chunk that cannot be decoded at all is never
-deleted. It stays in place, the sweep reports an error, and after repeated
-failures the buffer moves to `data/logs/.quarantine/`. A chunk corrupt after a
-valid prefix has the prefix archived and the original bytes copied to
-`.quarantine/<run>-<chunk>.corrupt`. Torn tails left by a crash are still
+deleted. It is moved at once to `data/logs/.quarantine/<run>-<chunk>.zst.corrupt`,
+the run's valid chunks are archived (so the run stays readable), and the sweep
+reports the quarantine once. A chunk corrupt after a valid prefix has the prefix
+archived and the original bytes copied to the same
+`.quarantine/<run>-<chunk>.zst.corrupt` name. If the quarantine move itself
+fails, the chunk stays in place and fails each sweep; after repeated failures the
+whole buffer moves to `.quarantine/<run>/`. Torn tails left by a crash are still
 salvaged up to the last intact frame. Quarantined files are never pruned
 automatically; remove them deliberately.
 

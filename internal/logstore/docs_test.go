@@ -68,3 +68,11 @@ func TestDocsDescribeTheFailedFrameSequence(t *testing.T) {
 	docContains(t, "http-api.md", "consumed a sequence number but was not stored")
 	docContains(t, "operations.md", "the single frame whose write failed does")
 }
+
+// N2: the quarantine copy is named <run>-<chunk>.zst.corrupt (preserveCorrupt).
+func TestDocsNameTheQuarantineCopyLikeTheCode(t *testing.T) {
+	docContains(t, "operations.md", "<run>-<chunk>.zst.corrupt")
+	if b, _ := os.ReadFile("../../docs/operations.md"); strings.Contains(string(b), "<run>-<chunk>.corrupt") {
+		t.Error("docs/operations.md names the quarantine copy without .zst")
+	}
+}
