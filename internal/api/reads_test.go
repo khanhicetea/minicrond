@@ -821,3 +821,101 @@ func TestStalledDownloadsLeaveCapacityForDiagnostics(t *testing.T) {
 		t.Fatalf("a download beyond the cap = %d, want a retryable 503", resp.StatusCode)
 	}
 }
+
+// failingWriter stands in for a connection that breaks after limit bytes.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	limit int
+}
+
+func (w *failingWriter) Write(b []byte) (int, error) {
+	if w.Body.Len() >= w.limit {
+		return 0, errors.New("connection reset")
+	}
+	return w.ResponseRecorder.Write(b)
+}
+
+// A download that fails after its first bytes went out must end the response
+// abnormally (never a clean, apparently complete body) and release its slot.
+func TestRawDownloadFailureMidStreamAbortsAndFreesSlot(t *testing.T) {
+	s, _, _ := setup(t)
+	s.SetReadLimits(ReadLimits{Slots: 2})
+	id, w := storedRun(t, s, "midstream")
+	const lines, size = 20, 150 << 10
+	writeLines(t, w, lines, size)
+	rec := &failingWriter{ResponseRecorder: httptest.NewRecorder(), limit: 1 << 20}
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		req := httptest.NewRequest("GET", "/api/v1/runs/"+id+"/log/raw", nil)
+		s.middleware(s.routes(), true).ServeHTTP(rec, req)
+	}()
+	if recovered != http.ErrAbortHandler {
+		t.Fatalf("handler ended with %v, want http.ErrAbortHandler so the client sees a truncated response", recovered)
+	}
+	if rec.Body.Len() == 0 || rec.Body.Len() >= lines*(size+1) {
+		t.Fatalf("partial download = %d bytes of %d", rec.Body.Len(), lines*(size+1))
+	}
+	if inflight, bytes, _ := s.gate().stats(); inflight != 0 || bytes != 0 || s.gate().downloads != 0 {
+		t.Fatalf("slot leaked after the failed download: %d in flight, %d bytes, %d downloads", inflight, bytes, s.gate().downloads)
+	}
+	// The gate is fully usable afterwards.
+	if rec := call(s, true, "GET", "/api/v1/runs/"+id+"/log", "", "", nil); rec.Code != 200 {
+		t.Fatalf("log page after the failed download: %d", rec.Code)
+	}
+}
+
+// A client that stops reading is cut off by the write deadline: it receives an
+// aborted response, not a clean EOF, and the slot is released.
+func TestStalledDownloadIsCutByWriteDeadline(t *testing.T) {
+	s, _, _ := setup(t)
+	s.SetReadLimits(ReadLimits{Slots: 2})
+	id, w := storedRun(t, s, "cutoff")
+	const lines, size = 100, 200 << 10 // 20 MiB: more than socket buffers hold
+	writeLines(t, w, lines, size)
+	server := newRealServer(t, s, 300*time.Millisecond)
+	resp, err := http.Get(server.URL + "/api/v1/runs/" + id + "/log/raw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// Do not read. First the download takes its slot; then the server gives up
+	// on the stalled client when the write deadline passes and frees it.
+	waitGate := func(what string, done func(inflight int) bool) {
+		deadline := time.Now().Add(10 * time.Second)
+		for inflight, _, _ := s.gate().stats(); !done(inflight); inflight, _, _ = s.gate().stats() {
+			if time.Now().After(deadline) {
+				t.Fatal(what)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitGate("the download never took a slot", func(n int) bool { return n == 1 })
+	waitGate("a stalled download kept its slot past the write deadline", func(n int) bool { return n == 0 })
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err == nil || n >= int64(lines)*(size+1) {
+		t.Fatalf("stalled client got %d bytes and error %v, want a truncated, errored body", n, err)
+	}
+}
+
+// Before the first byte, a download that exceeds its work budget is an ordinary
+// retryable error: no download headers, no slot left behind.
+func TestRawDownloadWorkTimeoutBeforeFirstByte(t *testing.T) {
+	s, _, _ := setup(t)
+	s.SetReadLimits(ReadLimits{WorkTimeout: time.Nanosecond})
+	id, w := storedRun(t, s, "rawtimeout")
+	writeLines(t, w, 3, 100)
+	rec := call(s, true, "GET", "/api/v1/runs/"+id+"/log/raw", "", "", nil)
+	if rec.Code != 503 || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("raw timeout = %d %s, want a retryable 503", rec.Code, rec.Body.String())
+	}
+	if code := decode(t, rec)["error"].(map[string]any)["code"]; code != "read_timeout" {
+		t.Fatalf("error code %v", code)
+	}
+	if h := rec.Header(); h.Get("Content-Disposition") != "" || h.Get("Content-Type") != "application/json" {
+		t.Fatalf("a failed download carries download headers: %v", h)
+	}
+	if inflight, bytes, _ := s.gate().stats(); inflight != 0 || bytes != 0 || s.gate().downloads != 0 {
+		t.Fatalf("slot leaked: %d %d %d", inflight, bytes, s.gate().downloads)
+	}
+}
