@@ -183,6 +183,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	execService := executor.New(st, logs, executor.Options{
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
 		MaxLineBytes:      maxLine,
+		Queue:             queueOptions(cfg.Queue),
 		OnFinished: func(run model.Run, definition model.Definition) {
 			if dispatcher := d.alerts.Load(); dispatcher != nil {
 				dispatcher.Notify(run, definition)
@@ -198,6 +199,11 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	}
 	execService.CleanupRecovered(recoverable)
 	if err = st.Recover(ctx); err != nil {
+		return err
+	}
+	// Queued runs were never started (running and pending rows were just marked
+	// interrupted); count them and let the rate-limited drain loop take over.
+	if err = execService.ResumeQueue(ctx); err != nil {
 		return err
 	}
 	if err := validateAlertReferences(cfg.Definitions(), cfg.AlertChannels); err != nil {
@@ -471,6 +477,19 @@ func (d *Daemon) runShutdown(ctx context.Context, p shutdownParts) error {
 	return err
 }
 
+func queueOptions(q config.Queue) executor.QueueOptions {
+	return executor.QueueOptions{
+		Disabled: !q.On(), MaxItems: q.MaxItems, MaxPerJob: q.MaxPerJob, MaxBytes: int64(q.MaxBytes) << 10,
+		MaxAge: time.Duration(q.MaxAge) * time.Second, DrainRate: q.DrainRate, MaxPendingRetries: q.MaxPendingRetries,
+	}
+}
+
+// queueEqual compares queue settings by value; Enabled is a pointer.
+func queueEqual(a, b config.Queue) bool {
+	return a.On() == b.On() && a.MaxItems == b.MaxItems && a.MaxPerJob == b.MaxPerJob && a.MaxBytes == b.MaxBytes &&
+		a.MaxAge == b.MaxAge && a.DrainRate == b.DrainRate && a.MaxPendingRetries == b.MaxPendingRetries
+}
+
 func minTime(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a
@@ -503,6 +522,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	if cfg.Scheduler.MaxConcurrentRuns != current.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != current.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
+	}
+	if !queueEqual(cfg.Queue, current.Queue) {
+		return errors.New("[queue] settings require daemon restart")
 	}
 	if cfg.Storage.Synchronous != current.Storage.Synchronous {
 		return errors.New("storage.synchronous requires daemon restart")

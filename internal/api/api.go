@@ -548,6 +548,14 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 			databases["logs"] = poolInfo(writer, reader)
 		}
 		diagnostics["log_archive_backlog"] = s.logs.ArchiveBacklog()
+		diagnostics["log_archive"] = s.logs.ArchiveStats()
+	}
+	if s.exec != nil {
+		// Pending-work budgets (ADR-9), computed on demand from the read pool.
+		pending := s.exec.Diagnostics(r.Context())
+		diagnostics["execution_queue"] = pending.Queue
+		diagnostics["pending_retries"] = map[string]any{"count": pending.PendingRetries, "max": pending.MaxPendingRetries, "dropped": pending.RetriesDropped}
+		diagnostics["finalizers"] = map[string]any{"background": pending.Finalizers, "inline": pending.InlineFinalizers, "max": pending.MaxFinalizers}
 	}
 	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)
@@ -741,6 +749,8 @@ type httpError struct {
 	code   string
 	msg    string
 	cause  error
+	// retryAfter, when positive, is sent as a Retry-After header in seconds.
+	retryAfter int
 }
 
 func (e *httpError) Error() string { return e.msg }
@@ -791,6 +801,12 @@ func (s *Server) beginTrigger(ctx context.Context, name, key, requestHash string
 			return model.Run{}, false, &httpError{status: 409, code: "trigger_rejected", msg: err.Error()}
 		case errors.Is(err, executor.ErrShutdown):
 			return model.Run{}, false, &httpError{status: 503, code: "not_ready", msg: "daemon is shutting down"}
+		case errors.Is(err, executor.ErrQueueFull):
+			// Over capacity and the bounded queue is full: nothing was accepted.
+			return model.Run{}, false, &httpError{status: 429, code: "queue_full", msg: err.Error(), retryAfter: 30}
+		case errors.Is(err, executor.ErrQueueUnavailable):
+			// The queue could not be persisted, so nothing is claimed durable.
+			return model.Run{}, false, &httpError{status: 503, code: "queue_unavailable", msg: "execution queue storage is unavailable", retryAfter: 5}
 		default:
 			return model.Run{}, false, triggerInternal(fmt.Errorf("trigger definition %s: %w", name, err))
 		}
@@ -810,6 +826,9 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 		if herr.cause != nil {
 			internal(w, r, herr.cause)
 		} else {
+			if herr.retryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(herr.retryAfter))
+			}
 			writeError(w, herr.status, herr.code, herr.msg)
 		}
 		return
