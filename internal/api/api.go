@@ -1300,11 +1300,44 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		internal(w, r, err)
 		return
 	}
-	if err = s.reconcile(r.Context()); err != nil {
-		internal(w, r, err)
+	// The import is committed; reconcile independently of the caller so a
+	// disconnect cannot leave the database and the running loops disagreeing.
+	if err = s.reconcileCommitted(context.WithoutCancel(r.Context())); err != nil {
+		internal(w, r, fmt.Errorf("reconcile imported definitions: %w", err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"content_hash": actual, "applied": len(defs)})
+}
+
+// Post-commit reconciliation is bounded: each attempt has a deadline and the
+// retries back off, so a failing scheduler reload cannot pin a handler.
+const (
+	reconcileAttempts       = 4
+	reconcileAttemptTimeout = 30 * time.Second
+)
+
+var reconcileBackoff = 200 * time.Millisecond
+
+// reconcileCommitted reconciles after a committed mutation on a context the
+// HTTP caller cannot cancel, retrying transient failures.
+func (s *Server) reconcileCommitted(ctx context.Context) error {
+	var err error
+	for attempt := 0; attempt < reconcileAttempts; attempt++ {
+		if attempt > 0 {
+			if s.closing.Load() {
+				break
+			}
+			time.Sleep(reconcileBackoff << (attempt - 1))
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, reconcileAttemptTimeout)
+		err = s.reconcile(attemptCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		slog.Warn("post-commit reconcile failed", "attempt", attempt+1, "error", err)
+	}
+	return err
 }
 
 func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
