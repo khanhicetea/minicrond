@@ -13,7 +13,7 @@ embedded web UI. Linux is the supported platform.
 | [operations.md](operations.md) | Runbook: data layout, hybrid log storage, backup/restore, retention, tokens, security, troubleshooting |
 | [architecture.md](architecture.md) | Components, run lifecycle, storage design, design decisions |
 | [database-performance-audit.md](database-performance-audit.md) | Database reliability findings, benchmark evidence, and performance priorities |
-| [adr/](adr/) | Accepted architecture decision records |
+| [adr/](adr/) | Accepted architecture decision records, including [ADR-8](adr/0008-background-first-trade-offs.md) (background-first trade-offs and implementation status), [ADR-9](adr/0009-durable-execution-queue.md) (durable execution queue), [ADR-10](adr/0010-log-disk-budget.md) (log disk budget) and [ADR-11](adr/0011-read-admission.md) (read admission) |
 | [releases/](releases/) | Release notes and supporting acceptance tables / measurements |
 
 Design-time specifications (drafted before implementation) live in
