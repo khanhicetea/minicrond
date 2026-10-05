@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,3 +250,48 @@ func TestDaemonCrashLosesNothingInsideTheUnsyncedWindow(t *testing.T) {
 type blockedReader struct{}
 
 func (blockedReader) Read([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// Review S3: Sync released w.mu before its fsync and zeroed the dirty count, so
+// a second strict-mode Write saw nothing unsynced and was acknowledged while
+// the first fsync that covered its neighbouring bytes was still in flight.
+func TestStrictWriteWaitsForInFlightFsync(t *testing.T) {
+	s := newGroupSyncStore(t, time.Hour, 0)
+	s.SetFrameSync(true)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls int32
+	var mu sync.Mutex
+	s.syncFile = func(f *os.File) error {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			close(entered)
+			<-release
+		}
+		return f.Sync()
+	}
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { first <- w.Write(Stdout, []byte("a"), 0) }()
+	<-entered // A's fsync is in flight, A's frame is claimed by it
+	// B's bytes land while A's fsync is stuck. Its Write must not be
+	// acknowledged before an fsync has covered it.
+	second := make(chan error, 1)
+	go func() { second <- w.Write(Stdout, []byte("b"), 0) }()
+	select {
+	case err := <-second:
+		t.Fatalf("strict Write returned (%v) while an fsync was in flight and its own was not done", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(release)
+	for i, ch := range []chan error{first, second} {
+		if err := <-ch; err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+}

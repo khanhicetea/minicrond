@@ -676,6 +676,10 @@ type Writer struct {
 	droppedBytes  int64
 	syncFailures  int64
 	syncFailing   atomic.Bool
+	// syncMu serializes fsyncs (see Sync); lastSyncErr is the latest fsync's
+	// outcome and is guarded by it. Lock order: syncMu, then mu.
+	syncMu      sync.Mutex
+	lastSyncErr error
 }
 
 func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
@@ -1069,14 +1073,21 @@ func (s *Store) fsync(f *os.File) error {
 }
 
 // Sync makes every accepted frame durable. The fsync runs without the
-// writer's locks, so readers and the other stream's pump are not held up. A
-// failure is returned and also recorded as capture evidence (the run is
-// marked truncated): after a failed fsync the kernel may have dropped pages.
+// writer's locks, so readers and the other stream's pump are not held up, but
+// concurrent Syncs are serialized: a caller whose bytes were already claimed by
+// an fsync still in flight waits for it, and reports its failure, instead of
+// seeing nothing unsynced and returning early. A failure is returned and also
+// recorded as capture evidence (the run is marked truncated): after a failed
+// fsync the kernel may have dropped pages.
 func (w *Writer) Sync() error {
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
 	w.mu.Lock()
 	if w.closed || w.file == nil || w.unsynced == 0 {
 		w.mu.Unlock()
-		return nil
+		// Nothing new to sync; the previous fsync (which we waited for) may
+		// have failed on bytes this caller wrote.
+		return w.lastSyncErr
 	}
 	f := w.file
 	w.unsynced = 0
@@ -1087,6 +1098,7 @@ func (w *Writer) Sync() error {
 		// A closed file was sealed concurrently, and sealing syncs it.
 		return nil
 	}
+	w.lastSyncErr = err
 	if err == nil {
 		w.syncFailing.Store(false)
 		return nil
