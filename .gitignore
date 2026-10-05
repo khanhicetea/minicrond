@@ -3,3 +3,4 @@ bin/
 /minicrond
 /openapi-gen
 web/node_modules
+/cmd/minicrond/minicrond
