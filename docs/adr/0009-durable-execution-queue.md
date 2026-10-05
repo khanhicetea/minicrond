@@ -137,11 +137,13 @@ Under the admission lock the current definition is loaded by name:
 
 ### 9. Visibility
 
-`GET /api/v1/daemon` `diagnostics` gains `execution_queue` (depth, bytes, oldest age,
-limits, expired/rejected/dropped counters since start), `pending_retries`,
-`retries_dropped`, `finalizers`, and `log_archive` (backlog, overflow flag, sealed
-runs and bytes). Run metrics count `queued` runs as queued. Counters are
-process-lifetime; durable evidence is the terminal `skipped` run rows above.
+`GET /api/v1/daemon` `diagnostics` gains `execution_queue` (enabled, depth, bytes,
+oldest age, limits, and expired/rejected/unavailable/dropped counters since start),
+`pending_retries` (`count`, `max`, `dropped`), `finalizers` (`background`, `inline`,
+`max`) and `log_archive` (queued ids, overflow flag and total, sealed runs and bytes,
+computed on request from a bounded directory walk). Run metrics count `queued` runs
+as queued. Counters are process-lifetime; durable evidence is the terminal `skipped`
+run rows above.
 
 ## Alternatives rejected
 

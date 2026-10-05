@@ -77,13 +77,19 @@ starts, cancels scheduled retries, and forces termination when its run deadline
 expires, even if the definition has a longer grace period; forced runs then get
 a short bounded join to persist their outcome before the databases close.
 Terminal persistence first retries inline for five seconds, then hands off to a
-background finalizer that keeps retrying until storage recovers or the daemon
-stops, and only then sends alerts and schedules retries. Callers must still
+single background finalizer (at most 256 runs; beyond that the completing run
+retries inline and keeps its concurrency slot) that keeps retrying until storage
+recovers or the daemon stops, and only then sends alerts and schedules retries. Callers must still
 verify the stored status before treating a run as terminal. Scheduling and
 worker supervision loops retry storage failures with capped backoff instead of
 stopping; an occurrence that could not be triggered is handled by `catch_up`.
-A retry that finds `max_concurrent_runs` full waits another `retry_delay`;
-other over-capacity triggers are recorded `skipped` with `queue_full`.
+Pending retries live in one bounded scheduler (`queue.max_pending_retries`), not
+a goroutine and timer each. A job trigger (`schedule`, `manual`, `retry`) that
+finds `max_concurrent_runs` full is persisted in a bounded durable queue
+(status `queued`, [ADR-9](adr/0009-durable-execution-queue.md)) and started later
+by one drain goroutine that is armed only while the queue is non-empty; when the
+queue is full or disabled it is recorded `skipped` with `queue_full` (manual
+triggers get an explicit 429 instead).
 
 Definitions and run records are copied at asynchronous ownership boundaries.
 Configuration rejects durations that would overflow, and invalid UID/GID values

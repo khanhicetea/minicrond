@@ -118,6 +118,55 @@ file. The main `minicron.db` does not shrink after run retention deletes rows;
 if physical reclamation is needed there, stop the daemon, back up the
 complete directory, and use SQLite `VACUUM` before restarting.
 
+## Execution queue and pending work
+
+Design and limits: [ADR-9](adr/0009-durable-execution-queue.md); settings: the
+`[queue]` section of [configuration](configuration.md). A job trigger
+(`schedule`, `manual`, `retry`) that finds `scheduler.max_concurrent_runs` full
+is persisted as a run with status `queued` and started later, oldest first with
+round-robin fairness across definitions, at most `queue.drain_rate` per second.
+Workers and `[[init]]` jobs are never queued.
+
+- **Outcomes you can see.** `queued` (waiting), then the usual run lifecycle with
+  `started_at - queued_at` as the wait; or a terminal `skipped` run whose
+  `end_reason` says why it never ran: `queue_expired` (waited longer than
+  `queue.max_age`), `queue_full` (a limit was hit; scheduled/retry triggers only),
+  `definition_removed` / `definition_disabled` (deleted, recreated, or disabled
+  while queued), `retry_budget` (the definition now allows fewer retries),
+  `overlap_skip`, `retry_dropped` (see below). A manual trigger that meets a full
+  queue gets HTTP 429 `queue_full` with `Retry-After` and creates no run; if the
+  queue cannot be persisted it gets 503 `queue_unavailable`. `wait=true` returns
+  `202` with the queued run when the run has not started.
+- **Restart.** Queued runs survive a restart; `pending`/`running` runs are marked
+  `interrupted` as before and never re-queued, so a command that may have started
+  is not replayed. A backlog drains at `drain_rate` into free slots and expires
+  after `max_age`, so a long outage ends with expired records, not a start storm.
+  There is no exactly-once guarantee. The current definition is used when an item
+  is taken (an edit applies; the run records the revision that actually ran).
+- **Retries.** Failed runs wait for `retry_delay` in one in-memory scheduler,
+  capped by `queue.max_pending_retries`; they are still lost on restart. Beyond
+  the cap a retry is dropped with evidence: an error log, the `dropped` counter
+  and a `skipped` / `retry_dropped` run (attempt N+1, linked to the failed run).
+- **Terminal-state writes.** If a run's terminal write fails, one background
+  finalizer retries (1s to 30s backoff) for at most 256 runs. Further runs retry
+  inline and keep their concurrency slot, so storage trouble throttles new runs
+  instead of growing memory; nothing is discarded, and anything unwritten at
+  shutdown is marked `interrupted` by recovery.
+- **Archive discovery.** The archiver keeps at most 4096 sealed run ids in memory;
+  beyond that buffers stay on disk and the idle archiver sweeps the directory to
+  find them (the periodic worker-flush sweep does too).
+
+`GET /api/v1/daemon` shows all of it under `diagnostics`: `execution_queue`
+(`depth`, `bytes`, `oldest_age_s`, limits, and `expired`, `rejected`,
+`unavailable`, `dropped` counters since the daemon started), `pending_retries`
+(`count`, `max`, `dropped`), `finalizers` (`background`, `inline`, `max`) and
+`log_archive` (`queued`, `overflow`, `overflow_total`, `sealed_runs`,
+`sealed_bytes`, computed per request from a bounded directory walk). Counters
+reset at restart; the `skipped` run records are the durable evidence. Run
+metrics (`/api/v1/metrics/runs`) count `queued` runs under `queued`. Alert when
+`depth` stays near `max_items`, `expired` or `rejected` grow, or `sealed_bytes`
+keeps rising while the archiver is up.
+
 ## Alert delivery
 
 Monitor `GET /api/v1/metrics/alerts` (`counts.failed`, `counts.dropped`,
@@ -156,7 +205,8 @@ the next start. A trigger that races with shutdown can be refused with
 replayed.
 
 A worker whose terminal state cannot be written (storage fault) is finalized in
-the background; its restart policy is applied once that succeeds.
+the background; its restart policy is applied once that succeeds. Queued runs
+stay queued across shutdown and are not started by it.
 
 ## Backup and restore
 
@@ -285,6 +335,7 @@ a unique TCP port. Service mode logs to the journal.
 | `non-loopback plaintext HTTP requires allow_insecure_remote=true` | Intentional; bind loopback or set the opt-in behind TLS |
 | Web UI 401 | Wrong/rotated token — rotate again or re-check `initial-token` |
 | Runs recorded as `interrupted` | Daemon was killed; recovery marks unobservable active runs `interrupted` at boot |
+| Runs stay `queued` / end `queue_expired` | `max_concurrent_runs` stays full for longer than `queue.max_age`; raise the limit, shorten jobs, or raise `max_age` (see Execution queue) |
 | Jobs didn't fire while daemon was down | By design (`catch_up = "none"` default); use `catch_up = "latest"` to fire the most recent miss |
 
 ## Upgrade / rollback
