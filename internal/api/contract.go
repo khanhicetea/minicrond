@@ -19,6 +19,21 @@ var contractRoutes = []contractRoute{
 	{"POST", "/api/v1/token/rotate", "Rotate bearer token"}, {"GET", "/api/v1/export", "Export definitions"}, {"POST", "/api/v1/import/preview", "Preview hash-bound import"}, {"POST", "/api/v1/import/apply", "Apply definition import"},
 }
 
+// busyRoutes can answer 503 with Retry-After when expensive-read admission is
+// saturated or the request's work budget runs out (see readlimit.go).
+var busyRoutes = map[string]bool{
+	"GET /api/v1/metrics/runs":      true,
+	"GET /api/v1/runs/{id}/log":     true,
+	"GET /api/v1/runs/{id}/log/raw": true,
+}
+
+func busyResponses() map[string]*huma.Response {
+	return map[string]*huma.Response{"503": {
+		Description: "Expensive reads are at capacity or the request exceeded its work budget; retry after the Retry-After delay. Error codes: read_busy, read_timeout",
+		Headers:     map[string]*huma.Param{"Retry-After": {Description: "Seconds to wait before retrying", Schema: &huma.Schema{Type: "integer"}}},
+	}}
+}
+
 func OpenAPIContract(version string) []byte {
 	config := huma.DefaultConfig("minicron API", version)
 	config.OpenAPIPath = ""
@@ -26,7 +41,11 @@ func OpenAPIContract(version string) []byte {
 	config.SchemasPath = ""
 	registry := humago.New(http.NewServeMux(), config)
 	for _, route := range contractRoutes {
-		registry.OpenAPI().AddOperation(&huma.Operation{Method: route.method, Path: route.path, Summary: route.summary, OperationID: route.method + "-" + route.path, Errors: []int{400, 401, 404, 409, 422, 500}})
+		operation := &huma.Operation{Method: route.method, Path: route.path, Summary: route.summary, OperationID: route.method + "-" + route.path, Errors: []int{400, 401, 404, 409, 422, 500}}
+		if busyRoutes[route.method+" "+route.path] {
+			operation.Responses = busyResponses()
+		}
+		registry.OpenAPI().AddOperation(operation)
 	}
 	body, err := json.Marshal(registry.OpenAPI())
 	if err != nil {
