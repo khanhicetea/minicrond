@@ -113,12 +113,12 @@ so they never queue behind run transitions or archival.
 
 Live logs take the fast path: every accepted frame is a tagged, zstd-
 compressed chunk file write before the next line is read (daemon-crash-safe);
-fsyncs are grouped while output keeps arriving unless
-`logs.durability = "frame"`. Finished runs are sealed and archived into the
+fsyncs are grouped on a shared timer (`logs.sync_interval` /
+`logs.sync_max_dirty`) unless `logs.durability = "frame"`. Finished runs are sealed and archived into the
 log DB in the background, off the completion path, and buffers are deleted; workers
 checkpoint every `logs.worker_flush_interval`. Crash-orphaned buffers are
-salvaged at startup up to the last intact frame. Reads merge all tiers
-plus a byte-bounded in-memory tail (ADR-6).
+salvaged at startup up to the last intact frame. Reads merge the archive and
+the buffer files; no payload is kept in memory for viewers (ADR-6, ADR-8).
 
 ## Web UI
 

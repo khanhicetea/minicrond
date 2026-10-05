@@ -115,7 +115,21 @@
             "frame"
           ],
           "default": "batch",
-          "description": "When log lines are fsynced: batch groups syncs while output keeps arriving; frame syncs every line"
+          "description": "When log lines are fsynced: batch writes each line through to the file and groups the fsync (see sync_interval, sync_max_dirty); frame syncs every line"
+        },
+        "sync_interval": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000,
+          "default": 2000,
+          "description": "Batch durability: milliseconds after the first unsynced log write at which dirty log buffers are fsynced"
+        },
+        "sync_max_dirty": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 1024,
+          "description": "Batch durability: KiB of unsynced output after which a run's log buffer is fsynced at once"
         }
       }
     },

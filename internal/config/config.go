@@ -84,9 +84,18 @@ type Logs struct {
 	// daily prune also removes the oldest chunks. 0 disables the size budget.
 	DBMaxSize int `toml:"db_max_size" json:"db_max_size"`
 	// Durability selects when accepted log lines are fsynced: "batch" (the
-	// default) groups syncs while output keeps arriving; "frame" syncs every
-	// line, which caps throughput at the disk's fsync rate.
+	// default) writes every line through to the file at once and groups the
+	// fsync on SyncInterval/SyncMaxDirty; "frame" fsyncs every line, which caps
+	// throughput at the disk's fsync rate.
 	Durability string `toml:"durability" json:"durability"`
+
+	// Batch-durability window (ignored when Durability is "frame").
+	// SyncInterval is measured in milliseconds: dirty log buffers are fsynced
+	// this long after the first unsynced write. 0 uses the default (2000).
+	SyncInterval int `toml:"sync_interval" json:"sync_interval"`
+	// SyncMaxDirty is measured in KiB: a run's buffer is fsynced at once when it
+	// holds this much unsynced output. 0 uses the default (1024).
+	SyncMaxDirty int `toml:"sync_max_dirty" json:"sync_max_dirty"`
 }
 
 // DefinitionInput is the decoded form of a definition supplied through TOML or
@@ -310,6 +319,12 @@ func applyConfigDefaults(c *Config) {
 	if c.Logs.Durability == "" {
 		c.Logs.Durability = "batch"
 	}
+	if c.Logs.SyncInterval == 0 {
+		c.Logs.SyncInterval = 2000
+	}
+	if c.Logs.SyncMaxDirty == 0 {
+		c.Logs.SyncMaxDirty = 1024
+	}
 	if c.Storage.Synchronous == "" {
 		c.Storage.Synchronous = "full"
 	}
@@ -447,6 +462,12 @@ func validateConfig(c *Config) error {
 	}
 	if c.Logs.Durability != "batch" && c.Logs.Durability != "frame" {
 		return errors.New(`logs.durability: must be "batch" or "frame"`)
+	}
+	if c.Logs.SyncInterval < 100 || c.Logs.SyncInterval > 60000 {
+		return errors.New("logs.sync_interval: must be between 100 and 60000 milliseconds")
+	}
+	if c.Logs.SyncMaxDirty < 1 || c.Logs.SyncMaxDirty > 65536 {
+		return errors.New("logs.sync_max_dirty: must be between 1 and 65536 KiB")
 	}
 	if c.Storage.Synchronous != "full" && c.Storage.Synchronous != "normal" {
 		return errors.New(`storage.synchronous: must be "full" or "normal"`)

@@ -50,7 +50,6 @@ func BenchmarkFrameEncodingNoTail(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	s.tailLimit = 0
 	w, err := s.Open("no-tail", "bench", model.KindJob, WriterOptions{MaxBytes: 1 << 40, MaxLine: 256 << 10})
 	if err != nil {
 		b.Fatal(err)
@@ -364,22 +363,6 @@ func BenchmarkReadLateFileChunk(b *testing.B) {
 	}
 }
 
-func BenchmarkLiveTailEviction(b *testing.B) {
-	s := &Store{tailLimit: 64 << 20}
-	w := &Writer{store: s}
-	payload := make([]byte, 64)
-	for i := range historyLimit {
-		w.appendHistory(Frame{Sequence: uint64(i + 1), Payload: payload})
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	seq := uint64(historyLimit)
-	for b.Loop() {
-		seq++
-		w.appendHistory(Frame{Sequence: seq, Payload: payload})
-	}
-}
-
 // BenchmarkPipeThroughput pumps a burst of short lines, as a chatty child
 // would write them. Run with TMPDIR on a real disk: on tmpfs fsync is free.
 func BenchmarkPipeThroughput(b *testing.B) {
@@ -410,6 +393,52 @@ func BenchmarkPipeThroughput(b *testing.B) {
 				}
 			}
 			b.ReportMetric(float64(lines*b.N)/b.Elapsed().Seconds(), "lines/s")
+		})
+	}
+}
+
+// BenchmarkSparsePipe models an unattended job that logs a line every few
+// milliseconds: the zero-viewer capture cost that batch durability targets.
+// fsyncs/line is the headline metric; use TMPDIR on a real disk, because on
+// tmpfs fsync is free and only the syscall count is meaningful.
+func BenchmarkSparsePipe(b *testing.B) {
+	const lines = 200
+	for _, mode := range []struct {
+		name  string
+		frame bool
+	}{{"batch", false}, {"frame", true}} {
+		b.Run(mode.name, func(b *testing.B) {
+			s, err := New(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			s.SetFrameSync(mode.frame)
+			var syncs int64
+			for i := range b.N {
+				runID := fmt.Sprintf("run-%d", i)
+				w, err := s.Open(runID, "bench", model.KindJob, WriterOptions{})
+				if err != nil {
+					b.Fatal(err)
+				}
+				r, pw := io.Pipe()
+				done := make(chan error, 1)
+				go func() { done <- w.Pipe(Stdout, r) }()
+				for range lines {
+					if _, err := pw.Write([]byte("a sparse log line, about forty bytes ok\n")); err != nil {
+						b.Fatal(err)
+					}
+					time.Sleep(time.Millisecond)
+				}
+				pw.Close()
+				if err := <-done; err != nil {
+					b.Fatal(err)
+				}
+				syncs += w.syncs.Load()
+				if err := s.Close(runID); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportMetric(float64(syncs)/float64(lines*b.N), "fsyncs/line")
 		})
 	}
 }

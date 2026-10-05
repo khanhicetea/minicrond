@@ -32,25 +32,31 @@ const Version byte = 1
 const chunkLimit = 1 << 20
 const maxFramePayload = 16 << 20
 
-// In batch durability mode a pump syncs the hot chunk when its pipe has no
-// more buffered input, or sooner once this much output or time has
-// accumulated. Every frame is still written to the file before Write returns,
-// so a daemon crash loses nothing; only an OS crash can lose this window.
+// In batch durability mode (ADR-8 1B) every accepted frame is written through
+// to the chunk file before the write returns, so a daemon crash loses nothing.
+// The fsync is grouped: one shared timer, armed only while some writer holds
+// unsynced bytes, syncs every dirty writer after DefaultSyncInterval, and a
+// writer whose dirty bytes reach DefaultSyncMaxDirty syncs at once. Sealing a
+// chunk, pipe EOF and an orderly shutdown always sync. Only an OS crash or
+// power loss can lose output newer than the last sync; a stalled disk can
+// stretch that window beyond the nominal interval.
 const (
-	groupSyncBytes = 256 << 10
-	groupSyncDelay = 50 * time.Millisecond
+	DefaultSyncInterval = 2 * time.Second
+	DefaultSyncMaxDirty = 1 << 20
 )
+
+// Capture recovery after a log write failure (ADR-8 2A) is retried lazily, on
+// the next line, with a doubling delay. There are no recovery timers.
+var (
+	captureRetryMin = time.Second
+	captureRetryMax = 30 * time.Second
+)
+
+var errWriterClosed = errors.New("log writer closed")
 
 // archiveWorkers bounds concurrent archive transfers, and so the batch memory
 // they hold, without making unrelated runs wait for one another.
 const archiveWorkers = 2
-
-// The live tail is bounded by both frames and bytes. The byte limit prevents
-// a handful of valid maximum-size lines from retaining gigabytes per run.
-const (
-	historyLimit     = 5000
-	historyByteLimit = 16 << 20
-)
 
 type Stream byte
 
@@ -90,6 +96,12 @@ type index struct {
 	Chunks    []chunkMeta `json:"chunks"`
 	Final     bool        `json:"final"`
 	Truncated bool        `json:"truncated"`
+	// Dropped* record output discarded while log storage was failing
+	// (ADR-8 2A) and SyncFailures the fsync errors seen; they are evidence
+	// that capture was incomplete or its durability unconfirmed.
+	DroppedFrames int64 `json:"dropped_frames,omitempty"`
+	DroppedBytes  int64 `json:"dropped_bytes,omitempty"`
+	SyncFailures  int64 `json:"sync_failures,omitempty"`
 }
 
 // Store keeps live run logs in compressed chunk files under root. When a
@@ -97,9 +109,10 @@ type index struct {
 // SQLite log database: finished runs are sealed and archived in the
 // background, long-running workers archive incrementally via FlushActive, and
 // leftover buffers from a crash or a failed archival are swept into the
-// archive by ArchiveOrphans. Reads merge the database, the buffer files, and
-// the in-memory tail transparently, so callers never need to know where a
-// frame currently lives.
+// archive by ArchiveOrphans. Reads merge the database and the buffer files
+// (including the active chunk, which is written through on every frame)
+// transparently, so callers never need to know where a frame currently lives.
+// No payload is retained in memory for viewers.
 type Store struct {
 	root     string
 	db       *logdb.LogDB
@@ -113,18 +126,25 @@ type Store struct {
 	// transfers never interleave on one run. Guarded by mu; released is
 	// broadcast whenever an owner finishes.
 	owners   map[string]bool
-	released *sync.Cond
+	released *sync.Cond // broadcast when an owner finishes or a waiter's context ends
 	// deferred records sealed runs the archiver found owned by someone else;
 	// they are queued again when that owner finishes. Guarded by mu.
 	deferred map[string]bool
 	// orphanFailures counts consecutive non-database archive failures per
 	// orphaned buffer. Guarded by mu.
 	orphanFailures map[string]int
-	tailBytes      int64
-	tailLimit      int64
 	// frameSync selects per-frame fsync for writers opened afterwards.
 	frameSync atomic.Bool
-	archiver  archiver
+	// Group sync policy. syncMu guards dirty and syncTimer and is a leaf lock.
+	syncInterval atomic.Int64 // nanoseconds
+	syncMaxDirty atomic.Int64
+	syncMu       sync.Mutex
+	dirty        map[*Writer]struct{}
+	syncTimer    *time.Timer
+	// syncFile performs a chunk fsync; tests replace it to count or fail syncs.
+	syncFile        func(*os.File) error
+	captureFailures atomic.Int64 // writers that entered degraded capture
+	archiver        archiver
 }
 
 // archiver moves sealed run buffers into the log database in the background,
@@ -135,7 +155,10 @@ type archiver struct {
 	queued  map[string]bool
 	wake    chan struct{}
 	stop    chan struct{}
-	abort   atomic.Bool
+	// ctx is canceled when shutdown runs out of time; every archive step
+	// (database transaction, claim wait, slot wait, sweep) observes it.
+	ctx     context.Context
+	cancel  context.CancelFunc
 	workers sync.WaitGroup
 }
 
@@ -151,16 +174,37 @@ func New(root string) (*Store, error) {
 		owners:         make(map[string]bool),
 		deferred:       make(map[string]bool),
 		orphanFailures: make(map[string]int),
-		tailLimit:      64 << 20,
+		dirty:          make(map[*Writer]struct{}),
 	}
+	s.syncInterval.Store(int64(DefaultSyncInterval))
+	s.syncMaxDirty.Store(DefaultSyncMaxDirty)
 	s.released = sync.NewCond(&s.mu)
 	return s, nil
 }
 
-// SetFrameSync selects the durability of writers opened afterwards. true
-// syncs every accepted frame to disk; false (the default) groups syncs while
-// output is arriving faster than the disk can sync it.
+// SetFrameSync selects the strict durability of writers opened afterwards.
+// true syncs every accepted frame to disk before it is acknowledged; false
+// (the default) groups syncs on a shared timer, see SetGroupSync.
 func (s *Store) SetFrameSync(enabled bool) { s.frameSync.Store(enabled) }
+
+// SetGroupSync sets the batch-durability window: dirty writers are synced
+// once interval after the first unsynced write, and a writer syncs at once
+// when it holds maxDirty unsynced bytes. Non-positive values select the
+// defaults. It applies immediately to open writers.
+func (s *Store) SetGroupSync(interval time.Duration, maxDirty int64) {
+	if interval <= 0 {
+		interval = DefaultSyncInterval
+	}
+	if maxDirty <= 0 {
+		maxDirty = DefaultSyncMaxDirty
+	}
+	s.syncInterval.Store(int64(interval))
+	s.syncMaxDirty.Store(maxDirty)
+}
+
+// CaptureFailures reports how many run writers entered degraded capture
+// (output discarded because log storage failed) since the store was created.
+func (s *Store) CaptureFailures() int64 { return s.captureFailures.Load() }
 
 // AttachDB enables SQLite archival into the given log database.
 func (s *Store) AttachDB(db *logdb.LogDB) { s.db = db }
@@ -185,7 +229,7 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return nil, err
 	}
-	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load(), subs: make(map[chan Frame]chan struct{})}
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -238,7 +282,7 @@ func (s *Store) finalize(runID string, async bool) error {
 	}
 	s.claimWait(runID)
 	defer s.release(runID)
-	return s.archiveOwned(runID)
+	return s.archiveOwned(context.Background(), runID)
 }
 
 // claim takes exclusive archive/delete ownership of a run without waiting.
@@ -254,12 +298,31 @@ func (s *Store) claim(runID string) bool {
 
 // claimWait takes ownership of a run, waiting for any current owner.
 func (s *Store) claimWait(runID string) {
+	_ = s.claimWaitContext(context.Background(), runID)
+}
+
+// claimWaitContext is claimWait that gives up when ctx ends. The condition
+// variable cannot select on a context, so the context's end wakes waiters.
+func (s *Store) claimWaitContext(ctx context.Context, runID string) error {
+	stop := context.AfterFunc(ctx, func() {
+		s.mu.Lock()
+		s.released.Broadcast()
+		s.mu.Unlock()
+	})
+	defer stop()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for s.owners[runID] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.released.Wait()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.owners[runID] = true
+	return nil
 }
 
 func (s *Store) release(runID string) {
@@ -274,16 +337,28 @@ func (s *Store) release(runID string) {
 	}
 }
 
+// acquireArchiveSlot waits for an archive slot unless ctx ends first.
+func (s *Store) acquireArchiveSlot(ctx context.Context) error {
+	select {
+	case s.archiveSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // archiveOwned archives an inactive buffer. Callers own the run.
-func (s *Store) archiveOwned(runID string) error {
-	s.archiveSlots <- struct{}{}
+func (s *Store) archiveOwned(ctx context.Context, runID string) error {
+	if err := s.acquireArchiveSlot(ctx); err != nil {
+		return err
+	}
 	defer func() { <-s.archiveSlots }()
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
 	if s.Active(runID) != nil {
 		return nil
 	}
-	return s.archiveOrphan(runID, filepath.Join(s.root, runID))
+	return s.archiveOrphan(ctx, runID, filepath.Join(s.root, runID))
 }
 
 // StartArchiver starts the background workers that archive sealed runs.
@@ -298,21 +373,38 @@ func (s *Store) StartArchiver() {
 	a.running = true
 	a.queue, a.queued = nil, make(map[string]bool)
 	a.wake, a.stop = make(chan struct{}, 1), make(chan struct{})
-	a.abort.Store(false)
+	a.ctx, a.cancel = context.WithCancel(context.Background())
 	for range archiveWorkers {
 		a.workers.Go(s.archiveLoop)
 	}
 }
 
-// StopArchiver drains queued archival and stops the workers. If ctx ends
-// first, workers stop after the batch in progress; the remaining buffers are
-// archived by the next orphan sweep.
+// StopArchiver drains queued archival and stops the workers; it also runs the
+// final group sync of an orderly shutdown, under the same deadline: fsync
+// cannot be interrupted, so on a stalled disk the sync is abandoned (it only
+// touches buffer files, never the archive database) and ctx's error is
+// returned. If ctx ends first, the archiver's own context is canceled: the
+// transaction, claim wait, slot wait or sweep in progress aborts and the
+// workers exit, so no archive operation touches the database after
+// StopArchiver returns. Remaining buffers are archived by the next orphan
+// sweep.
 func (s *Store) StopArchiver(ctx context.Context) error {
+	var syncErr error
+	syncDone := make(chan struct{})
+	go func() {
+		s.SyncAll()
+		close(syncDone)
+	}()
+	select {
+	case <-syncDone:
+	case <-ctx.Done():
+		syncErr = ctx.Err()
+	}
 	s.mu.Lock()
 	a := &s.archiver
 	if !a.running {
 		s.mu.Unlock()
-		return nil
+		return syncErr
 	}
 	a.running = false
 	close(a.stop)
@@ -324,9 +416,10 @@ func (s *Store) StopArchiver(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
+		a.cancel()
+		return syncErr
 	case <-ctx.Done():
-		a.abort.Store(true)
+		a.cancel()
 		<-done
 		return ctx.Err()
 	}
@@ -373,7 +466,8 @@ func (s *Store) archiveLoop() {
 	for {
 		s.mu.Lock()
 		var runID string
-		if len(a.queue) > 0 && !a.abort.Load() {
+		ctx := a.ctx
+		if len(a.queue) > 0 && ctx.Err() == nil {
 			runID = a.queue[0]
 			a.queue[0] = ""
 			a.queue = a.queue[1:]
@@ -390,13 +484,13 @@ func (s *Store) archiveLoop() {
 				s.mu.Lock()
 				empty := len(a.queue) == 0
 				s.mu.Unlock()
-				if empty || a.abort.Load() {
+				if empty || ctx.Err() != nil {
 					return
 				}
 				continue
 			}
 		}
-		if err := fault.Call(func() error { return s.archiveSealed(runID) }); err != nil {
+		if err := fault.Call(func() error { return s.archiveSealed(ctx, runID) }); err != nil {
 			slog.Error("log archival failed; the orphan sweep will retry", "run", runID, "error", err)
 		}
 	}
@@ -404,7 +498,7 @@ func (s *Store) archiveLoop() {
 
 // archiveSealed archives one queued run. A run owned by a worker flush or a
 // deletion is deferred until that owner releases it.
-func (s *Store) archiveSealed(runID string) error {
+func (s *Store) archiveSealed(ctx context.Context, runID string) error {
 	s.mu.Lock()
 	if s.owners[runID] {
 		s.deferred[runID] = true
@@ -414,7 +508,7 @@ func (s *Store) archiveSealed(runID string) error {
 	s.owners[runID] = true
 	s.mu.Unlock()
 	defer s.release(runID)
-	err := s.archiveOwned(runID)
+	err := s.archiveOwned(ctx, runID)
 	s.recordOrphanResult(runID, err)
 	return err
 }
@@ -422,29 +516,45 @@ func (s *Store) archiveSealed(runID string) error {
 // FlushActive seals and archives the on-disk chunks of every open writer.
 // It is the periodic checkpoint for long-running worker logs: the live buffer
 // stays bounded while older output remains readable from the archive.
-func (s *Store) FlushActive() {
+func (s *Store) FlushActive() { _ = s.FlushActiveContext(context.Background()) }
+
+// FlushActiveContext is FlushActive that stops between and within runs when
+// ctx ends, returning ctx's error. Per-run flush failures are logged and the
+// sweep continues; unfinished chunks stay in their buffers.
+func (s *Store) FlushActiveContext(ctx context.Context) error {
 	if s.db == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	ids := slices.Collect(maps.Keys(s.writers))
 	s.mu.Unlock()
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		w := s.Active(id)
 		if w == nil {
 			continue
 		}
-		if err := w.Flush(s); err != nil {
+		if err := w.FlushContext(ctx, s); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			slog.Error("log archive flush failed", "run", id, "error", err)
 		}
 	}
+	return nil
 }
 
 // ArchiveOrphans sweeps buffers without an active writer into the archive.
 // It handles both crash recovery and retries of failed background archival.
 // Chunk files that were mid-write are salvaged up to the last intact frame.
 // Buffers another goroutine is archiving or deleting are left to it.
-func (s *Store) ArchiveOrphans() error {
+func (s *Store) ArchiveOrphans() error { return s.ArchiveOrphansContext(context.Background()) }
+
+// ArchiveOrphansContext is ArchiveOrphans that aborts the sweep, including the
+// archive transaction in progress, when ctx ends.
+func (s *Store) ArchiveOrphansContext(ctx context.Context) error {
 	if s.db == nil {
 		return nil
 	}
@@ -454,6 +564,9 @@ func (s *Store) ArchiveOrphans() error {
 	}
 	var errs []error
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(append(errs, err)...)
+		}
 		// Hidden entries, including the quarantine, are not run buffers.
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
@@ -462,7 +575,7 @@ func (s *Store) ArchiveOrphans() error {
 		if s.Active(runID) != nil || !s.claim(runID) {
 			continue
 		}
-		err := s.archiveOwned(runID)
+		err := s.archiveOwned(ctx, runID)
 		s.recordOrphanResult(runID, err)
 		s.release(runID)
 		if err != nil {
@@ -485,7 +598,12 @@ const QuarantineDir = ".quarantine"
 // so it stops being retried on every sweep. Callers own the run.
 func (s *Store) recordOrphanResult(runID string, cause error) {
 	s.mu.Lock()
-	if cause == nil || errors.Is(cause, errArchiveDB) {
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		// An interrupted sweep says nothing about the buffer's contents.
+		s.mu.Unlock()
+		return
+	}
+	if cause == nil || errors.Is(cause, errArchiveDB) || errors.Is(cause, errChunkQuarantined) {
 		delete(s.orphanFailures, runID)
 		s.mu.Unlock()
 		return
@@ -515,52 +633,74 @@ func (s *Store) recordOrphanResult(runID string, cause error) {
 }
 
 type Writer struct {
-	mu           sync.Mutex
-	store        *Store
-	runID        string
-	job          string
-	kind         string
-	dir          string
-	file         *os.File
-	enc          *zstd.Encoder
-	chunk        int
-	chunkRaw     int
-	chunkFirst   uint64
-	seq          uint64
-	total        int64 // accepted raw bytes, less output evicted before archival
-	buffered     int64 // raw bytes still occupying the file buffer
-	maxBytes     int64
-	maxLine      int
-	dropNew      bool
-	frameSync    bool
-	unsynced     int       // bytes written to the hot chunk since its last fsync
-	unsyncedAt   time.Time // when the oldest unsynced frame was written
-	syncs        atomic.Int64
-	truncated    bool
-	idx          index
-	subs         map[chan Frame]chan struct{}
-	history      []Frame // circular storage; only historyCount entries are live
-	historyHead  int
-	historyCount int
-	historyBytes int
-	header       [24]byte
-	closed       bool
-	closeErr     error
-	chunkErr     error // finalization failures leave the stream unusable
+	mu         sync.Mutex
+	store      *Store
+	runID      string
+	job        string
+	kind       string
+	dir        string
+	file       *os.File
+	enc        *zstd.Encoder
+	chunk      int
+	chunkRaw   int
+	chunkFirst uint64
+	seq        uint64
+	lastStored uint64 // sequence of the last frame written to a chunk file
+	total      int64  // accepted raw bytes, less output evicted before archival
+	buffered   int64  // raw bytes still occupying the file buffer
+	maxBytes   int64
+	maxLine    int
+	dropNew    bool
+	frameSync  bool
+	unsynced   int // bytes written to the hot chunk since its last fsync
+	syncs      atomic.Int64
+	truncated  bool
+	idx        index
+	header     [24]byte
+	closed     bool
+	closeErr   error
+	chunkErr   error // finalization failures leave the stream unusable until recovered
+	// chunkIndexOnly marks a chunkErr that is only a failed index install: the
+	// chunk itself is sealed and retrying the index can clear the error.
+	chunkIndexOnly bool
+
+	// Degraded capture (ADR-8 2A). While log storage fails the pipe pumps keep
+	// draining the child's output and discard it; recovery is attempted lazily
+	// from the next line, never from a timer.
+	degraded      bool
+	degradedErr   error
+	retryAt       time.Time
+	retryDelay    time.Duration
+	episodeFrames int64 // discarded since capture last worked
+	episodeBytes  int64
+	droppedFrames int64 // discarded over the whole run
+	droppedBytes  int64
+	syncFailures  int64
+	syncFailing   atomic.Bool
+	// syncMu serializes fsyncs (see Sync); lastSyncErr is the latest fsync's
+	// outcome and is guarded by it. Lock order: syncMu, then mu.
+	syncMu      sync.Mutex
+	lastSyncErr error
 }
 
 func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
 
 // Flush seals the current chunk (if it has data) and archives all sealed
 // chunks of this writer. It waits for another archival of this run to finish.
-func (w *Writer) Flush(s *Store) error {
-	s.claimWait(w.runID)
+func (w *Writer) Flush(s *Store) error { return w.FlushContext(context.Background(), s) }
+
+// FlushContext is Flush that gives up, including mid-transaction, when ctx
+// ends. Chunks not yet archived stay in the buffer for the next checkpoint.
+func (w *Writer) FlushContext(ctx context.Context, s *Store) error {
+	if err := s.claimWaitContext(ctx, w.runID); err != nil {
+		return err
+	}
 	defer s.release(w.runID)
 	through, err := w.sealForArchive()
 	if err != nil || through == 0 || s.db == nil {
 		return err
 	}
-	return s.archiveWriter(w, through)
+	return s.archiveWriter(ctx, w, through)
 }
 
 func (w *Writer) sealForArchive() (int, error) {
@@ -591,7 +731,9 @@ func (w *Writer) rotate() error {
 	if err != nil {
 		return fmt.Errorf("open log chunk %d: %w", next, err)
 	}
-	if w.enc != nil {
+	// A nil file with an encoder means the previous chunk was abandoned after
+	// a storage failure; it stays on disk, unindexed, for the orphan sweep.
+	if w.enc != nil && w.file != nil {
 		if err := w.finishChunk(); err != nil {
 			w.chunkErr = errors.Join(err, f.Close(), os.Remove(path))
 			return w.chunkErr
@@ -626,11 +768,19 @@ func (w *Writer) rotate() error {
 	w.chunk = next
 	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
 	// finishChunk synced everything written to the previous chunk.
-	w.unsynced, w.unsyncedAt = 0, time.Time{}
+	w.unsynced = 0
 	return nil
 }
 func (w *Writer) finishChunk() error {
 	if w.file == nil {
+		if w.chunkErr == nil && w.enc != nil {
+			// The chunk was abandoned after a storage failure: still record the
+			// final index so truncation and drop evidence reaches disk.
+			if err := w.writeIndex(); err != nil {
+				w.chunkErr = fmt.Errorf("index log chunk %d: %w", w.chunk, err)
+				w.chunkIndexOnly = true
+			}
+		}
 		return w.chunkErr
 	}
 	encErr := w.enc.Close()
@@ -640,6 +790,7 @@ func (w *Writer) finishChunk() error {
 	w.file = nil
 	if err := errors.Join(encErr, syncErr, statErr, closeErr); err != nil {
 		w.chunkErr = fmt.Errorf("finalize log chunk %d: %w", w.chunk, err)
+		w.chunkIndexOnly = false
 		return w.chunkErr
 	}
 	if w.seq >= w.chunkFirst {
@@ -647,6 +798,7 @@ func (w *Writer) finishChunk() error {
 	}
 	if err := w.writeIndex(); err != nil {
 		w.chunkErr = fmt.Errorf("index log chunk %d: %w", w.chunk, err)
+		w.chunkIndexOnly = true
 	}
 	return w.chunkErr
 }
@@ -654,6 +806,7 @@ func (w *Writer) writeIndex() error {
 	w.idx.Job, w.idx.Kind = w.job, w.kind
 	w.idx.Version = int(Version)
 	w.idx.Truncated = w.truncated
+	w.idx.DroppedFrames, w.idx.DroppedBytes, w.idx.SyncFailures = w.droppedFrames, w.droppedBytes, w.syncFailures
 	b, err := json.Marshal(w.idx)
 	if err != nil {
 		return err
@@ -686,26 +839,164 @@ func (w *Writer) writeIndex() error {
 	return err
 }
 
-// Write appends one frame. A successful Write is a durability boundary: the
-// frame is on disk when it returns.
+// Write appends one frame and returns storage errors to the caller; it is
+// meant for the daemon's own system lines. In batch durability the frame has
+// reached the chunk file (daemon-crash safe) but is fsynced with the next
+// group; with strict "frame" durability a successful Write is synced.
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
-	return w.write(stream, payload, flags, true)
+	lock := w.store.lockRun(w.runID, true)
+	w.mu.Lock()
+	needSync, err := w.writeLocked(stream, payload, flags)
+	w.mu.Unlock()
+	w.store.unlockRun(w.runID, lock, true)
+	if needSync {
+		if syncErr := w.Sync(); syncErr != nil && err == nil && w.frameSync {
+			err = syncErr
+		}
+	}
+	return err
 }
 
-// write appends one frame. The frame always reaches the chunk file before
-// write returns, so a daemon crash cannot lose it. Unless durable or the
-// writer syncs every frame, the fsync is grouped: the caller must call Sync
-// before waiting for more input.
-func (w *Writer) write(stream Stream, payload []byte, flags Flags, durable bool) error {
+// capture stores one line of child output for Pipe. Storage failures never
+// reach the pump: capture degrades, discards, and recovers (ADR-8 2A). Only a
+// closed writer is reported.
+func (w *Writer) capture(stream Stream, payload []byte, flags Flags) error {
 	lock := w.store.lockRun(w.runID, true)
-	defer w.store.unlockRun(w.runID, lock, true)
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	needSync, err := w.captureLocked(stream, payload, flags)
+	w.mu.Unlock()
+	w.store.unlockRun(w.runID, lock, true)
+	if needSync {
+		_ = w.Sync() // a failure is recorded as capture evidence
+	}
+	return err
+}
+
+func (w *Writer) captureLocked(stream Stream, payload []byte, flags Flags) (bool, error) {
 	if w.closed {
-		return errors.New("log writer closed")
+		return false, errWriterClosed
+	}
+	if w.degraded {
+		now := time.Now()
+		if now.Before(w.retryAt) || !w.recoverLocked(now) {
+			w.discard(len(payload))
+			return false, nil
+		}
+	}
+	needSync, err := w.writeLocked(stream, payload, flags)
+	if err != nil {
+		w.enterDegraded(err)
+		w.discard(len(payload))
+		return false, nil
+	}
+	return needSync, nil
+}
+
+// discard counts output that could not be stored. Callers hold w.mu.
+func (w *Writer) discard(payload int) {
+	size := int64(payload + 24)
+	w.droppedFrames++
+	w.droppedBytes += size
+	w.episodeFrames++
+	w.episodeBytes += size
+	w.truncated = true
+}
+
+// enterDegraded records a storage failure and schedules the next recovery
+// attempt. The first failure of an episode is logged once; later discarded
+// lines are only counted, so a dead disk cannot cause an error storm.
+func (w *Writer) enterDegraded(err error) {
+	now := time.Now()
+	if !w.degraded {
+		w.degraded = true
+		w.retryDelay = captureRetryMin
+		w.store.captureFailures.Add(1)
+		slog.Error("log storage failed; run output is discarded until capture recovers", "run", w.runID, "error", err)
+	}
+	w.degradedErr = err
+	w.truncated = true
+	w.retryAt = now.Add(w.retryDelay)
+	w.retryDelay = min(2*w.retryDelay, captureRetryMax)
+}
+
+// recoverLocked tries to resume capture on a fresh chunk and, on success,
+// records how much output was lost in a system line. Callers hold w.mu.
+func (w *Writer) recoverLocked(now time.Time) bool {
+	if err := w.reopenChunk(); err != nil {
+		w.degradedErr = err
+		w.retryAt = now.Add(w.retryDelay)
+		w.retryDelay = min(2*w.retryDelay, captureRetryMax)
+		return false
+	}
+	summary := fmt.Sprintf("log capture recovered: %d lines (%d bytes) of output were not stored: %v", w.episodeFrames, w.episodeBytes, w.degradedErr)
+	if _, err := w.writeLocked(System, []byte(summary), FlagTruncated); err != nil {
+		w.enterDegraded(err)
+		return false
+	}
+	slog.Warn("log capture recovered", "run", w.runID, "discarded_lines", w.episodeFrames, "discarded_bytes", w.episodeBytes)
+	w.degraded, w.degradedErr = false, nil
+	w.episodeFrames, w.episodeBytes = 0, 0
+	return true
+}
+
+// reopenChunk abandons a chunk whose stream may be damaged and starts a new
+// one. The abandoned file stays on disk, unindexed, and is salvaged up to its
+// last intact frame by the orphan sweep. Callers hold w.mu.
+func (w *Writer) reopenChunk() error {
+	if w.chunkErr != nil {
+		if w.chunkIndexOnly {
+			// The chunk is sealed; only its index is missing. Keep the original
+			// error identity while the index still cannot be installed.
+			if err := w.writeIndex(); err != nil {
+				return w.chunkErr
+			}
+		}
+		w.chunkErr, w.chunkIndexOnly = nil, false
+	}
+	if w.file != nil {
+		_ = w.file.Close()
+		w.file = nil
+	}
+	w.indexAbandonedChunk()
+	return w.rotate()
+}
+
+// indexAbandonedChunk registers the chunk just abandoned after a storage
+// failure in the index, with the frames known to have been written intact. It
+// is then accounted by the log_max eviction, archived verbatim by the worker
+// checkpoint (a torn tail decodes up to its last block, like any live chunk)
+// and removed with the run, instead of lingering unindexed until the run ends.
+// Callers hold w.mu; the chunk's file is already closed.
+func (w *Writer) indexAbandonedChunk() {
+	if w.enc == nil || w.chunkRaw == 0 || w.lastStored < w.chunkFirst {
+		return
+	}
+	if n := len(w.idx.Chunks); n > 0 && w.idx.Chunks[n-1].Number == w.chunk {
+		return // already indexed (only the index install had failed)
+	}
+	var size int64
+	if info, err := os.Stat(w.chunkPath(w.chunk)); err == nil {
+		size = info.Size()
+	}
+	w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.lastStored, size, int64(w.chunkRaw), false})
+	w.chunkRaw = 0 // the next rotate starts a fresh chunk; keep a retry from re-indexing this one
+}
+
+// writeLocked appends one frame. The frame always reaches the chunk file
+// before it returns, so a daemon crash cannot lose it. It reports whether the
+// writer should fsync now (strict mode, or the dirty-byte limit was reached);
+// otherwise the shared timer syncs it. The caller syncs after unlocking.
+// Callers hold the run lock and w.mu.
+func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, error) {
+	if w.closed {
+		return false, errWriterClosed
 	}
 	if w.chunkErr != nil {
-		return w.chunkErr
+		return false, w.chunkErr
+	}
+	// Pipe truncates before calling; its flag must reach the run-level one too.
+	if flags&FlagTruncated != 0 {
+		w.truncated = true
 	}
 	if len(payload) > w.maxLine && w.maxLine > 0 {
 		payload = payload[:w.maxLine]
@@ -716,147 +1007,142 @@ func (w *Writer) write(stream Stream, payload []byte, flags Flags, durable bool)
 	if w.maxBytes > 0 && w.buffered+int64(frameSize) > w.maxBytes {
 		if w.dropNew || int64(frameSize) > w.maxBytes {
 			w.truncated = true
-			return nil
+			return false, nil
 		}
 		// Make the current segment evictable before dropping old data. This is
 		// essential when maxBytes is smaller than the normal chunk threshold.
 		if w.chunkRaw > 0 {
 			if err := w.rotate(); err != nil {
-				return err
+				return false, err
 			}
 		}
 		w.truncated = true
 		for len(w.idx.Chunks) > 0 && w.buffered+int64(frameSize) > w.maxBytes {
 			oldest := w.idx.Chunks[0]
 			if err := os.Remove(w.chunkPath(oldest.Number)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
+				return false, err
 			}
 			w.total -= oldest.Raw
 			w.buffered -= oldest.Raw
 			w.idx.Chunks = w.idx.Chunks[1:]
-			w.discardHistoryThrough(oldest.Last)
 		}
 	}
 	if w.chunkRaw+frameSize > chunkLimit && w.chunkRaw > 0 {
 		if err := w.rotate(); err != nil {
-			return err
+			return false, err
 		}
 	}
 	w.seq++
 	f := Frame{w.seq, time.Now().UTC(), stream, flags, payload}
 	if err := encodeWithHeader(w.enc, f, w.header[:]); err != nil {
-		return err
+		return false, err
 	}
 	// Flush compressed bytes to the file on every frame so a daemon crash
 	// cannot lose accepted output. Readers see it through the page cache.
 	if err := w.enc.Flush(); err != nil {
-		return err
+		return false, err
 	}
-	if w.unsynced == 0 {
-		w.unsyncedAt = f.Timestamp
-	}
+	w.lastStored = w.seq
+	before := w.unsynced
 	w.unsynced += frameSize
-	if durable || w.frameSync || w.unsynced >= groupSyncBytes || f.Timestamp.Sub(w.unsyncedAt) >= groupSyncDelay {
-		w.syncs.Add(1)
-		if err := w.file.Sync(); err != nil {
-			return err
-		}
-		w.unsynced, w.unsyncedAt = 0, time.Time{}
-	}
 	w.chunkRaw += frameSize
 	w.total += int64(frameSize)
 	w.buffered += int64(frameSize)
-	// Encoding and syncing are complete before the caller can reuse payload.
-	// Copy only when a live tail or subscriber will retain it after return.
-	reservedHistory := w.store.reserveTail(frameSize)
-	if (reservedHistory && frameSize <= historyByteLimit) || len(w.subs) > 0 {
-		f.Payload = slices.Clone(payload)
+	if w.frameSync {
+		return true, nil
 	}
-	if reservedHistory {
-		w.appendReservedHistory(f)
+	if before == 0 {
+		w.store.markDirty(w)
 	}
-	for ch, dropped := range w.subs {
-		select {
-		case ch <- f:
-		default:
-			close(dropped)
-			close(ch)
-			delete(w.subs, ch)
-		}
-	}
-	return nil
+	return int64(w.unsynced) >= w.store.syncMaxDirty.Load(), nil
 }
 
-func (w *Writer) appendHistory(f Frame) {
-	historySize := len(f.Payload) + 24
-	if !w.store.reserveTail(historySize) {
-		return
+// markDirty registers a writer holding unsynced bytes and arms the shared
+// sync timer if it is not already pending. The timer exists only while some
+// writer is dirty, so idle writers and an idle daemon cost nothing.
+func (s *Store) markDirty(w *Writer) {
+	s.syncMu.Lock()
+	s.dirty[w] = struct{}{}
+	if s.syncTimer == nil {
+		s.syncTimer = time.AfterFunc(time.Duration(s.syncInterval.Load()), s.flushDirty)
 	}
-	w.appendReservedHistory(f)
+	s.syncMu.Unlock()
 }
 
-// appendReservedHistory accepts a frame whose bytes were already charged to
-// the store's tail quota. The payload must be owned by the caller.
-func (w *Writer) appendReservedHistory(f Frame) {
-	historySize := len(f.Payload) + 24
-	if w.historyCount == historyLimit {
-		w.store.releaseTail(w.evictHistory())
+// flushDirty syncs every dirty writer once and disarms the timer. Writes that
+// arrive meanwhile re-arm it.
+func (s *Store) flushDirty() {
+	s.syncMu.Lock()
+	if s.syncTimer != nil {
+		s.syncTimer.Stop()
+		s.syncTimer = nil
 	}
-	if w.historyCount == len(w.history) {
-		size := min(max(64, 2*len(w.history)), historyLimit)
-		grown := make([]Frame, size)
-		for i := range w.historyCount {
-			grown[i] = w.history[(w.historyHead+i)%len(w.history)]
-		}
-		w.history, w.historyHead = grown, 0
-	}
-	w.history[(w.historyHead+w.historyCount)%len(w.history)] = f
-	w.historyCount++
-	w.historyBytes += historySize
-	for w.historyCount > 0 && w.historyBytes > historyByteLimit {
-		w.store.releaseTail(w.evictHistory())
+	batch := slices.Collect(maps.Keys(s.dirty))
+	clear(s.dirty)
+	s.syncMu.Unlock()
+	for _, w := range batch {
+		_ = w.Sync() // failures are recorded on the writer
 	}
 }
 
-// evictHistory clears the slot so the payload can be collected promptly.
-// Callers hold w.mu and release the returned bytes from the store's quota.
-func (w *Writer) evictHistory() int {
-	f := &w.history[w.historyHead]
-	released := len(f.Payload) + 24
-	*f = Frame{}
-	w.historyBytes -= released
-	w.historyCount--
-	if w.historyCount == 0 {
-		w.history = nil
-		w.historyHead = 0
-	} else {
-		w.historyHead = (w.historyHead + 1) % len(w.history)
+// SyncAll fsyncs every writer that has unsynced bytes now. The daemon calls it
+// (through StopArchiver) at orderly shutdown.
+func (s *Store) SyncAll() { s.flushDirty() }
+
+func (s *Store) fsync(f *os.File) error {
+	if s.syncFile != nil {
+		return s.syncFile(f)
 	}
-	return released
+	return f.Sync()
 }
 
 // Sync makes every accepted frame durable. The fsync runs without the
-// writer's locks, so readers and the other stream's pump are not held up.
+// writer's locks, so readers and the other stream's pump are not held up, but
+// concurrent Syncs are serialized: a caller whose bytes were already claimed by
+// an fsync still in flight waits for it, and reports its failure, instead of
+// seeing nothing unsynced and returning early. A failure is returned and also
+// recorded as capture evidence (the run is marked truncated): after a failed
+// fsync the kernel may have dropped pages.
 func (w *Writer) Sync() error {
+	w.syncMu.Lock()
+	defer w.syncMu.Unlock()
 	w.mu.Lock()
 	if w.closed || w.file == nil || w.unsynced == 0 {
 		w.mu.Unlock()
-		return nil
+		// Nothing new to sync; the previous fsync (which we waited for) may
+		// have failed on bytes this caller wrote.
+		return w.lastSyncErr
 	}
 	f := w.file
-	w.unsynced, w.unsyncedAt = 0, time.Time{}
+	w.unsynced = 0
 	w.mu.Unlock()
 	w.syncs.Add(1)
-	if err := f.Sync(); err != nil && !errors.Is(err, os.ErrClosed) {
-		return err
+	err := w.store.fsync(f)
+	if errors.Is(err, os.ErrClosed) {
+		// A closed file was sealed concurrently, and sealing syncs it.
+		return nil
 	}
-	// A closed file was sealed concurrently, and sealing syncs it.
-	return nil
+	w.lastSyncErr = err
+	if err == nil {
+		w.syncFailing.Store(false)
+		return nil
+	}
+	w.mu.Lock()
+	w.syncFailures++
+	w.truncated = true
+	w.mu.Unlock()
+	if !w.syncFailing.Swap(true) {
+		slog.Error("log fsync failed; recent output may not be durable", "run", w.runID, "error", err)
+	}
+	return err
 }
 
-// Pipe copies r into the log line by line. Lines are synced as a group when
-// the pipe has no more buffered input, so a chatty child is not slowed to the
-// disk's fsync rate.
+// Pipe copies r into the log line by line, draining r to EOF even when the
+// log cannot be stored (ADR-8 2A): lines that fail to store are discarded and
+// accounted for through Capture, Stats and the run's index, and recovery is
+// retried lazily. Storage failures are therefore never returned; Pipe returns
+// only read errors and a closed writer. Output is synced as a group (see
+// SetGroupSync), and once more when r ends.
 func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	limit := w.maxLine
 	if limit <= 0 || limit > maxFramePayload {
@@ -866,12 +1152,6 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	line := make([]byte, 0, min(limit, 64<<10))
 	truncated := false
 	for {
-		// The next read may block: make everything accepted so far durable.
-		if br.Buffered() == 0 {
-			if err := w.Sync(); err != nil {
-				return err
-			}
-		}
 		fragment, err := br.ReadSlice('\n')
 		hasNewline := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
 		if hasNewline {
@@ -898,52 +1178,52 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			if !utf8.Valid(line) {
 				flags |= FlagInvalidUTF8
 			}
-			if writeErr := w.write(stream, line, flags, false); writeErr != nil {
+			if writeErr := w.capture(stream, line, flags); writeErr != nil {
 				return writeErr
 			}
 			line = line[:0]
 			truncated = false
 		}
 		if errors.Is(err, io.EOF) {
-			return w.Sync()
+			_ = w.Sync()
+			return nil
 		}
 		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
-			return errors.Join(err, w.Sync())
+			_ = w.Sync()
+			return err
 		}
 	}
 }
-func (w *Writer) Snapshot(after uint64, limit int) []Frame {
+
+// Sequence returns the sequence of the last accepted frame (0 if none). It is
+// a cheap hint for pollers: nothing newer exists while it is unchanged.
+func (w *Writer) Sequence() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	out := make([]Frame, 0, min(limit, w.historyCount))
-	for i := range w.historyCount {
-		frame := w.history[(w.historyHead+i)%len(w.history)]
-		if frame.Sequence > after && len(out) < limit {
-			out = append(out, frame)
-		}
-	}
-	return out
+	return w.seq
 }
-func (w *Writer) Subscribe(after uint64) (<-chan Frame, <-chan struct{}, func()) {
-	ch := make(chan Frame, 256)
-	dropped := make(chan struct{})
+
+// CaptureStatus describes how completely a writer captured its output.
+type CaptureStatus struct {
+	// Degraded is true while log storage is failing and output is discarded.
+	Degraded bool
+	// DroppedFrames and DroppedBytes count output discarded over the run.
+	DroppedFrames, DroppedBytes int64
+	// SyncFailures counts failed fsyncs, after which recent output may not be
+	// durable.
+	SyncFailures int64
+	// Err is the latest storage error while Degraded.
+	Err error
+}
+
+// Capture reports the writer's capture health. Any dropped output or failed
+// sync also sets the truncated flag returned by Stats.
+func (w *Writer) Capture() CaptureStatus {
 	w.mu.Lock()
-	if w.closed {
-		close(ch)
-		w.mu.Unlock()
-		return ch, dropped, func() {}
-	}
-	w.subs[ch] = dropped
-	w.mu.Unlock()
-	return ch, dropped, func() {
-		w.mu.Lock()
-		if _, ok := w.subs[ch]; ok {
-			delete(w.subs, ch)
-			close(ch)
-		}
-		w.mu.Unlock()
-	}
+	defer w.mu.Unlock()
+	return CaptureStatus{Degraded: w.degraded, DroppedFrames: w.droppedFrames, DroppedBytes: w.droppedBytes, SyncFailures: w.syncFailures, Err: w.degradedErr}
 }
+
 func (w *Writer) Close() error {
 	lock := w.store.lockRun(w.runID, true)
 	defer w.store.unlockRun(w.runID, lock, true)
@@ -952,47 +1232,18 @@ func (w *Writer) Close() error {
 	if w.closed {
 		return w.closeErr
 	}
+	if w.degraded {
+		// One last attempt, so the loss summary reaches the log if storage
+		// came back; otherwise the index still records the dropped counts.
+		w.recoverLocked(time.Now())
+		if w.degraded {
+			slog.Error("run finished with log output missing", "run", w.runID, "discarded_lines", w.droppedFrames, "discarded_bytes", w.droppedBytes, "error", w.degradedErr)
+		}
+	}
 	w.closed = true
 	w.idx.Final = true
 	w.closeErr = w.finishChunk()
-	w.store.releaseTail(w.historyBytes)
-	w.historyBytes = 0
-	w.history = nil
-	w.historyHead = 0
-	w.historyCount = 0
-	for ch := range w.subs {
-		close(ch)
-		delete(w.subs, ch)
-	}
 	return w.closeErr
-}
-
-// discardHistoryThrough releases frames no longer needed in the live tail.
-// Callers hold w.mu. Archived frames must not reappear after archive pruning.
-func (w *Writer) discardHistoryThrough(sequence uint64) {
-	released := 0
-	for w.historyCount > 0 && w.history[w.historyHead].Sequence <= sequence {
-		released += w.evictHistory()
-	}
-	w.store.releaseTail(released)
-}
-
-func (s *Store) reserveTail(n int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.tailBytes+int64(n) > s.tailLimit {
-		return false
-	}
-	s.tailBytes += int64(n)
-	return true
-}
-func (s *Store) releaseTail(n int) {
-	s.mu.Lock()
-	s.tailBytes -= int64(n)
-	if s.tailBytes < 0 {
-		s.tailBytes = 0
-	}
-	s.mu.Unlock()
 }
 
 func (w *Writer) Stats() (int64, bool) { w.mu.Lock(); defer w.mu.Unlock(); return w.total, w.truncated }
@@ -1022,6 +1273,11 @@ func decode(src io.Reader) (Frame, error) {
 	}
 	f.Payload = make([]byte, n)
 	_, err = io.ReadFull(src, f.Payload)
+	if errors.Is(err, io.EOF) {
+		// The header was intact but its payload is missing: a torn frame, not
+		// a clean end of stream.
+		err = io.ErrUnexpectedEOF
+	}
 	return f, err
 }
 
@@ -1050,18 +1306,30 @@ func decodeHeaderWithBuffer(src io.Reader, h []byte) (Frame, int, error) {
 }
 
 // salvageFrames decodes frames from a possibly torn chunk stream, stopping at
-// the first corruption and returning everything recovered before it.
-func salvageFrames(blob []byte) []Frame {
+// the first problem and returning everything recovered before it. The error
+// is nil only when the stream ended cleanly at a frame boundary (a legitimate
+// empty chunk included). A stream cut short mid-frame, as after a crash, is
+// reported as an error wrapping io.ErrUnexpectedEOF; anything else (bad
+// magic, checksum failure, unsupported frame version, oversized payload) is
+// corruption. Callers must not treat a nonempty blob that yields an error
+// and no frames as empty.
+func salvageFrames(blob []byte) ([]Frame, error) {
+	if len(blob) == 0 {
+		return nil, nil
+	}
 	dec, err := zstd.NewReader(bytes.NewReader(blob), zstd.WithDecoderMaxMemory(32<<20), zstd.WithDecoderMaxWindow(16<<20))
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer dec.Close()
 	var frames []Frame
 	for {
 		f, err := decode(dec)
+		if errors.Is(err, io.EOF) {
+			return frames, nil
+		}
 		if err != nil {
-			return frames
+			return frames, err
 		}
 		frames = append(frames, f)
 	}
@@ -1086,8 +1354,9 @@ func encodeFrames(frames []Frame) ([]byte, error) {
 }
 
 // Read returns up to limit frames with a sequence greater than after, merged
-// across the three storage tiers: archived chunks in the log database, sealed
-// chunk files in the buffer directory, and the active writer's memory tail.
+// across the storage tiers: archived chunks in the log database and chunk
+// files in the buffer directory (sealed, and the active writer's written-through
+// chunk).
 func (s *Store) Read(runID string, after uint64, limit int) ([]Frame, error) {
 	return s.ReadContext(context.Background(), runID, after, limit)
 }
@@ -1277,13 +1546,8 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 			return out, nil
 		}
 	}
-	if active := s.Active(runID); active != nil {
-		for _, frame := range active.Snapshot(last, limit-len(out)) {
-			if !appendFrame(frame) {
-				break
-			}
-		}
-	}
+	// The active chunk is among the buffer files: every accepted frame is
+	// written through to it, so there is no separate in-memory tail to merge.
 	return out, nil
 }
 func (s *Store) Raw(runID string, w io.Writer) error {
@@ -1327,8 +1591,14 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 }
 
 // Delete removes a run's logs from both the archive and the buffer directory.
-func (s *Store) Delete(runID string) error {
-	s.claimWait(runID)
+func (s *Store) Delete(runID string) error { return s.DeleteContext(context.Background(), runID) }
+
+// DeleteContext is Delete that gives up, including mid-transaction, when ctx
+// ends.
+func (s *Store) DeleteContext(ctx context.Context, runID string) error {
+	if err := s.claimWaitContext(ctx, runID); err != nil {
+		return err
+	}
 	defer s.release(runID)
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
@@ -1336,7 +1606,7 @@ func (s *Store) Delete(runID string) error {
 		return errors.New("cannot delete logs of an active writer")
 	}
 	if s.db != nil {
-		if err := s.db.DeleteRun(context.Background(), runID); err != nil {
+		if err := s.db.DeleteRun(ctx, runID); err != nil {
 			return err
 		}
 	}
@@ -1348,6 +1618,13 @@ func (s *Store) Delete(runID string) error {
 // progress. The returned IDs have had both archive and file buffers removed.
 // Runs being archived are skipped and reported; the next sweep retries them.
 func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
+	return s.DeleteRunsContext(context.Background(), runIDs)
+}
+
+// DeleteRunsContext is DeleteRuns that stops, including mid-transaction, when
+// ctx ends: runs not yet deleted are left for the next retention sweep and
+// ctx's error is joined into the result.
+func (s *Store) DeleteRunsContext(ctx context.Context, runIDs []string) ([]string, error) {
 	seen := make(map[string]bool, len(runIDs))
 	valid := make([]string, 0, len(runIDs))
 	type heldRunLock struct {
@@ -1361,6 +1638,10 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 			continue
 		}
 		seen[id] = true
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
 		if !s.claim(id) {
 			errs = append(errs, fmt.Errorf("run %s: logs are being archived", id))
 			continue
@@ -1383,7 +1664,7 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 	}()
 	batchFailed := false
 	if s.db != nil && len(valid) > 0 {
-		if err := s.db.DeleteRuns(context.Background(), valid); err != nil {
+		if err := s.db.DeleteRuns(ctx, valid); err != nil {
 			batchFailed = true
 			errs = append(errs, fmt.Errorf("archive batch deletion: %w", err))
 		}
@@ -1391,7 +1672,14 @@ func (s *Store) DeleteRuns(runIDs []string) ([]string, error) {
 	deleted := make([]string, 0, len(valid))
 	for _, id := range valid {
 		if batchFailed {
-			if err := s.db.DeleteRun(context.Background(), id); err != nil {
+			// Once the batch committed, finish the cheap file removal even if ctx
+			// ended: leaving files behind would let the orphan sweep re-archive
+			// logs whose database rows are gone.
+			if err := ctx.Err(); err != nil {
+				errs = append(errs, err)
+				break
+			}
+			if err := s.db.DeleteRun(ctx, id); err != nil {
 				errs = append(errs, fmt.Errorf("run %s: %w", id, err))
 				continue
 			}
