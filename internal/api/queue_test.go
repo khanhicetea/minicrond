@@ -192,3 +192,30 @@ func TestSSEStreamOfQueuedRunWaitsForStart(t *testing.T) {
 		t.Fatalf("stream body = %q", body)
 	}
 }
+
+// S6: trigger?wait=true on a run that has to queue waits for it to start and
+// finish (within the timeout) instead of returning a non-final 202.
+func TestTriggerWaitFollowsQueuedRunToTerminal(t *testing.T) {
+	old := queuedWaitPoll
+	queuedWaitPoll = 20 * time.Millisecond
+	t.Cleanup(func() { queuedWaitPoll = old })
+	s, _, _ := queueServer(t, executor.QueueOptions{DrainRate: 100})
+	mustCreate(t, s, "blocker", "sleep 0.6")
+	mustCreate(t, s, "later", "echo waited-for")
+	if rec := call(s, true, "POST", "/api/v1/jobs/blocker/trigger", "", "", nil); rec.Code != 202 {
+		t.Fatalf("blocker: %d", rec.Code)
+	}
+	rec := call(s, true, "POST", "/api/v1/jobs/later/trigger?wait=true&timeout=20", "", "", nil)
+	out := decode(t, rec)
+	if rec.Code != 200 || out["status"] != "succeeded" {
+		t.Fatalf("wait on queued run: %d %v", rec.Code, out)
+	}
+	// A wait that times out while still queued reports the non-final state.
+	mustCreate(t, s, "long", "sleep 30")
+	mustCreate(t, s, "stuck", "true")
+	call(s, true, "POST", "/api/v1/jobs/long/trigger", "", "", nil)
+	rec = call(s, true, "POST", "/api/v1/jobs/stuck/trigger?wait=true&timeout=1", "", "", nil)
+	if rec.Code != 202 || decode(t, rec)["status"] != "queued" {
+		t.Fatalf("timed-out wait: %d %s", rec.Code, rec.Body.String())
+	}
+}

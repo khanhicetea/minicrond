@@ -65,7 +65,7 @@ a second CSP header cannot relax the daemon's framing restriction.
 | `GET /api/v1/jobs/{name}` | One definition |
 | `PUT /api/v1/jobs/{name}` | Update a definition |
 | `DELETE /api/v1/jobs/{name}` | Delete a definition |
-| `POST /api/v1/jobs/{name}/trigger?wait=true` | Trigger a run now (`wait` blocks for the result). `202` with status `queued` when `max_concurrent_runs` is full and the run was durably queued (`wait` does not wait for queued runs); `429 queue_full` (with `Retry-After`) when the bounded queue refuses it; `503 queue_unavailable` when it cannot be persisted |
+| `POST /api/v1/jobs/{name}/trigger?wait=true` | Trigger a run now (`wait` blocks for the result). `202` with status `queued` when `max_concurrent_runs` is full and the run was durably queued (with `wait=true` a queued run is polled until it starts and finishes, within `timeout`; on timeout the non-final `202` run is returned, and `minicrond run --wait` keeps polling until it is terminal); `429 queue_full` (with `Retry-After`) when the bounded queue refuses it; `503 queue_unavailable` when it cannot be persisted |
 | `POST /api/v1/jobs/{name}/enable` | Enable |
 | `POST /api/v1/jobs/{name}/disable` | Disable (scheduler skips it) |
 | `POST /api/v1/workers/{name}/start` | Start a worker |

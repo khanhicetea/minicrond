@@ -236,8 +236,8 @@ Workers and `[[init]]` jobs are never queued.
   while queued), `retry_budget` (the definition now allows fewer retries),
   `overlap_skip`, `retry_dropped` (see below). Deleting or disabling a definition drops its queued runs at once. `POST /api/v1/runs/{id}/stop` on a queued run cancels it: status `stopped`, end reason `queue_cancelled`. A manual trigger that meets a full
   queue gets HTTP 429 `queue_full` with `Retry-After` and creates no run; if the
-  queue cannot be persisted it gets 503 `queue_unavailable`. `wait=true` returns
-  `202` with the queued run when the run has not started.
+  queue cannot be persisted it gets 503 `queue_unavailable`. `wait=true` follows a queued run until it
+  is terminal or the wait `timeout` ends (then `202` with the current run).
 - **Restart.** Queued runs survive a restart; `pending`/`running` runs are marked
   `interrupted` as before and never re-queued, so a command that may have started
   is not replayed. A backlog drains at `drain_rate` into free slots and expires

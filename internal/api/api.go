@@ -859,28 +859,60 @@ func (s *Server) trigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, run)
 }
 
-// waitForRun waits for an active run to finalize its logs and terminal state.
-// A completed run is no longer active, so read the persisted state directly.
+// queuedWaitPoll is how often a waiting trigger re-reads a run that is queued
+// for capacity (it has no process to wait on yet). The poll lives only as long
+// as the request.
+var queuedWaitPoll = 500 * time.Millisecond
+
+// waitForRun waits for a run to finalize its logs and terminal state, within
+// timeout. A queued run is polled until it starts, then waited on like any
+// other. A completed run is no longer active, so read the persisted state.
 func (s *Server) waitForRun(ctx context.Context, run model.Run, timeout time.Duration) model.Run {
-	if done := s.exec.Wait(run.ID); done != nil {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	var poll *time.Timer
+	defer func() {
+		if poll != nil {
+			poll.Stop()
+		}
+	}()
+	for {
+		if done := s.exec.Wait(run.ID); done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return run
+			case <-deadline.C:
+				return run
+			}
+		}
+		current, err := s.store.Run(ctx, run.ID)
+		if err == nil && model.Terminal(current.Status) {
+			return current
+		}
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("read completed trigger run failed", "run", run.ID, "error", err)
+			}
+			return run
+		}
+		if current.Status != "queued" && current.Status != "pending" {
+			return current
+		}
+		run = current
+		if poll == nil {
+			poll = time.NewTimer(queuedWaitPoll)
+		} else {
+			poll.Reset(queuedWaitPoll)
+		}
 		select {
-		case <-done:
+		case <-poll.C:
 		case <-ctx.Done():
 			return run
-		case <-timer.C:
+		case <-deadline.C:
 			return run
 		}
 	}
-	current, err := s.store.Run(ctx, run.ID)
-	if err == nil && model.Terminal(current.Status) {
-		return current
-	}
-	if err != nil && ctx.Err() == nil {
-		slog.Error("read completed trigger run failed", "run", run.ID, "error", err)
-	}
-	return run
 }
 func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 	d, _, err := s.store.Definition(r.Context(), r.PathValue("name"))
