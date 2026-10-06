@@ -181,7 +181,7 @@ func (s *Service) finalizePass() (failedEarly bool) {
 			return false
 		}
 		t := it.t
-		err := s.finishRun(it.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
+		err := s.finishRun(it.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
 		switch {
 		case err == nil:
 			slog.Info("persisted terminal run state after retry", "run", it.r.ID, "status", t.status)
@@ -248,7 +248,7 @@ func (s *Service) finalizeInline(r model.Run, d model.Definition, t terminal) {
 			return
 		case <-timer.C:
 		}
-		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
+		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
 		if err == nil {
 			slog.Info("persisted terminal run state after retry", "run", r.ID, "status", t.status)
 			s.finished(r, d, t)

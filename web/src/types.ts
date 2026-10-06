@@ -5,6 +5,32 @@ import type { Definition, Run } from './generated/model';
 export { KindJob, KindWorker } from './generated/model';
 export type { Definition, Kind, Run } from './generated/model';
 
+export interface ProcessSample {
+  sampled_at: string;
+  process_start_id: string;
+  cpu_us: number;
+  rss_bytes: number;
+}
+
+export interface MonitorSnapshot {
+  supported: boolean;
+  sampled_at: string;
+  daemon: ProcessSample | null;
+  daemon_pid: number;
+  heap_bytes: number;
+  goroutines: number;
+  active: number;
+  truncated: boolean;
+  items: {
+    run_id: string;
+    job: string;
+    kind: string;
+    pid: number;
+    process_start_id: string;
+    stats: ProcessSample | null;
+  }[];
+}
+
 export interface DaemonInfo {
   version: string;
   schema_version: number;

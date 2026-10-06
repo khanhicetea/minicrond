@@ -90,36 +90,49 @@ func (d Definition) Clone() Definition {
 func (d Definition) IsEnabled() bool     { return d.Enabled == nil || *d.Enabled }
 func (d Definition) DoesAutostart() bool { return d.Autostart == nil || *d.Autostart }
 
+// ResourceUsage is kernel exit accounting, not a whole-process-tree total.
+// CPU times are microseconds; peak RSS is bytes (not a combined tree peak).
+type ResourceUsage struct {
+	UserCPUUS    int64 `json:"user_cpu_us"`
+	SystemCPUUS  int64 `json:"system_cpu_us"`
+	PeakRSSBytes int64 `json:"peak_rss_bytes"`
+}
+
 type Run struct {
-	ID             string     `json:"run_id"`
-	DefinitionID   int64      `json:"definition_id"`
-	Job            string     `json:"job"`
-	Kind           string     `json:"kind"`
-	Revision       int64      `json:"revision"`
-	DefinitionHash string     `json:"definition_hash"`
-	Status         string     `json:"status"`
-	EndReason      string     `json:"end_reason,omitempty"`
-	Trigger        string     `json:"trigger"`
-	Attempt        int        `json:"attempt"`
-	ParentRunID    string     `json:"parent_run_id,omitempty"`
-	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
-	MissedCount    int        `json:"missed_count,omitzero"`
-	BootID         string     `json:"boot_id,omitempty"`
-	PID            int        `json:"pid,omitzero"`
-	PGID           int        `json:"pgid,omitzero"`
-	ProcessStartID string     `json:"process_start_id,omitempty"`
-	ExitCode       *int       `json:"exit_code,omitempty"`
-	Signal         string     `json:"signal,omitempty"`
-	QueuedAt       time.Time  `json:"queued_at"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	EndedAt        *time.Time `json:"ended_at,omitempty"`
-	LogRef         string     `json:"log_ref,omitempty"`
-	LogBytes       int64      `json:"log_bytes"`
-	LogTruncated   bool       `json:"log_truncated"`
+	ID             string         `json:"run_id"`
+	DefinitionID   int64          `json:"definition_id"`
+	Job            string         `json:"job"`
+	Kind           string         `json:"kind"`
+	Revision       int64          `json:"revision"`
+	DefinitionHash string         `json:"definition_hash"`
+	Status         string         `json:"status"`
+	EndReason      string         `json:"end_reason,omitempty"`
+	Trigger        string         `json:"trigger"`
+	Attempt        int            `json:"attempt"`
+	ParentRunID    string         `json:"parent_run_id,omitempty"`
+	ScheduledFor   *time.Time     `json:"scheduled_for,omitempty"`
+	MissedCount    int            `json:"missed_count,omitzero"`
+	BootID         string         `json:"boot_id,omitempty"`
+	PID            int            `json:"pid,omitzero"`
+	PGID           int            `json:"pgid,omitzero"`
+	ProcessStartID string         `json:"process_start_id,omitempty"`
+	ExitCode       *int           `json:"exit_code,omitempty"`
+	Signal         string         `json:"signal,omitempty"`
+	QueuedAt       time.Time      `json:"queued_at"`
+	StartedAt      *time.Time     `json:"started_at,omitempty"`
+	EndedAt        *time.Time     `json:"ended_at,omitempty"`
+	LogRef         string         `json:"log_ref,omitempty"`
+	LogBytes       int64          `json:"log_bytes"`
+	LogTruncated   bool           `json:"log_truncated"`
+	ResourceUsage  *ResourceUsage `json:"resource_usage,omitempty"`
 }
 
 // Clone creates an independent snapshot of a run's optional values.
 func (r Run) Clone() Run {
+	if r.ResourceUsage != nil {
+		value := *r.ResourceUsage
+		r.ResourceUsage = &value
+	}
 	if r.ScheduledFor != nil {
 		value := *r.ScheduledFor
 		r.ScheduledFor = &value

@@ -9,6 +9,7 @@ import { Icon } from './components/Icon';
 const JobEditor = lazy(() => import('./pages/JobEditor'));
 const Jobs = lazy(() => import('./pages/Jobs'));
 const Metrics = lazy(() => import('./pages/Metrics'));
+const Monitor = lazy(() => import('./pages/Monitor'));
 const RunDetail = lazy(() => import('./pages/RunDetail'));
 const Runs = lazy(() => import('./pages/Runs'));
 const Settings = lazy(() => import('./pages/Settings'));
@@ -68,6 +69,7 @@ export default function App() {
               <Route path="/runs" component={Runs} />
               <Route path="/runs/:id" component={RunDetail} />
               <Route path="/metrics" component={Metrics} />
+              <Route path="/monitor" component={Monitor} />
               <Route path="/settings" component={Settings} />
               <Route component={NotFound} />
             </Switch>

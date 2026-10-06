@@ -90,6 +90,34 @@ be combined.
 | `GET /api/v1/runs/{id}/log/raw` | Raw merged bytes (download), read and sent page by page |
 | `GET /api/v1/runs/{id}/log/stream` | **SSE** follow — frames read from stored chunks by cursor, delivered in batches about every 2 s while the run is active |
 
+Completed job and worker runs optionally include `resource_usage`:
+`user_cpu_us`, `system_cpu_us`, and `peak_rss_bytes`. These are kernel exit
+accounting, persisted with the terminal transition, not live samples. CPU may
+include waited-for descendants; peak RSS is **not** the combined process-tree
+peak. Historical, unspawned, or crash-interrupted runs omit this object;
+measured zero is distinct from unavailable.
+
+### Live resource monitoring
+
+`GET /api/v1/monitor` returns `supported`, `sampled_at`, `daemon_pid`,
+`daemon` (process sample or null), `heap_bytes` (Go heap objects), `goroutines`,
+`active`, `truncated`, and `items` (at most 256 active job/worker identities
+with nullable `stats`). A process sample contains `sampled_at`,
+`process_start_id`, cumulative `cpu_us`, and current `rss_bytes`.
+
+Live process stats require Linux procfs and cover the **direct child only**.
+Missing/unreadable/exited processes and identity mismatches have null stats.
+Compute interval CPU percentage as `100 × delta(cpu_us) / delta(time_us)`
+only for the same process-start identity; 100% means one logical CPU. The first
+sample has no percentage. Do not interpret null as zero.
+
+The `/monitor` UI polls every 3 seconds only while visible; samples are never
+saved. API snapshots are shared for 3 seconds and then released, with no
+background sampler. Collection uses the shared read gate (1 MiB reservation,
+no wait), one collector, and a 2-second cooperative work deadline. Busy reads
+return `503` with `Retry-After`. A truncated response is a bounded subset, not
+a stable page. See [ADR-12](adr/0012-resource-monitoring.md).
+
 `GET /api/v1/metrics/runs?range=15m|1h|24h|7d|30d&buckets=N` — run-count
 time series by outcome. Concurrent requests for the same `range`/`buckets`
 share one computation, and a result is reused for about 3 seconds, so

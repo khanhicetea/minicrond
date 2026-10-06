@@ -256,7 +256,7 @@ func BenchmarkEndTimeIndexMigration(b *testing.B) {
 			if _, err := s.db.ExecContext(b.Context(), "DROP TABLE exec_queue"); err != nil {
 				b.Fatal(err)
 			}
-			if _, err := s.db.ExecContext(b.Context(), "PRAGMA user_version=7"); err != nil {
+			if _, err := s.db.ExecContext(b.Context(), "ALTER TABLE runs DROP COLUMN user_cpu_us; ALTER TABLE runs DROP COLUMN system_cpu_us; ALTER TABLE runs DROP COLUMN peak_rss_bytes; PRAGMA user_version=7"); err != nil {
 				b.Fatal(err)
 			}
 			beforeUsed := benchmarkUsedPageBytes(b, s)

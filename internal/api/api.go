@@ -64,6 +64,7 @@ type Server struct {
 	readGate        *readGate
 	readWork        time.Duration
 	metrics         metricsShare
+	monitoring      monitorShare
 	alertChannels   func() []config.AlertChannel
 	jobDefaults     func() model.Definition
 	testAlert       func(context.Context, string) error
@@ -511,6 +512,7 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/workers/{name}/start", s.workerStart)
 	m.HandleFunc("POST /api/v1/workers/{name}/stop", s.workerStop)
 	m.HandleFunc("POST /api/v1/workers/{name}/restart", s.workerRestart)
+	m.HandleFunc("GET /api/v1/monitor", s.monitor)
 	m.HandleFunc("GET /api/v1/metrics/runs", s.runMetrics)
 	m.HandleFunc("GET /api/v1/metrics/alerts", s.alertMetrics)
 	m.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)

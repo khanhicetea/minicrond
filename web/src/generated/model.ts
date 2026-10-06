@@ -65,6 +65,15 @@ export interface Definition {
    */
   next_fire_at?: string;
 }
+/**
+ * ResourceUsage is kernel exit accounting, not a whole-process-tree total.
+ * CPU times are microseconds; peak RSS is bytes (not a combined tree peak).
+ */
+export interface ResourceUsage {
+  user_cpu_us: number /* int64 */;
+  system_cpu_us: number /* int64 */;
+  peak_rss_bytes: number /* int64 */;
+}
 export interface Run {
   run_id: string;
   definition_id: number /* int64 */;
@@ -91,4 +100,5 @@ export interface Run {
   log_ref?: string;
   log_bytes: number /* int64 */;
   log_truncated: boolean;
+  resource_usage?: ResourceUsage;
 }

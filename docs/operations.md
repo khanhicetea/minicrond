@@ -24,6 +24,26 @@ Rules of thumb:
 - This development build rejects databases from the former file-authority
   schema era — remove the old database and restart.
 
+## CPU and memory monitoring
+
+Open **Monitor** (`/monitor`) for daemon and running job/worker CPU and RSS.
+The page polls every 3 seconds only while visible. Linux procfs is required for
+live CPU/RSS; daemon Go heap and goroutine count remain available on Darwin.
+CPU 100% means one logical CPU. Job/worker live values cover the direct child,
+not its descendants. The first sample has no interval CPU rate, and `—` is
+unavailable, not zero. At most 256 active runs are shown; overload can refuse
+monitoring with a retryable 503 rather than delaying process control.
+
+Completed runs save kernel user/system CPU time and peak RSS in run history,
+without periodic job sampling. Each worker restart/job retry has a separate
+summary, shown on its run detail page. Peak RSS is not a combined process-tree
+peak; exit CPU may include waited-for descendants. Live samples are not stored.
+Older/unspawned/crash-interrupted runs have no resource summary. Run retention
+also removes the summary; export histories separately before pruning if needed
+for later aggregation. Schema 10 upgrades existing databases automatically;
+older binaries cannot open the upgraded database. See
+[ADR-12](adr/0012-resource-monitoring.md) for limits and accounting caveats.
+
 ## Hybrid log storage
 
 Log storage is two-tier (ADR-6):

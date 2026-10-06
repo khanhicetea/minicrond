@@ -8,6 +8,7 @@ import { api, errorText } from '../api';
 import { downloadFile } from '../lib/download';
 import { formatBytes, formatDayTime, formatSpan, formatTimestamp, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
+import { memoryMiB } from '../lib/resources';
 import { jobsQuery, runQuery, useStopRun, useTriggerJob } from '../queries';
 import { isActiveRun, type Run } from '../types';
 
@@ -175,7 +176,25 @@ export default function Runs() {
                   {formatTimestamp(detail.data.started_at ?? detail.data.queued_at)} · {detail.data.trigger} · <span className="font-mono">#{shortRunId(detail.data.run_id)}</span>
                 </p>
               </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {detail.data.resource_usage && (
+                  <span className="chip chip-neutral !gap-2 !px-2 !py-[0.4rem] !text-[0.8125rem] !leading-normal">
+                    <span className="inline-flex items-center gap-1" title="User CPU time; may include waited-for descendants." aria-label={`User CPU time: ${(detail.data.resource_usage.user_cpu_us / 1_000_000).toFixed(3)} s`}>
+                      <Icon name="activity" size={12} />
+                      <span className="num">{(detail.data.resource_usage.user_cpu_us / 1_000_000).toFixed(3)} s</span>
+                    </span>
+                    <span className="faint" aria-hidden="true">|</span>
+                    <span className="inline-flex items-center gap-1" title="System CPU time; may include waited-for descendants." aria-label={`System CPU time: ${(detail.data.resource_usage.system_cpu_us / 1_000_000).toFixed(3)} s`}>
+                      <Icon name="settings" size={12} />
+                      <span className="num">{(detail.data.resource_usage.system_cpu_us / 1_000_000).toFixed(3)} s</span>
+                    </span>
+                    <span className="faint" aria-hidden="true">|</span>
+                    <span className="inline-flex items-center gap-1" title="Peak RSS; not the combined process-tree peak." aria-label={`Peak RSS: ${memoryMiB(detail.data.resource_usage.peak_rss_bytes)}`}>
+                      <Icon name="database" size={12} />
+                      <span className="num">{memoryMiB(detail.data.resource_usage.peak_rss_bytes)}</span>
+                    </span>
+                  </span>
+                )}
                 {isActiveRun(detail.data) ? (
                   <button type="button" className="btn-danger-x" disabled={stop.isPending} onClick={() => { setActionError(''); stop.mutate(detail.data.run_id, { onError: err => setActionError(errorText(err)) }); }}><Icon name="square" size={13} />Stop</button>
                 ) : !configOwned ? (

@@ -328,7 +328,8 @@ func TestActiveIndexCoversQueuedOnFreshAndMigratedDatabases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		old := strings.Replace(schema, "PRAGMA user_version=9;", "PRAGMA user_version=8;", 1)
+		old := strings.Replace(schema, resourceUsageDDL, "", 1)
+		old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=8;", 1)
 		old = strings.Replace(old, execQueueDDL, "", 1)
 		old = strings.Replace(old, "idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running')", "idx_runs_active ON runs(status) WHERE status IN ('pending','running')", 1)
 		if !strings.Contains(old, "WHERE status IN ('pending','running');") {

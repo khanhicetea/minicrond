@@ -18,7 +18,8 @@ func TestMigration4AddsRetryParent(t *testing.T) {
 	old := strings.Replace(schema, " parent_run_id TEXT,\n", "", 1)
 	old = strings.Replace(old, " source TEXT NOT NULL DEFAULT '',", "", 1)
 	old = strings.Replace(old, "CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);\n", "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=9;", "PRAGMA user_version=4;", 1)
+	old = strings.Replace(old, resourceUsageDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=4;", 1)
 	old = strings.Replace(old, execQueueDDL, "", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
@@ -50,7 +51,8 @@ func TestMigration7AddsRetentionIndexes(t *testing.T) {
 	old := strings.Replace(schema, "CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');\n", "", 1)
 	old = strings.Replace(old, "CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);\n", "", 1)
 	old = strings.Replace(old, "CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);\n", "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=9;", "PRAGMA user_version=6;", 1)
+	old = strings.Replace(old, resourceUsageDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=6;", 1)
 	old = strings.Replace(old, execQueueDDL, "", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
@@ -81,7 +83,8 @@ func TestMigration8AddsEndTimeIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := strings.Replace(schema, "CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);\n", "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=9;", "PRAGMA user_version=7;", 1)
+	old = strings.Replace(old, resourceUsageDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=7;", 1)
 	old = strings.Replace(old, execQueueDDL, "", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
@@ -109,7 +112,8 @@ func TestMigration9AddsExecutionQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := strings.Replace(schema, "PRAGMA user_version=9;", "PRAGMA user_version=8;", 1)
+	old := strings.Replace(schema, resourceUsageDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=8;", 1)
 	old = strings.Replace(old, execQueueDDL, "", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)

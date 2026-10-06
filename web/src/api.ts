@@ -1,6 +1,6 @@
 import { auth } from './auth';
 import { publicPath } from './lib/base';
-import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState } from './types';
+import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState, MonitorSnapshot } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -62,6 +62,7 @@ export const api = {
   /** Probe without a browser token, including one retained from an old tab session. */
   probeTransport: () => request<DaemonInfo>('/api/v1/daemon', { token: '', revokeOn401: false }),
   daemon: (signal?: AbortSignal) => request<DaemonInfo>('/api/v1/daemon', { signal }),
+  monitor: (signal?: AbortSignal) => request<MonitorSnapshot>('/api/v1/monitor', { signal }),
 
   reload: () => request<{ reloaded: boolean }>('/api/v1/daemon/reload', { method: 'POST' }),
 

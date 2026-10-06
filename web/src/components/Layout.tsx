@@ -31,6 +31,7 @@ const NAV: { href: string; label: string; icon: IconName; match: (path: string) 
   { href: '/jobs', label: 'Jobs & Workers', icon: 'list', match: p => p === '/' || p.startsWith('/jobs') },
   { href: '/runs', label: 'Runs', icon: 'clock', match: p => p.startsWith('/runs') },
   { href: '/metrics', label: 'Metrics', icon: 'trending-up', match: p => p === '/metrics' },
+  { href: '/monitor', label: 'Monitor', icon: 'activity', match: p => p === '/monitor' },
   { href: '/settings', label: 'Settings', icon: 'settings', match: p => p === '/settings' },
 ];
 

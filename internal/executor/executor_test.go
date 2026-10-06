@@ -62,6 +62,9 @@ func TestSuccessAndTimeoutRemainDistinct(t *testing.T) {
 				if current.Status != tc.want {
 					t.Fatalf("%s: got %s, want %s", tc.name, current.Status, tc.want)
 				}
+				if current.ResourceUsage == nil {
+					t.Fatalf("%s: missing exit accounting", tc.name)
+				}
 				if runtime.GOOS == "linux" && current.ProcessStartID == "" {
 					t.Fatalf("%s: process start identity was not persisted", tc.name)
 				}

@@ -13,6 +13,7 @@ import { downloadFile } from '../lib/download';
 import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
+import { memoryMiB } from '../lib/resources';
 import { isActiveRun, type Frame } from '../types';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
@@ -219,6 +220,15 @@ export default function RunDetail() {
           <Fact label="Started">{formatTimestamp(data.started_at)}</Fact>
           <Fact label="Ended">{formatTimestamp(data.ended_at)}</Fact>
         </div>
+
+        {data.resource_usage && <div className="border-t border-base-300 px-5 py-4">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+            <Fact label="User CPU time">{(data.resource_usage.user_cpu_us / 1e6).toFixed(3)} s</Fact>
+            <Fact label="System CPU time">{(data.resource_usage.system_cpu_us / 1e6).toFixed(3)} s</Fact>
+            <Fact label="Peak RSS">{memoryMiB(data.resource_usage.peak_rss_bytes)}</Fact>
+          </div>
+          <p className="mt-3 text-xs faint">Kernel exit accounting; CPU may include waited-for descendants. Peak RSS is not the combined process-tree peak.</p>
+        </div>}
 
         {/* Everything else, collapsed by default. */}
         <div className="border-t border-base-300 bg-base-200/50">

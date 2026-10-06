@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -170,6 +170,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 9: %w", err)
 		}
 	}
+	if version <= 9 {
+		if _, err := s.db.ExecContext(ctx, migration10); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -214,7 +219,17 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-` + execQueueDDL + `PRAGMA user_version=9;
+` + execQueueDDL + resourceUsageDDL + `PRAGMA user_version=10;
+COMMIT;`
+
+// Nullable counters distinguish unavailable accounting from measured zero.
+const resourceUsageDDL = `ALTER TABLE runs ADD COLUMN user_cpu_us INTEGER;
+ALTER TABLE runs ADD COLUMN system_cpu_us INTEGER;
+ALTER TABLE runs ADD COLUMN peak_rss_bytes INTEGER;
+`
+
+const migration10 = `BEGIN;
+` + resourceUsageDDL + `PRAGMA user_version=10;
 COMMIT;`
 
 const migration3 = `
@@ -738,7 +753,16 @@ func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID 
 	return nil
 }
 func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, id, status)
+	return s.FinishRunWithUsage(ctx, id, status, reason, code, signal, at, bytes, truncated, nil)
+}
+
+// FinishRunWithUsage commits accounting atomically with the terminal state.
+func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
+	var user, system, rss any
+	if usage != nil {
+		user, system, rss = usage.UserCPUUS, usage.SystemCPUUS, usage.PeakRSSBytes
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=?,user_cpu_us=?,system_cpu_us=?,peak_rss_bytes=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, user, system, rss, id, status)
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", id, err)
 	}
@@ -783,7 +807,7 @@ func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, e
 // at the end of the previous page, so new runs cannot shift later pages.
 func (s *Store) RunsPage(ctx context.Context, job string, limit int, before, filter string) ([]model.Run, error) {
 	limit = min(max(limit, 1), 501)
-	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs`
+	q := `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated,user_cpu_us,system_cpu_us,peak_rss_bytes FROM runs`
 	var args []any
 	var conditions []string
 	if job != "" {
@@ -1091,12 +1115,12 @@ func (s *Store) ReadRun(ctx context.Context, id string) (model.Run, error) {
 }
 
 func (s *Store) run(ctx context.Context, db *sql.DB, id string) (model.Run, error) {
-	row := db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE run_id=?`, id)
+	row := db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated,user_cpu_us,system_cpu_us,peak_rss_bytes FROM runs WHERE run_id=?`, id)
 	return scanRun(row)
 }
 
 func (s *Store) ScheduledRun(ctx context.Context, definitionID int64, scheduled time.Time) (model.Run, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated FROM runs WHERE definition_id=? AND scheduled_for_us=? AND trigger='schedule'`, definitionID, scheduled.UnixMicro())
+	row := s.db.QueryRowContext(ctx, `SELECT run_id,definition_id,job,kind,revision,definition_hash,status,COALESCE(end_reason,''),trigger,attempt,COALESCE(parent_run_id,''),scheduled_for_us,missed_count,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,''),exit_code,COALESCE(signal,''),queued_us,started_us,ended_us,COALESCE(log_ref,''),log_bytes,log_truncated,user_cpu_us,system_cpu_us,peak_rss_bytes FROM runs WHERE definition_id=? AND scheduled_for_us=? AND trigger='schedule'`, definitionID, scheduled.UnixMicro())
 	return scanRun(row)
 }
 
@@ -1106,10 +1130,13 @@ func scanRun(row scanner) (model.Run, error) {
 	var r model.Run
 	var scheduled, started, ended sql.NullInt64
 	var queued int64
-	var code sql.NullInt64
-	err := row.Scan(&r.ID, &r.DefinitionID, &r.Job, &r.Kind, &r.Revision, &r.DefinitionHash, &r.Status, &r.EndReason, &r.Trigger, &r.Attempt, &r.ParentRunID, &scheduled, &r.MissedCount, &r.BootID, &r.PID, &r.PGID, &r.ProcessStartID, &code, &r.Signal, &queued, &started, &ended, &r.LogRef, &r.LogBytes, &r.LogTruncated)
+	var code, user, system, rss sql.NullInt64
+	err := row.Scan(&r.ID, &r.DefinitionID, &r.Job, &r.Kind, &r.Revision, &r.DefinitionHash, &r.Status, &r.EndReason, &r.Trigger, &r.Attempt, &r.ParentRunID, &scheduled, &r.MissedCount, &r.BootID, &r.PID, &r.PGID, &r.ProcessStartID, &code, &r.Signal, &queued, &started, &ended, &r.LogRef, &r.LogBytes, &r.LogTruncated, &user, &system, &rss)
 	if err != nil {
 		return r, err
+	}
+	if user.Valid && system.Valid && rss.Valid {
+		r.ResourceUsage = &model.ResourceUsage{UserCPUUS: user.Int64, SystemCPUUS: system.Int64, PeakRSSBytes: rss.Int64}
 	}
 	r.QueuedAt = time.UnixMicro(queued)
 	if scheduled.Valid {

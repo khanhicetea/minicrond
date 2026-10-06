@@ -91,11 +91,12 @@ type Service struct {
 	persistLag persistLag
 }
 type activeRun struct {
-	cancel context.CancelCauseFunc
-	done   chan struct{}
-	pgid   int
-	force  chan struct{}
-	forced bool
+	cancel  context.CancelCauseFunc
+	done    chan struct{}
+	pgid    int
+	force   chan struct{}
+	forced  bool
+	monitor ProcessTarget
 }
 
 // startPersistTimeout bounds the running-state write that follows a spawn.
@@ -316,7 +317,7 @@ func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Ru
 	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
 	if err != nil {
 		ended := time.Now().UTC()
-		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, 0, false); finishErr == nil {
+		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, 0, false, nil); finishErr == nil {
 			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
 			failedStart = &r
 		} else {
@@ -326,7 +327,7 @@ func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Ru
 		return failedStart, fmt.Errorf("open run logs: %w", err)
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	a := &activeRun{cancel: cancel, done: make(chan struct{}), force: make(chan struct{})}
+	a := &activeRun{cancel: cancel, done: make(chan struct{}), force: make(chan struct{}), monitor: ProcessTarget{RunID: r.ID, Job: r.Job, Kind: r.Kind}}
 	// Register under mu: shutdown snapshots active under the same lock, so a
 	// run is either joined by shutdown or refused here.
 	s.mu.Lock()
@@ -338,7 +339,7 @@ func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Ru
 		}
 		// Not retried or announced: the daemon is stopping, and the run
 		// never started.
-		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", time.Now().UTC(), 0, false); finishErr != nil {
+		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", time.Now().UTC(), 0, false, nil); finishErr != nil {
 			logFailure("persisting refused run failed; recovery will mark it interrupted", finishErr, "run", r.ID)
 		}
 		releaseCapacity()
@@ -484,6 +485,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	pgid := cmd.Process.Pid
 	s.mu.Lock()
 	a.pgid = pgid
+	a.monitor = ProcessTarget{RunID: r.ID, Job: r.Job, Kind: r.Kind, PID: pgid, StartID: startID}
 	s.mu.Unlock()
 	// Drain the pipes from the start so a chatty child cannot block on a full
 	// pipe while persistence is slow.
@@ -614,7 +616,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		logFailure("finalizing run logs failed; keeping execution status, marking logs truncated", err, "run", r.ID)
 		truncated = true
 	}
-	s.complete(r, d, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
+	s.complete(r, d, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true, usage: exitUsage(cmd.ProcessState)})
 }
 
 func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
@@ -637,6 +639,7 @@ type terminal struct {
 	bytes          int64
 	truncated      bool
 	retry          bool // whether a failed job may schedule its next attempt
+	usage          *model.ResourceUsage
 }
 
 // complete persists a run's terminal state, then notifies and schedules any
@@ -645,7 +648,7 @@ type terminal struct {
 // capacity slot for at most InlineHold, then hands off (see finalState), so the
 // run cannot stay "running" with no alert and unfinalized runs stay bounded.
 func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
-	err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated)
+	err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
 	if err == nil {
 		s.finished(r, d, t)
 		return
@@ -675,13 +678,14 @@ func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
 func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
 	s.persistLag.observe(t.ended)
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
+	r.ResourceUsage = t.usage
 	s.notifyFinished(r, d)
 	if t.retry {
 		s.scheduleRetry(r, d)
 	}
 }
 
-func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool) error {
+func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
 	if s.finishHook != nil {
 		if err := s.finishHook(id); err != nil {
 			return fmt.Errorf("persist terminal run state: %w", err)
@@ -691,7 +695,7 @@ func (s *Service) finishRun(id, status, reason string, code *int, signal string,
 	defer cancel()
 	var err error
 	for attempt := range 5 {
-		err = s.store.FinishRun(ctx, id, status, reason, code, signal, ended, bytes, truncated)
+		err = s.store.FinishRunWithUsage(ctx, id, status, reason, code, signal, ended, bytes, truncated, usage)
 		if err == nil {
 			return nil
 		}
