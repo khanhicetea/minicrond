@@ -487,8 +487,16 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	a.pgid = pgid
 	a.monitor = ProcessTarget{RunID: r.ID, Job: r.Job, Kind: r.Kind, PID: pgid, StartID: startID}
 	s.mu.Unlock()
-	// Drain the pipes from the start so a chatty child cannot block on a full
-	// pipe while persistence is slow.
+	// Record the successful spawn independently of metadata persistence. Gate
+	// both pumps on this attempt so the startup line precedes child output.
+	// Supervision stays independent, and a stalled sink only holds the gate
+	// for the bounded system-write budget (ordering is best-effort then).
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		s.sysLog(w, r.ID, "process started as "+identity)
+	}()
+	pumpReady := make(chan struct{})
 	pumps := make(chan error, 2)
 	pumpsRemaining := 2
 	defer func() {
@@ -499,26 +507,25 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 			pumpsRemaining--
 		}
 	}()
-	go func() { pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stdout, stdoutR) }) }()
-	go func() { pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stderr, stderrR) }) }()
-	// Persist the running state and write the first system line concurrently
-	// with supervision, each bounded; the select loop below can stop the
-	// child regardless of how long they take. Because system lines are written
-	// concurrently with pump output and stop notes, their position among the
-	// stored frames is not guaranteed (sequence numbers stay monotonic).
-	persisted := make(chan error, 1)
-	startDone := make(chan struct{})
 	go func() {
-		defer close(startDone)
+		s.joinBounded(startDone, r.ID, "start-up system line before output")
+		close(pumpReady)
+		pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stdout, stdoutR) })
+	}()
+	go func() {
+		<-pumpReady
+		pumps <- fault.Call(func() error { return s.pipe(w, logstore.Stderr, stderrR) })
+	}()
+	// Drain without waiting for StartRun: a slow database must not back up
+	// a chatty child's pipes or delay timeout/stop enforcement.
+	persisted := make(chan error, 1)
+	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), startPersistTimeout)
 		defer cancel()
 		err := fault.Call(func() error {
 			return s.store.StartRun(ctx, r.ID, cmd.Process.Pid, pgid, startID, started)
 		})
 		persisted <- err
-		if err == nil {
-			s.sysLog(w, r.ID, "process started as "+identity)
-		}
 	}()
 	persistedCh := (<-chan error)(persisted)
 	var startErr error
@@ -1235,12 +1242,17 @@ func (s *Service) stopWithNote(w *logstore.Writer, runID, note string, pgid int,
 	return err
 }
 
-// systemWriteJoin bounds how long run cleanup waits for a system-line write
-// before sealing the log. An abandoned write finishes (or fails against the
-// sealed writer) on its own; Seal itself remains bounded only by the log store.
+// systemWriteJoin bounds how long the startup gate and run cleanup wait for
+// a system-line write. An abandoned write finishes (or fails against the sealed
+// writer) on its own; Seal itself remains bounded only by the log store.
 const defaultSystemWriteJoin = 5 * time.Second
 
 func (s *Service) joinBounded(done <-chan struct{}, runID, what string) {
+	select {
+	case <-done:
+		return
+	default:
+	}
 	limit := defaultSystemWriteJoin
 	if s.systemWriteJoin > 0 {
 		limit = s.systemWriteJoin

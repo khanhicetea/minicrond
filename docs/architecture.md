@@ -69,6 +69,14 @@ or supervision loop stops and logs its stack. Maintenance panics and unexpected
 HTTP listener failures cause the daemon to shut down and return an error.
 Recovery cannot repair corrupt state or stop a callback that ignores its context.
 
+After a successful spawn, the executor attempts the `process started as …`
+system line before admitting stdout/stderr frames, independently of the running-state
+database write. Both pumps share a startup gate; no viewer queues or payload
+buffers are added. The gate waits at most five seconds for a stalled system write,
+then capture proceeds with best-effort ordering. This bounded pause uses the
+existing pipe buffers, not accepted-output buffering in RAM. Timeout and stop
+supervision never waits on the gate; failed spawns emit only a start-error line.
+
 Timeouts and stop requests remain active after a child closes either output
 stream. The executor owns the process group for the run's lifetime and kills
 remaining descendants before completing the run. Descendants holding output
