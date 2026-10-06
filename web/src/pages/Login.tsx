@@ -41,7 +41,7 @@ export default function Login() {
               <Icon name="terminal" size={18} strokeWidth={2.4} />
             </span>
             <div>
-              <h1 className="text-xl font-bold tracking-tight">minicron</h1>
+              <h1 className="text-xl font-bold tracking-tight">minicrond</h1>
               <p className="text-xs muted">Local cron scheduler &amp; process supervisor</p>
             </div>
           </div>
@@ -90,7 +90,7 @@ export default function Login() {
             the Unix socket).
           </p>
         </div>
-        <p className="mt-4 text-center text-xs faint">minicron · local-first job scheduling</p>
+        <p className="mt-4 text-center text-xs faint">minicrond · local-first job scheduling</p>
       </div>
     </div>
   );

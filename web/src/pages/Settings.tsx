@@ -427,7 +427,7 @@ function ImportTab() {
         className="lg:col-span-7"
       >
         <p className="mb-3 text-sm muted">
-          Paste a minicron TOML bundle, preview it, then apply it to the definition registry.
+          Paste a minicrond TOML bundle, preview it, then apply it to the definition registry.
         </p>
         <input
           ref={fileRef}

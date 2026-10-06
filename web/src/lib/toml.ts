@@ -1,7 +1,7 @@
 import type { Definition } from '../types';
 
 /**
- * Serialize a definition as minicron TOML ([[job]] / [[worker]]), matching the
+ * Serialize a definition as minicrond TOML ([[job]] / [[worker]]), matching the
  * daemon config format. Returns the text plus a field→line map so validation
  * issues can point at the offending line.
  */

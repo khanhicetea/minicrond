@@ -113,7 +113,7 @@ export default function Jobs() {
   const copyCurl = async () => {
     const sample = filtered[0];
     const lines = [
-      '# minicron REST API — replace $MINICRON_TOKEN (rotate locally if lost)',
+      '# minicrond REST API — replace $MINICRON_TOKEN (rotate locally if lost)',
       `BASE=${publicURL('/api/v1')}`,
       '',
       '# List definitions',

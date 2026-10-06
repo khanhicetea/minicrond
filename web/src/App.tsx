@@ -37,7 +37,7 @@ function NotFound() {
     <div className="panel mx-auto max-w-md px-8 py-12 text-center">
       <Icon name="search" size={28} className="mx-auto faint" />
       <h1 className="mt-3 text-xl font-bold">Page not found</h1>
-      <p className="mt-1 text-sm muted">The address does not match any minicron page.</p>
+      <p className="mt-1 text-sm muted">The address does not match any minicrond page.</p>
     </div>
   );
 }

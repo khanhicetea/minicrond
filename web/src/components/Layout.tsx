@@ -204,7 +204,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <span className="brand-mark">
             <Icon name="terminal" size={14} strokeWidth={2.4} />
           </span>
-          <span className="brand-name">minicron</span>
+          <span className="brand-name">minicrond</span>
         </Link>
         <NavLinks />
         <GlobalSearch />

@@ -377,7 +377,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 			}
 		})
 	}
-	slog.Info("minicron ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
+	slog.Info("minicrond ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
 	select {
 	case <-ctx.Done():
 		return nil

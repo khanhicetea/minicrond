@@ -38,7 +38,7 @@ func busyResponses() map[string]*huma.Response {
 }
 
 func OpenAPIContract(version string) []byte {
-	config := huma.DefaultConfig("minicron API", version)
+	config := huma.DefaultConfig("minicrond API", version)
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
 	config.SchemasPath = ""
