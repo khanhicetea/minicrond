@@ -44,6 +44,25 @@ P1 = fix before relying on the affected feature in production; P2 = important co
 - **Counts:** 17 original findings: **14 fixed, 3 partially fixed (A04, A09, A15), 0 not implemented**. Severity counts (7 P1, 8 P2, 2 P3) are unchanged because they classify the original findings.
 - **What was validated:** each stream added regression tests for its findings (listed in `status/<stream>.md`) and reported `gofmt`, `go vet`, `go build`, `go test ./...` and `go test -race` on the packages it touched, plus independent code reviews of the logstore, exec, disk, reads and queue streams. These are per-branch results; the final merged-tree commands for this documentation pass are in `status/docs.md`. The few measurements taken are listed after the tables with their caveats; everything else is test coverage, not a performance claim.
 
+### Later change: database-owned alert channels
+
+The working tree now implements [ADR-13](docs/adr/0013-database-alert-channels.md):
+channels and literal credentials live in SQLite, not TOML or env/file references.
+Startup/save/delete loads the full bounded registry in memory; no polling or
+per-alert DB reads are added. Queued batches retain their original transport.
+Optional registry-definition reference removal is transactional; config-owned
+references still require file edits. Plaintext credential-bearing DB/WAL/backups
+are an explicit owner-approved trade-off; API responses/audits redact tokens.
+A16's bounded off-completion drop observations remain unchanged.
+
+Fresh validation for this change: `go test ./...`, `go test -race ./...`,
+`go vet ./...`, `make contracts`, `cd web && npx tsc --noEmit`, `npm test`,
+and `npm run build` passed. The embedded UI was rebuilt. An isolated browser
+checked create/edit with blank-token retention, referenced-delete refusal,
+and checkbox deletion removing a job reference and advancing its revision.
+No new performance measurements or severity/count changes are claimed; the
+merged-revision tables below remain historical snapshots.
+
 ### Per-finding status
 
 | ID | Status | Where | Residual gaps (precise) |

@@ -10,14 +10,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
@@ -60,8 +58,7 @@ type delivery struct {
 }
 
 // Dispatcher asynchronously delivers alerts. Its channel registry can be
-// replaced during a configuration reload without interrupting deliveries
-// already in progress.
+// replaced after database mutations without interrupting queued deliveries.
 type Dispatcher struct {
 	mu       sync.RWMutex
 	channels map[string]Channel
@@ -84,8 +81,8 @@ type Dispatcher struct {
 	cancel       context.CancelFunc
 }
 
-// New creates a dispatcher and validates/resolves channel credentials.
-func New(channels []config.AlertChannel, record RecordFunc) (*Dispatcher, error) {
+// New creates a dispatcher from database-backed channel credentials.
+func New(channels []model.AlertChannel, record RecordFunc) (*Dispatcher, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{channels: make(map[string]Channel), queue: make(chan delivery, 256), work: make(chan []delivery, 256), dropWake: make(chan struct{}, 1), record: record, ctx: ctx, cancel: cancel}
 	if err := d.Reload(channels); err != nil {
@@ -99,35 +96,29 @@ func New(channels []config.AlertChannel, record RecordFunc) (*Dispatcher, error)
 	return d, nil
 }
 
-// Registry is a resolved, validated set of delivery channels that has not yet
-// been installed. Preparing separately lets a reload resolve credentials
-// before committing any other change.
+// Registry is a validated set of immutable delivery channels awaiting an
+// atomic swap into the dispatcher.
 type Registry struct {
 	channels map[string]Channel
 	windows  map[string]time.Duration
 }
 
-// Prepare validates channel settings and resolves their credentials.
-func Prepare(configs []config.AlertChannel) (*Registry, error) {
+// Prepare builds an immutable in-memory registry from stored channels.
+func Prepare(configs []model.AlertChannel) (*Registry, error) {
 	channels := make(map[string]Channel, len(configs))
 	windows := make(map[string]time.Duration, len(configs))
 	for _, cfg := range configs {
-		window := cfg.BatchWindow
-		if window == 0 {
-			window = 10
+		if err := cfg.Normalize(); err != nil {
+			return nil, fmt.Errorf("alert channel %q: %w", cfg.Name, err)
 		}
-		if window < 1 || window > 3600 {
-			return nil, fmt.Errorf("alert channel %q: invalid batch_window", cfg.Name)
+		if _, exists := channels[cfg.Name]; exists {
+			return nil, fmt.Errorf("duplicate alert channel %q", cfg.Name)
 		}
-		windows[cfg.Name] = time.Duration(window) * time.Second
+		windows[cfg.Name] = time.Duration(cfg.BatchWindow) * time.Second
 		var channel Channel
 		switch cfg.Type {
 		case "telegram":
-			token, err := resolveSecret(cfg.BotToken)
-			if err != nil {
-				return nil, fmt.Errorf("alert channel %q: resolve bot_token: %w", cfg.Name, err)
-			}
-			channel = newTelegram(token, cfg.ChatID, cfg.DisableNotification, telegramAPI, &http.Client{Timeout: 10 * time.Second})
+			channel = newTelegram(cfg.BotToken, cfg.ChatID, cfg.DisableNotification, telegramAPI, &http.Client{Timeout: 10 * time.Second})
 		default:
 			return nil, fmt.Errorf("alert channel %q: unsupported type %q", cfg.Name, cfg.Type)
 		}
@@ -137,7 +128,7 @@ func Prepare(configs []config.AlertChannel) (*Registry, error) {
 }
 
 // Reload atomically replaces the available delivery channels.
-func (d *Dispatcher) Reload(configs []config.AlertChannel) error {
+func (d *Dispatcher) Reload(configs []model.AlertChannel) error {
 	registry, err := Prepare(configs)
 	if err != nil {
 		return err
@@ -497,27 +488,6 @@ func (d *Dispatcher) Close(ctx context.Context) error {
 	}
 }
 
-func resolveSecret(ref string) (string, error) {
-	if name, ok := strings.CutPrefix(ref, "env:"); ok {
-		value, found := os.LookupEnv(name)
-		if !found || value == "" {
-			return "", fmt.Errorf("environment variable %s is empty or unset", name)
-		}
-		return value, nil
-	}
-	if path, ok := strings.CutPrefix(ref, "file:"); ok {
-		value, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
-		}
-		if token := strings.TrimSpace(string(value)); token != "" {
-			return token, nil
-		}
-		return "", errors.New("secret file is empty")
-	}
-	return "", errors.New("must be an env:NAME or file:/absolute/path reference")
-}
-
 // telegram is intentionally private: Channel is the stable extension seam;
 // provider-specific details stay inside this package.
 type telegram struct {
@@ -541,7 +511,7 @@ func (t *telegram) Send(ctx context.Context, alert Alert) error {
 	endpoint := strings.TrimRight(t.apiBase, "/") + "/bot" + t.token + "/sendMessage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return fmt.Errorf("build Telegram request: %w", err)
+		return errors.New("build Telegram request failed")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := t.client.Do(req)

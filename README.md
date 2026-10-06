@@ -39,7 +39,7 @@ go build -o minicrond ./cmd/minicrond
 | Storage | `minicron.db` (definitions, runs, audit) + `minicron-logs.db` (archive) with WAL; rolling age budget pruned daily; per-definition `keep_runs`/`keep_for` |
 | API | REST `/api/v1/*` + SSE log stream, OpenAPI 3.1 contract served at `/openapi.json`, `/healthz` + `/readyz` |
 | Web UI | Jobs & Workers, definition editor (schema-validated) with cloning, run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
-| Alerts | Telegram channels defined in bootstrap config; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
+| Alerts | DB-backed Telegram channels managed in the UI/API; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
 | CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `crontab` (interactive migration), `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
 
 ## Usage
@@ -130,21 +130,18 @@ and `logs.max_line` is KiB. Schedules such as `"@every 1m"` and daily
 `logs.db_prune_at = "03:30"` are string-valued exceptions.
 
 Jobs run on a schedule or on demand; workers are supervised long-running
-processes (autostart by default). To notify on failures, add a channel to
-**`minicron.toml`** (not the bundle):
+processes (autostart by default). To notify on failures, create a Telegram
+channel named `ops` in **Settings → Alert channels**, supplying the bot token
+and chat ID. Channels and literal credentials are stored in SQLite and loaded
+into memory on save; no restart or config reload is needed. Tokens are never
+returned by the API. Protect the metadata database and its backups.
 
-```toml
-[[alert_channel]]
-name = "ops"
-type = "telegram"
-bot_token = "file:/path/to/telegram-token"  # replace with a daemon-readable absolute path
-chat_id = "-1001234567890"
-```
-
-Set `alerts = ["ops"]` on the desired job or worker in `bundle.toml`, reload
-the bootstrap config with `./minicrond reload`, then re-import the bundle.
-An `env:NAME` token reference is also supported if the variable is set in
-the daemon's environment. Bind changes need a restart. See the
+Set `alerts = ["ops"]` on the desired job or worker in `bundle.toml`, then
+re-import the bundle (or select the channel in the job editor). Alert channels
+are excluded from bundles. `[[alert_channel]]` in bootstrap TOML is no longer
+supported; remove old blocks and recreate channels in the UI/API. There is
+no file migration and no `env:`/`file:` credential resolution for channels.
+Bind changes need a restart. See the
 [configuration reference](docs/configuration.md) for retries, timeouts,
 secrets, retention, and worker restart controls.
 

@@ -99,7 +99,8 @@ func TestMigration10KeepsHistoricalUsageUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := strings.Replace(schema, resourceUsageDDL, "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=10;", "PRAGMA user_version=9;", 1)
+	old = strings.Replace(old, alertChannelsDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=11;", "PRAGMA user_version=9;", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestMigration10KeepsHistoricalUsageUnavailable(t *testing.T) {
 	if r.ResourceUsage != nil {
 		t.Fatalf("old usage = %+v", r.ResourceUsage)
 	}
-	if version, err := st.SchemaVersion(t.Context()); err != nil || version != 10 {
+	if version, err := st.SchemaVersion(t.Context()); err != nil || version != SchemaVersion {
 		t.Fatalf("schema = %d, %v", version, err)
 	}
 }

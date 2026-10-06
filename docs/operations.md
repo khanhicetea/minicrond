@@ -294,6 +294,21 @@ keeps rising while the archiver is up.
 
 ## Alert delivery
 
+Create/edit channels in Settings → Alert channels or the alert-channel API.
+The metadata database stores **literal bot credentials in plaintext** (protected
+by the data directory's 0700 and database's 0600 permissions, not encryption).
+Treat `minicron.db`, its WAL, filesystem snapshots and backups as secrets.
+Token rotation must also account for old backups/WAL copies; deleting a channel
+is not secure erasure. API list/save responses and audit entries redact tokens.
+Save/delete reloads all channels in memory; no config polling is added.
+Queued batches keep their original channel even after edit/deletion.
+
+`[[alert_channel]]` TOML support is removed without import/migration. Remove
+old blocks and recreate channels via UI/API. Existing job/worker references
+must resolve before daemon startup. The delete checkbox removes registry-owned
+references atomically; config-owned definitions must be edited in the file first.
+See [configuration](configuration.md#alerts) and [ADR-13](adr/0013-database-alert-channels.md).
+
 Monitor `GET /api/v1/metrics/alerts` (`counts.failed`, `counts.dropped`,
 `counts.interrupted`, and `queue_depth`). Inspect a failed run at
 `GET /api/v1/runs/{id}/alerts` for per-channel attempts and the last safe
@@ -393,9 +408,11 @@ use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`.
   and disclose nothing.
 - The Unix socket is mode 0600 in a 0700 data directory; daemon-UID and root
   peers are authorized by kernel credentials.
-- Secrets (`secret_env`, alert `bot_token`) are `env:NAME` or
-  `file:/absolute/path` references resolved at spawn/startup — never
-  inline values in config or the registry.
+- Job/worker `secret_env` values are `env:NAME` or `file:/absolute/path`
+  references resolved at spawn. Alert `bot_token` values are literal credentials
+  stored in SQLite, never returned in API responses or audit entries. All API
+  principals can configure destinations and replace credentials; use trusted
+  admin access, TLS for remote writes, and secret-safe database backups.
 - `run_as` is available only to a root daemon; in user mode jobs and
   workers always run as the daemon user.
 - The daemon signals process **groups** for stop/timeout. Deliberately
@@ -456,7 +473,7 @@ a unique TCP port. Service mode logs to the journal.
 |---|---|
 | `data directory must be a private directory` | `chmod 700` the data dir (or recreate it) |
 | `data directory is locked by another daemon` | Another daemon owns it; stop it first |
-| Daemon won't start with alert channels | A `bot_token` reference could not be resolved (unset env var / unreadable file) — fix the reference or disable the channel |
+| Daemon won't start after alert-channel change | Remove unsupported `[[alert_channel]]` blocks; create channels via UI/API. Fix missing channel references in definitions before startup |
 | `non-loopback plaintext HTTP requires allow_insecure_remote=true` | Intentional; bind loopback or set the opt-in behind TLS |
 | Web UI 401 | Wrong/rotated token — rotate again or re-check `initial-token` |
 | Runs recorded as `interrupted` | Daemon was killed; recovery marks unobservable active runs `interrupted` at boot |

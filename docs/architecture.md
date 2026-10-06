@@ -111,11 +111,21 @@ explicit import/export format only (previewed, hash-checked, idempotent by
 name). There is no watched config file for definitions — this removes an
 entire class of drift problems (ADR-5).
 
+## Alert channels
+
+SQLite owns alert settings and literal provider credentials; bootstrap TOML no
+longer accepts channels. Startup and UI/API mutations load the full registry
+into memory (at most 100 channels). Delivery performs no per-alert DB lookup or
+config polling. Registry swaps leave queued batches on their original immutable
+transport. API responses/audits redact credentials; metadata backups contain
+secrets. Optional reference removal and channel deletion are one transaction.
+See [ADR-13](adr/0013-database-alert-channels.md).
+
 ## Storage
 
 Two SQLite databases, never merged:
 
-- `minicron.db` — definitions, runs, audit. Schema-versioned; binaries
+- `minicron.db` — definitions, alert-channel settings and credentials, runs, audit. Schema-versioned; binaries
   refuse newer schemas.
 - `minicron-logs.db` — the long-term log archive with a rolling age budget
   (`logs.db_keep_for`) and optional size budget (`logs.db_max_size`), pruned
@@ -155,6 +165,7 @@ authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
 - [ADR-6: hybrid log storage](adr/0006-hybrid-log-storage.md) — file
   buffer + separate SQLite archive
 - [ADR-7: Unix-only and proxy UI](adr/0007-unix-only-and-proxy-ui.md) — optional local transport and browser authentication
+- [ADR-13: database alert channels](adr/0013-database-alert-channels.md) — channel ownership, credential storage and deletion semantics
 - [`specs/`](../specs/) — pre-implementation design drafts and the decision
   log (drafts yield to ADRs and these docs where they conflict)
 - [`releases/`](releases/) — release notes with the v0.1 acceptance tables

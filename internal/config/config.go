@@ -24,17 +24,16 @@ import (
 )
 
 type Config struct {
-	Server        Server             `toml:"server" json:"server"`
-	Scheduler     Scheduler          `toml:"scheduler" json:"scheduler"`
-	Queue         Queue              `toml:"queue" json:"queue"`
-	Storage       Storage            `toml:"storage" json:"storage"`
-	Logs          Logs               `toml:"logs" json:"logs"`
-	Reads         Reads              `toml:"reads" json:"reads"`
-	Defaults      model.Definition   `toml:"defaults" json:"-"`
-	AlertChannels []AlertChannel     `toml:"alert_channel" json:"alert_channels,omitempty"`
-	Init          []model.Definition `toml:"init" json:"-"`
-	Jobs          []model.Definition `toml:"job" json:"-"`
-	Workers       []model.Definition `toml:"worker" json:"-"`
+	Server    Server             `toml:"server" json:"server"`
+	Scheduler Scheduler          `toml:"scheduler" json:"scheduler"`
+	Queue     Queue              `toml:"queue" json:"queue"`
+	Storage   Storage            `toml:"storage" json:"storage"`
+	Logs      Logs               `toml:"logs" json:"logs"`
+	Reads     Reads              `toml:"reads" json:"reads"`
+	Defaults  model.Definition   `toml:"defaults" json:"-"`
+	Init      []model.Definition `toml:"init" json:"-"`
+	Jobs      []model.Definition `toml:"job" json:"-"`
+	Workers   []model.Definition `toml:"worker" json:"-"`
 }
 
 type Server struct {
@@ -85,16 +84,6 @@ type Storage struct {
 	// but can lose the last commits on power loss.
 	Synchronous string `toml:"synchronous" json:"synchronous"`
 }
-type AlertChannel struct {
-	Name                string `toml:"name" json:"name"`
-	Type                string `toml:"type" json:"type"`
-	BotToken            string `toml:"bot_token" json:"-"`
-	ChatID              string `toml:"chat_id" json:"chat_id"`
-	DisableNotification bool   `toml:"disable_notification" json:"disable_notification"`
-	// BatchWindow is measured in seconds.
-	BatchWindow int `toml:"batch_window" json:"batch_window"`
-}
-
 type Logs struct {
 	Backend string `toml:"backend" json:"backend"`
 	// MaxLine is measured in KiB.
@@ -649,36 +638,6 @@ func validateConfig(c *Config) error {
 	applyDefinitionDefaults(&probe, c.Defaults, explicit{})
 	if err := validateDefinitions([]model.Definition{probe}, c.Scheduler.Timezone); err != nil {
 		return fmt.Errorf("defaults: %w", err)
-	}
-	channels := make(map[string]bool, len(c.AlertChannels))
-	for i := range c.AlertChannels {
-		channel := &c.AlertChannels[i]
-		if !namePattern.MatchString(channel.Name) {
-			return fmt.Errorf("alert_channel: invalid name %q", channel.Name)
-		}
-		if channels[channel.Name] {
-			return fmt.Errorf("duplicate alert channel %q", channel.Name)
-		}
-		channels[channel.Name] = true
-		if channel.Type != "telegram" {
-			return fmt.Errorf("alert channel %q: unsupported type %q", channel.Name, channel.Type)
-		}
-		if channel.BatchWindow == 0 {
-			channel.BatchWindow = 10
-		}
-		if channel.BatchWindow < 1 || channel.BatchWindow > 3600 {
-			return fmt.Errorf("alert channel %q: batch_window must be between 1 and 3600 seconds", channel.Name)
-		}
-		if channel.ChatID == "" {
-			return fmt.Errorf("alert channel %q: chat_id is required", channel.Name)
-		}
-		if name, ok := strings.CutPrefix(channel.BotToken, "env:"); ok {
-			if name == "" {
-				return fmt.Errorf("alert channel %q: bot_token env name is required", channel.Name)
-			}
-		} else if path, ok := strings.CutPrefix(channel.BotToken, "file:"); !ok || !filepath.IsAbs(path) {
-			return fmt.Errorf("alert channel %q: bot_token must be env:NAME or file:/absolute/path", channel.Name)
-		}
 	}
 	return nil
 }

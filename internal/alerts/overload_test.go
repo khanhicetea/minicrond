@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
@@ -20,8 +19,7 @@ func TestNotifyOverloadDoesNotWaitForDropRecording(t *testing.T) {
 	var mu sync.Mutex
 	dropped := 0
 	seen := map[string]bool{}
-	t.Setenv("BOT_TOKEN", "test")
-	channels := []config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}
+	channels := []model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 3600}}
 	d, err := New(channels, func(ctx context.Context, records []Record) error {
 		select {
 		case started <- struct{}{}:

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearch } from 'wouter';
 import { Icon, type IconName } from '../components/Icon';
+import { AlertChannelsPanel } from '../components/AlertChannelsPanel';
 import { PageHeader } from '../components/Layout';
 import { api, errorText } from '../api';
 import { auth, useAuthState } from '../auth';
@@ -39,8 +40,9 @@ function useDiagnostics() {
 /** Settings & diagnostics + Export / Import tabs. */
 export default function Settings() {
   const { mode } = useAuthState();
-  const initialTab = new URLSearchParams(useSearch()).get('tab') === 'import' ? 'import' : 'main';
-  const [tab, setTab] = useState<'main' | 'import'>(initialTab);
+  const requestedTab = new URLSearchParams(useSearch()).get('tab');
+  const initialTab = requestedTab === 'import' ? 'import' : requestedTab === 'alerts' ? 'alerts' : 'main';
+  const [tab, setTab] = useState<'main' | 'import' | 'alerts'>(initialTab);
   useEffect(() => setTab(initialTab), [initialTab]);
 
   const { daemon, definitions, checks } = useDiagnostics();
@@ -114,8 +116,11 @@ export default function Settings() {
         <button type="button" className={`tab-line ${tab === 'import' ? 'active' : ''}`} onClick={() => setTab('import')}>
           Export / Import
         </button>
+        <button type="button" className={`tab-line ${tab === 'alerts' ? 'active' : ''}`} onClick={() => setTab('alerts')}>
+          Alert channels
+        </button>
       </div>
-      {tab === 'main' ? <MainTab /> : <ImportTab />}
+      {tab === 'main' ? <MainTab /> : tab === 'alerts' ? <AlertChannelsPanel /> : <ImportTab />}
     </div>
   );
 }

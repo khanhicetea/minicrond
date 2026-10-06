@@ -245,12 +245,6 @@
     "defaults": {
       "$ref": "#/$defs/job_defaults"
     },
-    "alert_channel": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/alert_channel"
-      }
-    },
     "init": {
       "type": "array",
       "description": "Ordered startup tasks; each must succeed before the daemon serves requests",
@@ -388,44 +382,6 @@
           }
         }
       }
-    },
-    "alert_channel": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_.-]{0,99}$"
-        },
-        "type": {
-          "const": "telegram"
-        },
-        "bot_token": {
-          "type": "string",
-          "pattern": "^(env:[^:]+|file:/)"
-        },
-        "chat_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "disable_notification": {
-          "type": "boolean",
-          "default": false
-        },
-        "batch_window": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 3600,
-          "default": 10,
-          "description": "Batch window from first alert in seconds"
-        }
-      },
-      "required": [
-        "name",
-        "type",
-        "bot_token",
-        "chat_id"
-      ]
     },
     "init": {
       "type": "object",

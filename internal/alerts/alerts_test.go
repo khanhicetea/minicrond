@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
@@ -23,8 +22,7 @@ func (c *captureChannel) Send(_ context.Context, alert Alert) error {
 }
 
 func TestBatchFlushesOnClose(t *testing.T) {
-	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, nil)
+	d, err := New([]model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 3600}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +50,7 @@ func TestBatchFlushesOnClose(t *testing.T) {
 }
 
 func TestBatchWindowSendsWithoutClose(t *testing.T) {
-	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 1}}, nil)
+	d, err := New([]model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 1}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +71,7 @@ func TestBatchWindowSendsWithoutClose(t *testing.T) {
 }
 
 func TestBatchReloadFlushesPreviousChannel(t *testing.T) {
-	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, nil)
+	d, err := New([]model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 3600}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

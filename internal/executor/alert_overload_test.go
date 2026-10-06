@@ -10,8 +10,9 @@ import (
 )
 
 // A16: a stalled alert recording callback must not keep a finished run's
-// capacity slot occupied. The definition references a channel that does not
-// exist, which used to write the drop observation synchronously.
+// capacity slot occupied. The stored channel is absent from the dispatcher's
+// live registry (as with an in-flight definition after deletion), which used
+// to write the drop observation synchronously.
 func TestAlertDropRecordingDoesNotHoldCapacity(t *testing.T) {
 	release := make(chan struct{})
 	dispatcher, err := alerts.New(nil, func(ctx context.Context, _ []alerts.Record) error {
@@ -31,6 +32,9 @@ func TestAlertDropRecordingDoesNotHoldCapacity(t *testing.T) {
 		_ = dispatcher.Close(ctx)
 	})
 	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1, OnFinished: dispatcher.Notify})
+	if err := st.PutAlertChannel(t.Context(), model.AlertChannel{Name: "missing", Type: "telegram", BotToken: "123:test", ChatID: "123"}, "test"); err != nil {
+		t.Fatal(err)
+	}
 	d, hash := putJob(t, st, model.Definition{Name: "alerting", Kind: model.KindJob, Command: "exit 1", Shell: "/bin/sh", OnOverlap: "parallel", SuccessCodes: []int{0}, Alerts: []string{"missing"}})
 	for i := range 3 {
 		run, err := s.Trigger(t.Context(), d, hash, "manual", nil)

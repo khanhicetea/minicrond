@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -175,6 +175,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 10: %w", err)
 		}
 	}
+	if version <= 10 {
+		if _, err := s.db.ExecContext(ctx, migration11); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -219,7 +224,7 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-` + execQueueDDL + resourceUsageDDL + `PRAGMA user_version=10;
+` + execQueueDDL + resourceUsageDDL + alertChannelsDDL + `PRAGMA user_version=11;
 COMMIT;`
 
 // Nullable counters distinguish unavailable accounting from measured zero.
@@ -393,6 +398,9 @@ func (s *Store) ImportDefinitions(ctx context.Context, defs []model.Definition, 
 	defer tx.Rollback()
 	now := time.Now().UnixMicro()
 	for _, d := range defs {
+		if err := validateAlertReferencesTx(ctx, tx, d); err != nil {
+			return err
+		}
 		d.Source = ""
 		b, hash, err := config.Canonical(d)
 		if err != nil {
@@ -445,6 +453,9 @@ func (s *Store) SyncConfigDefinitions(ctx context.Context, defs []model.Definiti
 	now := time.Now().UnixMicro()
 	seen := make(map[string]bool, len(defs))
 	for _, d := range defs {
+		if err := validateAlertReferencesTx(ctx, tx, d); err != nil {
+			return err
+		}
 		seen[d.Name] = true
 		d.Source = "config"
 		b, hash, err := config.Canonical(d)
@@ -601,6 +612,9 @@ func (s *Store) putDefinition(ctx context.Context, d model.Definition, expected 
 		return d, err
 	}
 	defer tx.Rollback()
+	if err := validateAlertReferencesTx(ctx, tx, d); err != nil {
+		return d, err
+	}
 	now := time.Now().UnixMicro()
 	var id, rev int64
 	var before string

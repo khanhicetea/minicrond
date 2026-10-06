@@ -29,13 +29,5 @@ timeout = 20                     # maximum job runtime, seconds
 grace = 5                       # wait after stop signal before SIGKILL, seconds
 retry_delay = 10                # delay between retries, seconds
 
-# Telegram alert demo (opt-in): uncomment, set MINICROND_TELEGRAM_TOKEN in
-# .env, and restart. The hello job opts in via alerts = ["ops"]; while the
-# channel is disabled its failed runs only log an "unavailable" error.
-# The daemon refuses to start while the token reference cannot be resolved.
-[[alert_channel]]
-name = "ops"
-type = "telegram"
-bot_token = "env:MINICROND_TELEGRAM_TOKEN" # or file:/absolute/path
-chat_id = "-329047830"
-disable_notification = false
+# Telegram alerts: create a channel named ops in Settings → Alert channels,
+# then select it in the hello job editor. Channels and bot tokens live in SQLite.

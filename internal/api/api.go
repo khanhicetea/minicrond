@@ -52,24 +52,26 @@ type Server struct {
 	closing   atomic.Bool
 	// tokenHash holds the hex SHA-256 of the active bearer token; the raw
 	// token exists only at rotation time.
-	tokenHash       atomic.Pointer[string]
-	tcp             *http.Server
-	unix            *http.Server
-	idemMu          sync.Mutex
-	tokenMu         sync.Mutex
-	tcpEnabled      bool
-	basePath        string
-	streamSlots     chan struct{}
-	readMu          sync.Mutex
-	readGate        *readGate
-	readWork        time.Duration
-	metrics         metricsShare
-	monitoring      monitorShare
-	alertChannels   func() []config.AlertChannel
-	jobDefaults     func() model.Definition
-	testAlert       func(context.Context, string) error
-	alertQueueDepth func() int
-	serveErrors     chan error
+	tokenHash          atomic.Pointer[string]
+	tcp                *http.Server
+	unix               *http.Server
+	idemMu             sync.Mutex
+	tokenMu            sync.Mutex
+	tcpEnabled         bool
+	basePath           string
+	streamSlots        chan struct{}
+	readMu             sync.Mutex
+	readGate           *readGate
+	readWork           time.Duration
+	metrics            metricsShare
+	monitoring         monitorShare
+	alertChannels      func() []model.AlertChannel
+	saveAlertChannel   func(context.Context, model.AlertChannel) error
+	deleteAlertChannel func(context.Context, string, bool) error
+	jobDefaults        func() model.Definition
+	testAlert          func(context.Context, string) error
+	alertQueueDepth    func() int
+	serveErrors        chan error
 }
 
 func (s *Server) currentTokenHash() string {
@@ -210,9 +212,13 @@ func (s *Server) SetBasePath(value string) error {
 	return nil
 }
 
-// SetAlertChannels provides a redacted view of the live channel registry.
-func (s *Server) SetJobDefaults(get func() model.Definition)            { s.jobDefaults = get }
-func (s *Server) SetAlertChannels(list func() []config.AlertChannel)    { s.alertChannels = list }
+func (s *Server) SetJobDefaults(get func() model.Definition) { s.jobDefaults = get }
+
+// SetAlertChannels provides the internal live registry; handlers redact secrets.
+func (s *Server) SetAlertChannels(list func() []model.AlertChannel) { s.alertChannels = list }
+func (s *Server) SetAlertMutations(save func(context.Context, model.AlertChannel) error, remove func(context.Context, string, bool) error) {
+	s.saveAlertChannel, s.deleteAlertChannel = save, remove
+}
 func (s *Server) SetAlertTest(test func(context.Context, string) error) { s.testAlert = test }
 func (s *Server) SetAlertQueueDepth(depth func() int)                   { s.alertQueueDepth = depth }
 
@@ -516,6 +522,8 @@ func (s *Server) routes() *http.ServeMux {
 	m.HandleFunc("GET /api/v1/metrics/runs", s.runMetrics)
 	m.HandleFunc("GET /api/v1/metrics/alerts", s.alertMetrics)
 	m.HandleFunc("GET /api/v1/alert-channels", s.listAlertChannels)
+	m.HandleFunc("PUT /api/v1/alert-channels/{name}", s.putAlertChannel)
+	m.HandleFunc("DELETE /api/v1/alert-channels/{name}", s.removeAlertChannel)
 	m.HandleFunc("POST /api/v1/alert-channels/{name}/test", s.testAlertChannel)
 	m.HandleFunc("GET /api/v1/runs/{id}/alerts", s.runAlerts)
 	m.HandleFunc("GET /api/v1/runs", s.runs)
@@ -698,6 +706,8 @@ func (s *Server) putJob(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, store.ErrReadOnly):
 			writeError(w, 403, "read_only", err.Error())
+		case errors.Is(err, store.ErrUnknownAlertChannel):
+			writeError(w, 422, "validation_failed", err.Error())
 		case errors.Is(err, store.ErrRevisionConflict):
 			writeError(w, 412, "revision_conflict", err.Error())
 		default:
@@ -972,10 +982,10 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAlertChannels(w http.ResponseWriter, r *http.Request) {
-	items := make([]map[string]any, 0)
+	items := make([]model.AlertChannel, 0)
 	if s.alertChannels != nil {
 		for _, ch := range s.alertChannels() {
-			items = append(items, map[string]any{"name": ch.Name, "type": ch.Type, "batch_window": ch.BatchWindow})
+			items = append(items, ch.Redacted())
 		}
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -1472,6 +1482,10 @@ func (s *Server) importApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = s.store.ImportDefinitions(r.Context(), defs, "api:import"); err != nil {
+		if errors.Is(err, store.ErrUnknownAlertChannel) {
+			writeError(w, 422, "validation_failed", err.Error())
+			return
+		}
 		if errors.Is(err, store.ErrReadOnly) {
 			writeError(w, 403, "read_only", err.Error())
 			return

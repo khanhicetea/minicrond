@@ -4,11 +4,11 @@ minicrond has two configuration surfaces:
 
 1. **Bootstrap config** — the strict-TOML file the daemon loads at startup
    (`minicron.toml` by default). It configures the *daemon*: server,
-   scheduler, storage, logs, alert channels, job defaults, and optional
+   scheduler, storage, logs, job defaults, and optional
    config-owned `[[init]]`, `[[job]]`, and `[[worker]]` entries. Unknown fields are errors.
-2. **Registry definitions** — jobs and workers created/edited in the web UI or via the API.
-   Their source of truth is SQLite. They
-   and can be round-tripped through TOML bundles with `minicrond import` /
+2. **Registry** — jobs, workers, and alert channels created/edited in the web UI or via the API.
+   Their source of truth is SQLite. Jobs and workers
+   can be round-tripped through TOML bundles with `minicrond import` /
    `minicrond export`. Import is an explicit copy; imported files are not
    linked or watched. Config-owned definitions are mirrored into SQLite for
    scheduling and run history; the main TOML file remains authoritative for them.
@@ -69,14 +69,6 @@ work_timeout = 20              # seconds one request's read/aggregation may run 
 [defaults]
 shell = "/bin/bash"           # optional defaults for newly saved jobs
 retry_delay = 15                # seconds
-
-[[alert_channel]]
-name = "ops"                   # referenced by definitions' alerts = [...]
-type = "telegram"              # only "telegram" in v0.1
-bot_token = "env:TELEGRAM_BOT_TOKEN"  # or file:/absolute/path (never inline)
-chat_id = "-1001234567890"
-disable_notification = false   # true = silent delivery
-batch_window = 10              # group runs per channel, seconds (1..3600)
 
 [[init]]
 name = "prepare"
@@ -217,10 +209,6 @@ and `max_concurrent_runs` are unitless.
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
   the most recent commits on power loss. Requires a daemon restart.
-- `[[alert_channel]].bot_token` — must be `env:NAME` or
-  `file:/absolute/path`. The daemon resolves it at startup/reload and fails
-  to start if the reference cannot be resolved. Tokens are never stored in
-  config or the registry.
 - `[defaults]` fills omitted fields when a job is created/updated through the API
   or imported. Explicit job values take precedence; bundle `[defaults]` takes
   precedence over bootstrap `[defaults]`. Values are persisted in the registry;
@@ -340,6 +328,38 @@ an absolute `argv[0]` for executables elsewhere.
 
 ### Alerts
 
+Manage channels in **Settings → Alert channels** or with
+`PUT /api/v1/alert-channels/{name}`. SQLite stores the channel settings and
+literal Telegram `bot_token`; `env:` and `file:` references are not supported.
+`[[alert_channel]]` is no longer accepted in bootstrap TOML or bundles. There
+is no file migration: remove the old blocks and recreate channels via the UI/API.
+Existing definitions referencing missing channels must be fixed before startup.
+
+Example PUT body (name comes from the URL):
+
+```json
+{"type":"telegram","bot_token":"123456:actual-token","chat_id":"-1001234567890","disable_notification":false,"batch_window":10}
+```
+
+`batch_window` defaults to 10 seconds (1–3600); at most 100 channels are allowed.
+Names use the same 100-character lowercase name rules as definitions. Chat IDs
+and tokens are capped at 256 bytes. List/save responses and audits redact tokens;
+`has_bot_token` indicates whether a credential is saved. Omit `bot_token` or send
+an empty string on edit to retain the saved credential. Saving reloads **all**
+channels into memory, with no polling or database reads per delivery. Already
+queued alerts retain their original credentials, destination and batch window.
+
+`DELETE /api/v1/alert-channels/{name}` refuses referenced channels. The UI's
+**Also remove from job and worker definitions** checkbox sends
+`?remove_from_definitions=true`: deletion and reference removal commit atomically,
+with definition revisions/audit preserved, then scheduling is reconciled.
+Config-owned definitions must be edited in their authoritative file first;
+even with the checkbox, deletion refuses those references without partial edits.
+Definition reconciliation follows the usual worker-replacement behavior and may
+restart affected workers. Deletion does not cancel already queued alert batches.
+Channels and credentials are not included in job/worker bundle import/export.
+Protect the metadata database and its backups as secret-bearing files (ADR-13).
+
 Failed and timed-out runs are delivered asynchronously to the named
 channels; successful, skipped, and manually stopped runs never alert.
 Delivery is best-effort: each channel groups failures arriving within its
@@ -351,6 +371,6 @@ section or via `GET /api/v1/runs/{id}/alerts`; `GET /api/v1/metrics/alerts`
 reports status counts and outstanding delivery depth. Interrupted deliveries are
 marked on daemon restart; they are **not** resent. Test a channel with the
 web editor or `POST /api/v1/alert-channels/{name}/test`. Definitions must
-reference configured channel names; reload refuses to remove a referenced
-channel. Additional providers implement the alert channel interface without
+reference existing channel names; config reload validates references against
+the database-backed in-memory registry. Additional providers implement the alert channel interface without
 touching run execution.

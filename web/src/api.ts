@@ -1,6 +1,6 @@
 import { auth } from './auth';
 import { publicPath } from './lib/base';
-import type { AlertChannel, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState, MonitorSnapshot } from './types';
+import type { AlertChannel, AlertChannelInput, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState, MonitorSnapshot } from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -72,6 +72,12 @@ export const api = {
     request<{ items: Record<string, WorkerState> }>('/api/v1/workers/states', { signal }),
 
   listAlertChannels: () => request<{ items: AlertChannel[] }>('/api/v1/alert-channels'),
+
+  saveAlertChannel: (name: string, channel: AlertChannelInput) =>
+    request<AlertChannel>(`/api/v1/alert-channels/${encodeURIComponent(name)}`, { method: 'PUT', body: channel }),
+
+  deleteAlertChannel: (name: string, removeFromDefinitions: boolean) =>
+    request<{ deleted: boolean }>(`/api/v1/alert-channels/${encodeURIComponent(name)}?remove_from_definitions=${removeFromDefinitions}`, { method: 'DELETE' }),
 
   testAlertChannel: (name: string) => request<{ sent: boolean }>(`/api/v1/alert-channels/${encodeURIComponent(name)}/test`, { method: 'POST' }),
 

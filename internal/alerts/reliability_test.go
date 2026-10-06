@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
@@ -40,7 +39,6 @@ func TestChannelIdentityHandlesNestedNonComparableValues(t *testing.T) {
 
 func testDispatcher(t *testing.T, channel Channel, record func(context.Context, string, string, string, int, string) error) *Dispatcher {
 	t.Helper()
-	t.Setenv("BOT_TOKEN", "test")
 	var recordAll RecordFunc
 	if record != nil {
 		recordAll = func(ctx context.Context, records []Record) error {
@@ -52,7 +50,7 @@ func testDispatcher(t *testing.T, channel Channel, record func(context.Context, 
 			return nil
 		}
 	}
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, recordAll)
+	d, err := New([]model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 3600}}, recordAll)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,8 +224,7 @@ func TestNotifyDoesNotWaitForQueuedRecord(t *testing.T) {
 	release := make(chan struct{})
 	groups := make(chan int, 16)
 	channel := &captureChannel{messages: make(chan Alert, 1)}
-	t.Setenv("BOT_TOKEN", "test")
-	d, err := New([]config.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "env:BOT_TOKEN", ChatID: "123", BatchWindow: 3600}}, func(ctx context.Context, records []Record) error {
+	d, err := New([]model.AlertChannel{{Name: "ops", Type: "telegram", BotToken: "123:test", ChatID: "123", BatchWindow: 3600}}, func(ctx context.Context, records []Record) error {
 		if records[0].Status == "queued" {
 			groups <- len(records)
 			select {

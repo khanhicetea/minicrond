@@ -180,21 +180,11 @@ func TestLogSyncWindowDefaultsAndValidation(t *testing.T) {
 	}
 }
 
-func TestTelegramAlertChannel(t *testing.T) {
+func TestFileAlertChannelsAreRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "minicron.toml")
 	mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\n")
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.AlertChannels) != 1 || cfg.AlertChannels[0].Name != "ops" || cfg.AlertChannels[0].BatchWindow != 10 {
-		t.Fatalf("unexpected channels: %#v", cfg.AlertChannels)
-	}
-	for _, window := range []string{"-1", "3601", "'10s'"} {
-		mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\nbatch_window="+window+"\n")
-		if _, err := Load(path); err == nil {
-			t.Errorf("expected invalid batch_window %q", window)
-		}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected removed alert_channel field to be rejected")
 	}
 }
 

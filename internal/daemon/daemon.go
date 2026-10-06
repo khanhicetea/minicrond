@@ -80,19 +80,20 @@ type Daemon struct {
 	// within a budget (lockContext). It is held while waiting for scheduler and
 	// worker loops to exit, so nothing a run completion needs may require it.
 	// mu only guards short field access.
-	reloadMu sync.Mutex
-	mu       sync.Mutex
-	cfg      *config.Config
-	running  bool
-	stopping bool
-	lock     *os.File
-	store    *store.Store
-	ldb      *logdb.LogDB
-	logs     *logstore.Store
-	exec     *executor.Service
-	sched    *scheduler.Scheduler
-	super    *supervisor.Supervisor
-	api      *api.Server
+	reloadMu      sync.Mutex
+	mu            sync.Mutex
+	cfg           *config.Config
+	alertChannels []model.AlertChannel // guarded by mu; credentials stay internal
+	running       bool
+	stopping      bool
+	lock          *os.File
+	store         *store.Store
+	ldb           *logdb.LogDB
+	logs          *logstore.Store
+	exec          *executor.Service
+	sched         *scheduler.Scheduler
+	super         *supervisor.Supervisor
+	api           *api.Server
 	// alerts is read lock-free by run completion callbacks. Taking a daemon
 	// lock there would deadlock with a reload waiting for a worker to exit.
 	alerts atomic.Pointer[alerts.Dispatcher]
@@ -208,7 +209,11 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err = st.Recover(ctx); err != nil {
 		return err
 	}
-	if err := validateAlertReferences(cfg.Definitions(), cfg.AlertChannels); err != nil {
+	channels, err := st.AlertChannels(ctx)
+	if err != nil {
+		return err
+	}
+	if err := validateAlertReferences(cfg.Definitions(), channels); err != nil {
 		return err
 	}
 	if err := st.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
@@ -236,11 +241,8 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		defer d.mu.Unlock()
 		return d.cfg.Defaults
 	})
-	apiServer.SetAlertChannels(func() []config.AlertChannel {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return append([]config.AlertChannel(nil), d.cfg.AlertChannels...)
-	})
+	apiServer.SetAlertChannels(d.currentAlertChannels)
+	apiServer.SetAlertMutations(d.SaveAlertChannel, d.DeleteAlertChannel)
 	apiServer.SetAlertTest(func(ctx context.Context, name string) error {
 		dispatcher := d.alerts.Load()
 		if dispatcher == nil {
@@ -273,10 +275,10 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	if err := validateAlertReferences(defs, cfg.AlertChannels); err != nil {
+	if err := validateAlertReferences(defs, channels); err != nil {
 		return err
 	}
-	dispatcher, err := alerts.New(cfg.AlertChannels, func(ctx context.Context, records []alerts.Record) error {
+	dispatcher, err := alerts.New(channels, func(ctx context.Context, records []alerts.Record) error {
 		updates := make([]store.AlertUpdate, len(records))
 		for i, r := range records {
 			updates[i] = store.AlertUpdate{RunID: r.RunID, Channel: r.Channel, Status: r.Status, Attempts: r.Attempts, LastError: r.Reason}
@@ -287,6 +289,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return err
 	}
 	d.alerts.Store(dispatcher)
+	d.mu.Lock()
+	d.alertChannels = channels
+	d.mu.Unlock()
 	// Maintenance loops are created here so the shutdown path can cancel them
 	// first and join them last; they only start once the daemon is ready.
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
@@ -555,20 +560,11 @@ func (d *Daemon) Reload(ctx context.Context) error {
 			active = append(active, def)
 		}
 	}
-	if err := validateAlertReferences(active, cfg.AlertChannels); err != nil {
-		return err
-	}
-	// Resolve channel credentials before touching the registry, then swap
-	// in-memory state only after the definition sync has committed.
-	channels, err := alerts.Prepare(cfg.AlertChannels)
-	if err != nil {
+	if err := validateAlertReferences(active, d.currentAlertChannels()); err != nil {
 		return err
 	}
 	if err := d.store.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
 		return fmt.Errorf("sync config definitions: %w", err)
-	}
-	if err := d.alerts.Load().Apply(channels); err != nil {
-		return err
 	}
 	d.mu.Lock()
 	d.cfg = cfg
@@ -580,7 +576,7 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	return d.reconcile(ctx)
 }
 
-func validateAlertReferences(defs []model.Definition, channels []config.AlertChannel) error {
+func validateAlertReferences(defs []model.Definition, channels []model.AlertChannel) error {
 	available := make(map[string]bool, len(channels))
 	for _, channel := range channels {
 		available[channel.Name] = true

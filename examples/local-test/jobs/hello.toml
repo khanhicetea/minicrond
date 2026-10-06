@@ -12,4 +12,5 @@ command = 'exec "$EXAMPLE_DIR/scripts/hello.sh" "from config"'
 catch_up = "none"
 on_overlap = "skip"
 labels = { tier = "example" }
-alerts = ["ops"]
+# After creating the ops channel in Settings → Alert channels, opt in:
+# alerts = ["ops"]

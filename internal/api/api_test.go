@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
@@ -155,8 +154,8 @@ func TestBasePath(t *testing.T) {
 
 func TestAlertChannelsAndValidation(t *testing.T) {
 	s, token, _ := setup(t)
-	s.SetAlertChannels(func() []config.AlertChannel {
-		return []config.AlertChannel{{Name: "ops", Type: "telegram", BatchWindow: 10, BotToken: "env:SECRET"}}
+	s.SetAlertChannels(func() []model.AlertChannel {
+		return []model.AlertChannel{{Name: "ops", Type: "telegram", BatchWindow: 10, BotToken: "123:SECRET"}}
 	})
 	list := call(s, false, "GET", "/api/v1/alert-channels", token, "", nil)
 	if list.Code != 200 || strings.Contains(list.Body.String(), "SECRET") || !strings.Contains(list.Body.String(), `"batch_window":10`) {

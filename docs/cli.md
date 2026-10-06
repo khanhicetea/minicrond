@@ -109,8 +109,9 @@ minicrond import PATH
 
 `export` prints every definition as a portable bundle. `import` runs a
 server-side preview (hash-checked) and then applies; re-importing updates
-definitions by name. Workers and jobs are included; alert channels are
-daemon config and stay in the bootstrap file.
+definitions by name. Workers and jobs are included; database-backed alert
+channels and their credentials are excluded. Manage them in Settings → Alert
+channels or via the alert-channel API.
 
 ### `crontab` — migrate your user crontab
 

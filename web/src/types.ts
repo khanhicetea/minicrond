@@ -80,8 +80,13 @@ export interface WorkerState {
 export interface AlertChannel {
   name: string;
   type: string;
+  chat_id: string;
+  disable_notification: boolean;
   batch_window: number;
+  has_bot_token?: boolean;
 }
+
+export type AlertChannelInput = Omit<AlertChannel, 'name' | 'has_bot_token'> & { bot_token?: string };
 
 export interface RunAlert {
   channel: string;
