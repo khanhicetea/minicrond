@@ -65,6 +65,10 @@ func run() error {
 		return postPrint("/api/v1/daemon/reload", nil)
 	case "run":
 		return trigger(args[1:])
+	case "start", "stop", "restart", "delete":
+		return definitionAction(args[0], args[1:])
+	case "runs":
+		return recentRuns(args[1:])
 	case "logs":
 		return logs(args[1:])
 	case "export":
@@ -556,5 +560,5 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".local", "share", "minicron")
 }
 func usage() error {
-	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run logs reload import crontab export status token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")
+	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run start stop restart runs logs delete reload import crontab export status token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")
 }

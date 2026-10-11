@@ -234,6 +234,10 @@ Validate any file with `minicrond validate PATH`. The JSON Schema is
 
 ## Job and worker definitions
 
+Use `minicrond start|stop|restart WORKER` for worker lifecycle control;
+`run` remains job-only. `minicrond runs NAME [--limit N]` lists recent runs
+(default 50), and `minicrond delete NAME` deletes a job or worker definition.
+
 Jobs have a schedule and run to completion; workers are supervised
 long-running processes with restart policies. Both share the definition
 schema below.
