@@ -17,11 +17,11 @@ import (
 
 // Supervisor keeps one-instance local workers alive. A worker run that exits
 // is restarted per policy with fixed backoff; consecutive starts that never
-// reach healthy_after count toward fatal. An operator hold (Stop) suppresses
+// reach healthy_after and fail count toward fatal. An operator hold (Stop) suppresses
 // restart, including under restart = "always", until Start or a reload lifts it.
 type Supervisor struct {
 	store         *store.Store
-	exec          *executor.Service
+	exec          workerExecutor
 	lifecycle     sync.Mutex
 	mu            sync.Mutex
 	cancel        context.CancelFunc
@@ -35,6 +35,14 @@ type Supervisor struct {
 	workerDone    map[string]chan struct{}
 	workerDefs    map[string]model.Definition
 	loops         sync.WaitGroup
+}
+
+// workerExecutor is the process lifecycle surface used by supervision.
+type workerExecutor interface {
+	Trigger(context.Context, model.Definition, string, string, *time.Time) (model.Run, error)
+	Wait(string) <-chan struct{}
+	Finalizing(string) bool
+	Stop(string) error
 }
 
 type workerLoop struct {
@@ -223,7 +231,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		if d.Restart == "never" || (d.Restart == "on-failure" && current.Status == "succeeded") {
 			return
 		}
-		healthy := current.StartedAt != nil && current.EndedAt != nil && current.EndedAt.Sub(*current.StartedAt) >= healthyAfter
+		healthy := current.Status == "succeeded" || (current.StartedAt != nil && current.EndedAt != nil && current.EndedAt.Sub(*current.StartedAt) >= healthyAfter)
 		if !s.restartAfter(ctx, d, healthy) {
 			return
 		}

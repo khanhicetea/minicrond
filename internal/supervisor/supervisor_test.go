@@ -48,11 +48,11 @@ func runCount(t *testing.T, st *store.Store, name string) int {
 	return len(runs)
 }
 
-// Starts that never reach healthy_after are failed starts: after
+// Failed starts that never reach healthy_after consume the budget: after
 // max_restart_attempts consecutive ones the slot goes fatal and stays down.
 func TestWorkerGoesFatalAfterConsecutiveUnhealthyStarts(t *testing.T) {
 	st, sup := setup(t)
-	def := workerDef("flappy", "", []string{"/bin/true"}, 3600, 3)
+	def := workerDef("flappy", "", []string{"/bin/false"}, 3600, 3)
 	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
