@@ -67,7 +67,7 @@ budget = 32                    # MiB of estimated working set shared by those re
 work_timeout = 20              # seconds one request's read/aggregation may run (1..300)
 
 [defaults]
-shell = "/bin/bash"           # optional defaults for newly saved jobs
+shell = "/bin/bash"           # optional defaults for newly saved jobs/workers
 retry_delay = 15                # seconds
 
 [[init]]
@@ -209,11 +209,12 @@ and `max_concurrent_runs` are unitless.
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
   the most recent commits on power loss. Requires a daemon restart.
-- `[defaults]` fills omitted fields when a job is created/updated through the API
-  or imported. Explicit job values take precedence; bundle `[defaults]` takes
+- `[defaults]` fills omitted common fields when a job or worker is created/updated through the API
+  or imported. Explicit definition values take precedence; bundle `[defaults]` takes
   precedence over bootstrap `[defaults]`. Values are persisted in the registry;
-  changing bootstrap defaults does not change existing jobs until they are
-  saved or imported again. Worker definitions do not use bootstrap defaults.
+  changing bootstrap defaults does not retroactively change stored definitions.
+  Newly omitted fields on save/import inherit defaults; explicit stored values win.
+  Workers inherit common settings such as `env_base` and `working_dir`, not job retries.
   Zero-valued numeric fields use their defaults (as with bundle defaults).
 - `[[init]]` entries run once per daemon start, in file order, before workers
   start and before HTTP is ready. A failed init stops daemon startup. They do

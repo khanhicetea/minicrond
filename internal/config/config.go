@@ -299,7 +299,7 @@ func Load(path string) (*Config, error) {
 	}
 	for i := range cfg.Workers {
 		cfg.Workers[i].Kind, cfg.Workers[i].Source = model.KindWorker, "config"
-		applyDefinitionDefaults(&cfg.Workers[i], model.Definition{}, presenceAt(present.Workers, i))
+		applyDefinitionDefaults(&cfg.Workers[i], cfg.Defaults, presenceAt(present.Workers, i))
 	}
 	defs := cfg.Definitions()
 	if err := validateDefinitions(defs, cfg.Scheduler.Timezone); err != nil {
@@ -344,9 +344,14 @@ func ParseImport(content []byte, jobDefaults ...model.Definition) ([]model.Defin
 		definitions = append(definitions, d)
 	}
 	for _, in := range part.Workers {
-		d := in.Resolve()
+		d, ex := in.Resolve(), inputExplicit(in)
 		d.Kind = model.KindWorker
-		applyDefinitionDefaults(&d, part.Defaults, inputExplicit(in))
+		if len(jobDefaults) > 0 {
+			mergeDefinitionDefaults(&d, part.Defaults, ex)
+			applyDefinitionDefaults(&d, jobDefaults[0], ex)
+		} else {
+			applyDefinitionDefaults(&d, part.Defaults, ex)
+		}
 		definitions = append(definitions, d)
 	}
 	if err := validateDefinitions(definitions, cfg.Scheduler.Timezone); err != nil {
@@ -776,7 +781,7 @@ func ValidateDefinitionInput(in DefinitionInput, jobDefaults ...model.Definition
 func EditableInput(d model.Definition, jobDefaults ...model.Definition) DefinitionInput {
 	in := DefinitionInput{Definition: d}
 	var defaults model.Definition
-	if d.Kind == model.KindJob && len(jobDefaults) > 0 {
+	if len(jobDefaults) > 0 {
 		defaults = jobDefaults[0]
 	}
 	if d.Timeout != 0 || defaults.Timeout != 0 {
@@ -796,7 +801,7 @@ func validateDefinition(d *model.Definition, ex explicit, jobDefaults []model.De
 	cfg := Config{Scheduler: Scheduler{Timezone: "UTC"}, Logs: Logs{Backend: "file"}}
 	applyConfigDefaults(&cfg)
 	defaults := model.Definition{}
-	if d.Kind == model.KindJob && len(jobDefaults) > 0 {
+	if len(jobDefaults) > 0 {
 		defaults = jobDefaults[0]
 	}
 	applyDefinitionDefaults(d, defaults, ex)

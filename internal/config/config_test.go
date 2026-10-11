@@ -81,8 +81,8 @@ func TestLoadJobDefaults(t *testing.T) {
 	if err := ValidateDefinition(&worker, cfg.Defaults); err != nil {
 		t.Fatal(err)
 	}
-	if worker.Shell != "/bin/sh" || worker.Retries != 0 {
-		t.Fatalf("worker got job defaults: %#v", worker)
+	if worker.Shell != "/bin/bash" || worker.Retries != 0 || worker.RetryDelay != 0 {
+		t.Fatalf("worker common defaults/retry isolation incorrect: %#v", worker)
 	}
 	for _, invalid := range []string{"[defaults]\nretries=-1", "[defaults]\ncommand='true'", "[defaults]\nunknown=1"} {
 		mustWrite(t, path, invalid)
@@ -99,7 +99,7 @@ func TestParseImportGlobalDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defs[0].Shell != "/bin/zsh" || defs[0].Grace != 40 || defs[0].RetryDelay != 15 || defs[1].Grace != 3 || defs[2].Grace != 10 {
+	if defs[0].Shell != "/bin/zsh" || defs[0].Grace != 40 || defs[0].RetryDelay != 15 || defs[1].Grace != 3 || defs[2].Grace != 40 {
 		t.Fatalf("unexpected merged defaults: %#v", defs)
 	}
 }
