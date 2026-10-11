@@ -66,6 +66,8 @@ func New(st *store.Store, ex *executor.Service) *Supervisor {
 
 func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 	d = d.Clone()
+	s.failures[d.Name] = 0
+	delete(s.holds, d.Name)
 	ctx, cancel := context.WithCancel(s.ctx)
 	s.workerCancels[d.Name] = cancel
 	s.workerDone[d.Name] = make(chan struct{})
@@ -107,7 +109,8 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 	var waits []<-chan struct{}
 	for name, cancel := range s.workerCancels {
 		want, ok := desired[name]
-		if ok && sameDefinition(s.workerDefs[name], want) {
+		if ok && sameDefinition(s.workerDefs[name], want) && !s.holds[name] {
+			s.failures[name] = 0
 			delete(desired, name)
 			continue
 		}
@@ -277,6 +280,10 @@ func (s *Supervisor) terminalRun(ctx context.Context, name, id string) (run mode
 // restartAfter accounts for both admission failures and unhealthy lifetimes.
 func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healthy bool) bool {
 	s.mu.Lock()
+	if ctx.Err() != nil {
+		s.mu.Unlock()
+		return false
+	}
 	if healthy {
 		s.failures[d.Name] = 0
 	} else {
@@ -307,7 +314,7 @@ func (s *Supervisor) stopRun(id string) {
 func sameDefinition(a, b model.Definition) bool {
 	_, ah, aerr := config.Canonical(a)
 	_, bh, berr := config.Canonical(b)
-	return aerr == nil && berr == nil && ah == bh
+	return aerr == nil && berr == nil && a.Revision == b.Revision && ah == bh
 }
 
 func (s *Supervisor) held(name string) bool { s.mu.Lock(); defer s.mu.Unlock(); return s.holds[name] }
@@ -341,7 +348,12 @@ func (s *Supervisor) StartDefinition(d model.Definition) {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) Start(name string) { s.mu.Lock(); delete(s.holds, name); s.mu.Unlock() }
+func (s *Supervisor) Start(name string) {
+	s.mu.Lock()
+	delete(s.holds, name)
+	s.failures[name] = 0
+	s.mu.Unlock()
+}
 
 // Restart stops the current lifetime and starts its replacement only after the
 // old supervisor loop and process have fully completed.

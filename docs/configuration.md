@@ -269,7 +269,7 @@ schema below.
 | `autostart` | `true` | worker | Start on daemon boot |
 | `restart` | `always` | worker | `always`, `on-failure` (non-zero exit), or `never` |
 | `restart_delay` | `5` | worker | Delay between restart attempts, in seconds |
-| `max_restart_attempts` | `5` | worker | 1..1000; supervisor gives up after this many consecutive failures |
+| `max_restart_attempts` | `5` | worker | 1..1000; supervisor gives up after this many consecutive failures. Reload, a new definition/revision, and explicit start/restart reset the counter |
 | `healthy_after` | `30` | worker | Seconds a failed worker must have run to reset the crash counter. Successful exits always reset it, even before this threshold; `restart = "always"` still applies its restart delay |
 
 Pending retry timers are in memory and are canceled on daemon shutdown; retries do not resume after a daemon crash. A retry uses the current enabled definition and retry budget. If it overlaps a running job under `on_overlap = "skip"`, it is recorded as skipped.
