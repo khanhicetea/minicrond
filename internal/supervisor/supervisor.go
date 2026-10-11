@@ -134,6 +134,11 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 	if s.closing {
 		return
 	}
+	// Reload is an explicit operator reset, including disabled/non-autostart
+	// workers which may be started manually later. Old changed loops are joined
+	// before clearing their state so they cannot restore a stale failure count.
+	clear(s.failures)
+	clear(s.holds)
 	for _, d := range desired {
 		s.launch(s.startLocked(d))
 	}
