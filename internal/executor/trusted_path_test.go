@@ -28,7 +28,7 @@ func TestConfiguredTrustedLookupDoesNotUseAmbientPATH(t *testing.T) {
 	if _, _, err := buildCommand(d, model.Run{}); err == nil {
 		t.Fatal("legacy lookup unexpectedly found sbin-only program")
 	}
-	cmd, _, err := buildCommandWithTrustedPath(d, model.Run{}, []string{"/usr/local/bin", "/usr/sbin", "/usr/bin", "/bin"})
+	cmd, _, err := buildCommandWithTrustedPath(d, model.Run{}, []string{"/usr/bin", "/usr/sbin", "/bin"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestTrustedPathEnvironmentAndStandaloneDefaults(t *testing.T) {
 	if envValue(cmd.Env, "PATH") != "/usr/bin:/bin" {
 		t.Fatal("legacy clean PATH changed")
 	}
-	paths := []string{"/usr/local/bin", "/usr/bin", "/bin"}
+	paths := []string{"/bin", "/usr/bin"}
 	cmd, _, err = buildCommandWithTrustedPath(d, model.Run{}, paths)
 	if err != nil {
 		t.Fatal(err)

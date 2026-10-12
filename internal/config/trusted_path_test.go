@@ -13,7 +13,7 @@ func TestTrustedPathBootstrapValidation(t *testing.T) {
 		valid bool
 	}{
 		{"", true},
-		{"[scheduler]\ntrusted_path=['/usr/local/bin','/usr/bin','/bin']\n", true},
+		{"[scheduler]\ntrusted_path=['/bin','/usr/bin']\n", true},
 		{"[scheduler]\ntrusted_path=[]\n", false},
 		{"[scheduler]\ntrusted_path=['bin']\n", false},
 		{"[scheduler]\ntrusted_path=['/tmp']\n", false},
@@ -30,7 +30,7 @@ func TestTrustedPathBootstrapValidation(t *testing.T) {
 		if err == nil && tt.input == "" && cfg.Scheduler.TrustedPath != nil {
 			t.Fatal("standalone lookup policy changed")
 		}
-		if err == nil && tt.input != "" && cfg.Scheduler.TrustedPath[0] != "/usr/local/bin" {
+		if err == nil && tt.input != "" && cfg.Scheduler.TrustedPath[0] != "/bin" {
 			t.Fatal("search order lost")
 		}
 	}

@@ -18,7 +18,7 @@ func TestTrustedPathRequiresRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	original := "['/usr/local/bin','/usr/bin','/bin']"
+	original := "['/bin','/usr/bin']"
 	write(original)
 	ctx, cancel := context.WithCancel(t.Context())
 	d := &Daemon{ConfigPath: path, DataDir: filepath.Join(dir, "data")}
