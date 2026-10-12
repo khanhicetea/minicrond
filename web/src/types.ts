@@ -1,6 +1,6 @@
 /** API response types; Definition and Run are generated from internal/model. */
 
-import type { Definition, Run } from './generated/model';
+import type { Definition, Run, WorkerExhaustion } from './generated/model';
 
 export { KindJob, KindWorker } from './generated/model';
 export type { Definition, Kind, Run } from './generated/model';
@@ -38,6 +38,7 @@ export interface DaemonInfo {
   capabilities: string[];
   tcp_enabled: boolean;
   token_fingerprint?: string;
+  worker_exhaustions: Record<string, WorkerExhaustion>;
 }
 
 export interface RunMetricBucket {
@@ -75,6 +76,9 @@ export interface WorkerState {
   held: boolean;
   active: boolean;
   failures: number;
+  status: 'stopped' | 'running' | 'restarting' | 'held' | 'exhausted';
+  exhaustion?: WorkerExhaustion;
+  exhaustion_pending?: boolean;
 }
 
 export interface AlertChannel {

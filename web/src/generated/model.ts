@@ -120,3 +120,18 @@ export interface Run {
   log_truncated: boolean;
   resource_usage?: ResourceUsage;
 }
+
+//////////
+// source: worker.go
+
+/**
+ * WorkerExhaustion is a supervision outcome, not an execution run status.
+ * LastRunID may be empty when admission failed before a run could be created.
+ */
+export interface WorkerExhaustion {
+  reason: string;
+  last_run_id?: string;
+  attempts: number /* int */;
+  revision: number /* int64 */;
+  at: string;
+}

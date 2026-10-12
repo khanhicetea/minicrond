@@ -134,7 +134,8 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; script-src
 
 type jobListItem struct {
 	model.Definition
-	NextFireAt *time.Time `json:"next_fire_at,omitzero"`
+	NextFireAt  *time.Time        `json:"next_fire_at,omitzero"`
+	WorkerState *supervisor.State `json:"worker_state,omitempty"`
 }
 
 type peerListener struct {
@@ -575,6 +576,12 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		diagnostics["pending_retries"] = map[string]any{"count": pending.PendingRetries, "max": pending.MaxPendingRetries, "dropped": pending.RetriesDropped}
 		diagnostics["finalizers"] = map[string]any{"background": pending.Finalizers, "inline": pending.InlineFinalizers, "max": pending.MaxFinalizers}
 	}
+	exhaustions, err := s.store.WorkerExhaustions(r.Context())
+	if err != nil {
+		internal(w, r, err)
+		return
+	}
+	info["worker_exhaustions"] = exhaustions
 	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)
 }
@@ -603,9 +610,23 @@ func (s *Server) jobs(w http.ResponseWriter, r *http.Request) {
 		internal(w, r, err)
 		return
 	}
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		if d.Kind == model.KindWorker {
+			names = append(names, d.Name)
+		}
+	}
+	states, err := s.super.ReadStates(r.Context(), names)
+	if err != nil {
+		internal(w, r, err)
+		return
+	}
 	items := make([]jobListItem, 0, len(defs))
 	for _, d := range defs {
 		item := jobListItem{Definition: d}
+		if state, ok := states[d.Name]; ok {
+			item.WorkerState = &state
+		}
 		if next, ok := nextByDefinition[d.ID]; ok && d.Kind == model.KindJob && d.IsEnabled() && d.Schedule != "" {
 			item.NextFireAt = &next
 		}
@@ -625,7 +646,12 @@ func (s *Server) workerStates(w http.ResponseWriter, r *http.Request) {
 			names = append(names, d.Name)
 		}
 	}
-	writeJSON(w, 200, map[string]any{"items": s.super.States(names)})
+	states, err := s.super.ReadStates(r.Context(), names)
+	if err != nil {
+		internal(w, r, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": states})
 }
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 	d, hash, err := s.store.ReadDefinition(r.Context(), r.PathValue("name"))
@@ -650,7 +676,12 @@ func (s *Server) job(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if d.Kind == model.KindWorker {
-		response["worker_state"] = s.super.State(d.Name)
+		states, err := s.super.ReadStates(r.Context(), []string{d.Name})
+		if err != nil {
+			internal(w, r, err)
+			return
+		}
+		response["worker_state"] = states[d.Name]
 	}
 	writeJSON(w, 200, response)
 }
@@ -940,7 +971,10 @@ func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "read_only", "config-owned definition is view only")
 		return
 	}
-	s.super.StartDefinition(d)
+	if err := s.super.StartDefinition(d); err != nil {
+		internal(w, r, err)
+		return
+	}
 	writeJSON(w, 202, map[string]bool{"starting": true})
 }
 func (s *Server) workerStop(w http.ResponseWriter, r *http.Request) {
@@ -977,7 +1011,10 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "read_only", "config-owned definition is view only")
 		return
 	}
-	s.super.Restart(d)
+	if err := s.super.Restart(d); err != nil {
+		internal(w, r, err)
+		return
+	}
 	writeJSON(w, 202, map[string]bool{"restarting": true})
 }
 

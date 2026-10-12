@@ -7,6 +7,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+	"github.com/khanhicetea/minicrond/internal/model"
+	"github.com/khanhicetea/minicrond/internal/supervisor"
 )
 
 type contractRoute struct{ method, path, summary string }
@@ -52,6 +54,27 @@ func OpenAPIContract(version string) []byte {
 			}
 			if route.method == "DELETE" {
 				operation.Parameters = append(operation.Parameters, &huma.Param{Name: "remove_from_definitions", In: "query", Description: "Atomically remove registry-owned job/worker references. Config-owned references must be edited in their file first. Queued alerts keep their original channel.", Schema: &huma.Schema{Type: "boolean", Default: false}})
+			}
+		}
+		if route.method == "GET" {
+			var response *huma.Schema
+			schemas := registry.OpenAPI().Components.Schemas
+			switch route.path {
+			case "/api/v1/workers/states":
+				response = huma.SchemaFromType(schemas, reflect.TypeFor[struct {
+					Items map[string]supervisor.State `json:"items"`
+				}]())
+			case "/api/v1/jobs":
+				response = huma.SchemaFromType(schemas, reflect.TypeFor[struct {
+					Items []jobListItem `json:"items"`
+				}]())
+			case "/api/v1/jobs/{name}":
+				response = &huma.Schema{Type: "object", Properties: map[string]*huma.Schema{"worker_state": huma.SchemaFromType(schemas, reflect.TypeFor[supervisor.State]())}, AdditionalProperties: true}
+			case "/api/v1/daemon":
+				response = &huma.Schema{Type: "object", Properties: map[string]*huma.Schema{"worker_exhaustions": huma.SchemaFromType(schemas, reflect.TypeFor[map[string]model.WorkerExhaustion]())}, AdditionalProperties: true}
+			}
+			if response != nil {
+				operation.Responses = map[string]*huma.Response{"200": {Description: "Success", Content: map[string]*huma.MediaType{"application/json": {Schema: response}}}}
 			}
 		}
 		if busyRoutes[route.method+" "+route.path] {

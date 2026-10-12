@@ -234,6 +234,24 @@ Validate any file with `minicrond validate PATH`. The JSON Schema is
 
 ## Job and worker definitions
 
+Exhausted worker restart budgets are persisted separately from execution runs.
+`minicrond list`, `minicrond status` (`worker_exhaustions`), definition detail,
+and `/api/v1/workers/states` expose the reason, attempts, revision, timestamp,
+and last run ID (absent if admission failed before creating a run). The UI shows
+**Exhausted**, not just an enabled worker with no process. State queries report
+storage errors rather than pretending the worker is healthy. While storage is
+unavailable, the existing supervisor loop retries persistence with capped backoff;
+`exhaustion_pending` identifies the not-yet-durable outcome. No worker is restarted
+on that path. Start/restart and reload clear the persisted outcome before resuming;
+a failed clear rejects the operation. Daemon startup performs a reload too.
+
+An exhaustion event is sent to the worker's `alerts` channels after persistence,
+using the same bounded, best-effort batching pipeline as run failures. Its status
+is `exhausted`; this does not modify the last run's status. Delivery observations
+use `<channel>~worker_exhausted` to avoid overwriting that run's failure alert.
+If no run exists, the event is still delivered but has no per-run delivery row.
+Events are not replayed automatically after a daemon crash.
+
 Use `minicrond start|stop|restart WORKER` for worker lifecycle control;
 `run` remains job-only. `minicrond runs NAME [--limit N]` lists recent runs
 (default 50), and `minicrond delete NAME` deletes a job or worker definition.

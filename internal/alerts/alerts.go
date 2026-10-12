@@ -154,7 +154,7 @@ func (d *Dispatcher) Apply(registry *Registry) error {
 // so it never touches the database: dropped alerts are noted in a bounded,
 // coalesced list that the batch goroutine records later.
 func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
-	if run.Status != "failed" && run.Status != "timeout" {
+	if run.Status != "failed" && run.Status != "timeout" && run.Status != "exhausted" {
 		return
 	}
 	d.mu.RLock()
@@ -164,8 +164,9 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	}
 	for _, name := range definition.Alerts {
 		channel := d.channels[name]
+		recordName := deliveryRecordName(name, run)
 		if channel == nil {
-			d.observeDrop(run.ID, name, "alert channel is unavailable")
+			d.observeDrop(run.ID, recordName, "alert channel is unavailable")
 			continue
 		}
 		d.pending.Add(1)
@@ -173,9 +174,23 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 		case d.queue <- delivery{channel: channel, alert: Alert{Run: run.Clone()}, name: name, window: d.windows[name]}:
 		default:
 			d.pending.Add(-1)
-			d.observeDrop(run.ID, name, "alert queue is full")
+			d.observeDrop(run.ID, recordName, "alert queue is full")
 		}
 	}
+}
+
+// NotifyExhausted queues a supervision event through the same bounded alert
+// pipeline. The run-shaped payload is transport-only: it never changes a run's
+// actual status. Separate delivery keys preserve the last run's failure alert.
+func (d *Dispatcher) NotifyExhausted(definition model.Definition, outcome model.WorkerExhaustion) {
+	d.Notify(model.Run{ID: outcome.LastRunID, Job: definition.Name, Kind: model.KindWorker, Status: "exhausted", EndReason: outcome.Reason, EndedAt: &outcome.At}, definition)
+}
+
+func deliveryRecordName(name string, run model.Run) string {
+	if run.Status == "exhausted" {
+		return name + "~worker_exhausted"
+	}
+	return name
 }
 
 // observeDrop notes a shed alert without I/O or blocking. The list keeps the
@@ -216,6 +231,19 @@ func (d *Dispatcher) flushDrops() {
 
 // reportAll records a group of observations in one call.
 func (d *Dispatcher) reportAll(records []Record) {
+	// Admission may fail before a run exists. Deliver the event anyway, but
+	// do not invent a run or violate alert_deliveries' run foreign key.
+	persistable := records[:0]
+	for _, record := range records {
+		if record.RunID == "" {
+			if record.Status == "dropped" || record.Status == "failed" {
+				slog.Warn("worker event alert delivery failed", "channel", record.Channel, "status", record.Status, "reason", record.Reason)
+			}
+			continue
+		}
+		persistable = append(persistable, record)
+	}
+	records = persistable
 	if d.record == nil || len(records) == 0 || d.ctx.Err() != nil {
 		return
 	}
@@ -230,7 +258,7 @@ func (d *Dispatcher) reportAll(records []Record) {
 func statusRecords(batch []delivery, status string, attempts int, reason string) []Record {
 	records := make([]Record, len(batch))
 	for i, item := range batch {
-		records[i] = Record{RunID: item.alert.Run.ID, Channel: item.name, Status: status, Attempts: attempts, Reason: reason}
+		records[i] = Record{RunID: item.alert.Run.ID, Channel: deliveryRecordName(item.name, item.alert.Run), Status: status, Attempts: attempts, Reason: reason}
 	}
 	return records
 }

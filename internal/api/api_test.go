@@ -292,7 +292,7 @@ func TestWorkerStatesOnlyIncludesWorkerDefinitions(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Items) != 1 || response.Items["worker-one"] != (supervisor.State{}) {
+	if len(response.Items) != 1 || response.Items["worker-one"] != (supervisor.State{Status: "stopped"}) {
 		t.Fatalf("unexpected worker states: %+v", response.Items)
 	}
 }

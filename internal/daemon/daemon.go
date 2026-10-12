@@ -225,7 +225,11 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		slog.Error("orphaned log sweep failed", "error", err)
 	}
 	sched := scheduler.New(st, execService)
-	super := supervisor.New(st, execService)
+	super := supervisor.New(st, execService, func(definition model.Definition, outcome model.WorkerExhaustion) {
+		if dispatcher := d.alerts.Load(); dispatcher != nil {
+			dispatcher.NotifyExhausted(definition, outcome)
+		}
+	})
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
 	if err := apiServer.SetBasePath(os.Getenv("BASE_PATH")); err != nil {
 		return err
@@ -350,7 +354,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err := sched.Reload(ctx, defs); err != nil {
 		return err
 	}
-	super.Reload(defs)
+	if err := super.Reload(defs); err != nil {
+		return err
+	}
 	socket := ""
 	if cfg.Server.UnixOn() {
 		socket = filepath.Join(d.DataDir, "minicron.sock")
@@ -625,7 +631,9 @@ func (d *Daemon) reconcile(ctx context.Context) error {
 	if err := d.sched.Reload(ctx, defs); err != nil {
 		return err
 	}
-	d.super.Reload(defs)
+	if err := d.super.Reload(defs); err != nil {
+		return err
+	}
 	return nil
 }
 func (d *Daemon) retentionLoop(ctx context.Context) {

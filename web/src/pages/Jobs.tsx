@@ -11,7 +11,8 @@ import { definitionToToml } from '../lib/toml';
 import { formatCountdown, formatDayTime, formatSpan } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
-import type { Definition, Run } from '../types';
+import type { Definition, Run, WorkerState } from '../types';
+import { workerStatusLabel } from '../lib/worker-state';
 
 type FilterKey = 'all' | 'jobs' | 'workers' | 'enabled' | 'attention' | 'disabled';
 type SortKey = 'name' | 'schedule' | 'next' | 'last';
@@ -314,7 +315,7 @@ function Row({
 }: {
   definition: Definition;
   lastRun?: Run;
-  workerState?: { held: boolean; active: boolean; failures: number };
+  workerState?: WorkerState;
   now: number;
   busy: boolean;
   onTrigger: () => void;
@@ -344,7 +345,7 @@ function Row({
     ? { text: 'Disabled', dot: 'dot-gray' }
     : isWorker
       ? attention
-        ? { text: workerState?.held ? 'On hold' : 'Needs attention', dot: 'dot-amber' }
+        ? { text: workerState ? workerStatusLabel(workerState) : 'Needs attention', dot: 'dot-amber' }
         : workerState?.active
           ? { text: 'Healthy', dot: 'dot-green' }
           : { text: 'Stopped', dot: 'dot-gray' }
@@ -428,8 +429,12 @@ function Row({
             <div>
               <span className="num">{workerState.active ? '1 / 1' : '0 / 1'}</span>
               <div className={`mt-0.5 text-xs ${workerState.failures > 0 ? 'text-red-400' : workerState.active ? 'text-green-400' : 'muted'}`}>
-                {workerState.failures > 0 ? `${workerState.failures} fatal` : workerState.active ? 'Healthy' : 'Stopped'}
+                {workerStatusLabel(workerState)}
               </div>
+              {workerState.exhaustion && <div className="mt-1 max-w-xs text-xs text-red-400">
+                <div>{workerState.exhaustion.reason}</div>
+                {workerState.exhaustion.last_run_id && <Link href={`/runs/${encodeURIComponent(workerState.exhaustion.last_run_id)}`} className="text-sky-300 hover:underline">Last run</Link>}
+              </div>}
             </div>
           ) : (
             <span className="faint">—</span>

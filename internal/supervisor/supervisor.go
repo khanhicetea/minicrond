@@ -20,9 +20,16 @@ import (
 // reach healthy_after and fail count toward fatal. An operator hold (Stop) suppresses
 // restart, including under restart = "always", until Start or a reload lifts it.
 type Supervisor struct {
-	store         *store.Store
-	exec          workerExecutor
-	lifecycle     sync.Mutex
+	store     *store.Store
+	exec      workerExecutor
+	lifecycle sync.Mutex
+	// stateMu orders durable exhaustion writes against operator resets. It is
+	// never held with mu during I/O, and Stop/Shutdown never acquire it.
+	stateMu       sync.Mutex
+	epochs        map[string]uint64
+	exhausted     map[string]model.WorkerExhaustion
+	pending       map[string]bool
+	onExhausted   func(model.Definition, model.WorkerExhaustion)
 	mu            sync.Mutex
 	cancel        context.CancelFunc
 	ctx           context.Context
@@ -50,9 +57,17 @@ type workerLoop struct {
 	def model.Definition
 }
 
-func New(st *store.Store, ex *executor.Service) *Supervisor {
+func New(st *store.Store, ex *executor.Service, onExhausted ...func(model.Definition, model.WorkerExhaustion)) *Supervisor {
+	var notify func(model.Definition, model.WorkerExhaustion)
+	if len(onExhausted) > 0 {
+		notify = onExhausted[0]
+	}
 	return &Supervisor{
 		store:         st,
+		epochs:        make(map[string]uint64),
+		exhausted:     make(map[string]model.WorkerExhaustion),
+		pending:       make(map[string]bool),
+		onExhausted:   notify,
 		exec:          ex,
 		stopped:       make(chan struct{}),
 		holds:         make(map[string]bool),
@@ -89,7 +104,7 @@ func (s *Supervisor) launch(worker workerLoop) {
 	})
 }
 
-func (s *Supervisor) Reload(defs []model.Definition) {
+func (s *Supervisor) Reload(defs []model.Definition) error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
 	desired := make(map[string]model.Definition)
@@ -101,16 +116,20 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		return
+		return executor.ErrShutdown
 	}
 	if s.ctx == nil {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 	}
+	s.mu.Unlock()
+	if err := s.resetExhaustion(""); err != nil {
+		return err
+	}
+	s.mu.Lock()
 	var waits []<-chan struct{}
 	for name, cancel := range s.workerCancels {
 		want, ok := desired[name]
 		if ok && sameDefinition(s.workerDefs[name], want) && !s.holds[name] {
-			s.failures[name] = 0
 			delete(desired, name)
 			continue
 		}
@@ -126,22 +145,19 @@ func (s *Supervisor) Reload(defs []model.Definition) {
 		select {
 		case <-done:
 		case <-s.stopped:
-			return
+			return executor.ErrShutdown
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
-		return
+		return executor.ErrShutdown
 	}
-	// Reload is an explicit operator reset, including disabled/non-autostart
-	// workers which may be started manually later. Old changed loops are joined
-	// before clearing their state so they cannot restore a stale failure count.
-	clear(s.failures)
 	clear(s.holds)
 	for _, d := range desired {
 		s.launch(s.startLocked(d))
 	}
+	return nil
 }
 
 func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
@@ -184,7 +200,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			// A failed log open may already have persisted a terminal run.
 			// Admission failures still consume the failed-start budget.
 			if !model.Terminal(r.Status) {
-				if d.Restart == "never" || !s.restartAfter(ctx, d, false) {
+				if d.Restart == "never" || !s.restartAfter(ctx, d, false, r.ID, "start_error: "+err.Error()) {
 					return
 				}
 				continue
@@ -228,7 +244,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			// possible when the executor was shutting down). Count it as an
 			// unhealthy lifetime instead of silently abandoning the worker.
 			slog.Error("worker run left nonterminal without a finalizer; applying restart policy as a failed lifetime", "worker", d.Name, "run", r.ID, "status", current.Status)
-			if s.held(d.Name) || d.Restart == "never" || !s.restartAfter(ctx, d, false) {
+			if s.held(d.Name) || d.Restart == "never" || !s.restartAfter(ctx, d, false, r.ID, "terminal persistence abandoned") {
 				return
 			}
 			continue
@@ -240,7 +256,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			return
 		}
 		healthy := current.Status == "succeeded" || (current.StartedAt != nil && current.EndedAt != nil && current.EndedAt.Sub(*current.StartedAt) >= healthyAfter)
-		if !s.restartAfter(ctx, d, healthy) {
+		if !s.restartAfter(ctx, d, healthy, current.ID, current.EndReason) {
 			return
 		}
 	}
@@ -283,7 +299,7 @@ func (s *Supervisor) terminalRun(ctx context.Context, name, id string) (run mode
 }
 
 // restartAfter accounts for both admission failures and unhealthy lifetimes.
-func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healthy bool) bool {
+func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healthy bool, lastRunID, reason string) bool {
 	s.mu.Lock()
 	if ctx.Err() != nil {
 		s.mu.Unlock()
@@ -295,10 +311,13 @@ func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healt
 		s.failures[d.Name]++
 	}
 	failures := s.failures[d.Name]
+	epoch := s.epochs[d.Name]
 	s.mu.Unlock()
 	if failures >= d.MaxRestartAttempts {
-		slog.Warn("worker fatal: restart attempts exhausted", "worker", d.Name, "attempts", failures)
-		return false
+		if s.persistExhaustion(ctx, d, epoch, failures, lastRunID, reason) {
+			return false
+		}
+		// An operator reset won the race with the exhaustion write.
 	}
 	timer := time.NewTimer(time.Duration(d.RestartDelay) * time.Second)
 	defer timer.Stop()
@@ -340,35 +359,47 @@ func (s *Supervisor) Stop(name string) error {
 // StartDefinition lifts a hold and, if the worker is not already running,
 // starts it immediately; a manual restart bypasses backoff and resets the
 // failure counter.
-func (s *Supervisor) StartDefinition(d model.Definition) {
+func (s *Supervisor) StartDefinition(d model.Definition) error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
+	if err := s.resetExhaustion(d.Name); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	delete(s.holds, d.Name)
 	s.failures[d.Name] = 0
-	_, reserved := s.workerCancels[d.Name]
+	cancel, reserved := s.workerCancels[d.Name]
+	if reserved && s.active[d.Name] == "" {
+		done := s.workerDone[d.Name]
+		cancel()
+		s.mu.Unlock()
+		select {
+		case <-done:
+		case <-s.stopped:
+			return executor.ErrShutdown
+		}
+		s.mu.Lock()
+		reserved = false
+	}
 	if !s.closing && s.ctx != nil && !reserved && d.Kind == model.KindWorker && d.IsEnabled() {
 		s.launch(s.startLocked(d))
 	}
 	s.mu.Unlock()
-}
-
-func (s *Supervisor) Start(name string) {
-	s.mu.Lock()
-	delete(s.holds, name)
-	s.failures[name] = 0
-	s.mu.Unlock()
+	return nil
 }
 
 // Restart stops the current lifetime and starts its replacement only after the
 // old supervisor loop and process have fully completed.
-func (s *Supervisor) Restart(d model.Definition) {
+func (s *Supervisor) Restart(d model.Definition) error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
+	if err := s.resetExhaustion(d.Name); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		return
+		return executor.ErrShutdown
 	}
 	d = d.Clone()
 	done := s.workerDone[d.Name]
@@ -383,7 +414,7 @@ func (s *Supervisor) Restart(d model.Definition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
-		return
+		return executor.ErrShutdown
 	}
 	s.loops.Go(func() {
 		if done != nil {
@@ -393,8 +424,11 @@ func (s *Supervisor) Restart(d model.Definition) {
 				return // shutdown suppresses the replacement
 			}
 		}
-		s.StartDefinition(d)
+		if err := s.StartDefinition(d); err != nil {
+			slog.Error("starting replacement worker failed", "worker", d.Name, "error", err)
+		}
 	})
+	return nil
 }
 
 // BeginShutdown stops admission and cancels supervision before the executor
@@ -442,16 +476,18 @@ func (s *Supervisor) ShutdownContext(ctx context.Context) error {
 
 // State reports operator supervision facts for one worker definition.
 type State struct {
-	Held     bool `json:"held"`
-	Active   bool `json:"active"`
-	Failures int  `json:"failures"`
+	Held              bool                    `json:"held"`
+	Active            bool                    `json:"active"`
+	Failures          int                     `json:"failures"`
+	Status            string                  `json:"status"`
+	Exhaustion        *model.WorkerExhaustion `json:"exhaustion,omitempty"`
+	ExhaustionPending bool                    `json:"exhaustion_pending,omitempty"`
 }
 
 func (s *Supervisor) State(name string) State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, active := s.active[name]
-	return State{Held: s.holds[name], Active: active, Failures: s.failures[name]}
+	return s.stateLocked(name)
 }
 
 // States takes a consistent snapshot of the requested workers under one lock.
@@ -460,8 +496,7 @@ func (s *Supervisor) States(names []string) map[string]State {
 	defer s.mu.Unlock()
 	states := make(map[string]State, len(names))
 	for _, name := range names {
-		_, active := s.active[name]
-		states[name] = State{Held: s.holds[name], Active: active, Failures: s.failures[name]}
+		states[name] = s.stateLocked(name)
 	}
 	return states
 }
