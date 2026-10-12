@@ -35,21 +35,15 @@ func (s *Supervisor) resetExhaustion(name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.epochSeq++
 	if name == "" {
-		for name := range s.epochs {
-			s.epochs[name]++
-		}
-		// Some workers have not attempted an exhaustion write yet.
-		for name := range s.failures {
-			if _, ok := s.epochs[name]; !ok {
-				s.epochs[name] = 1
-			}
-		}
+		s.epochBase = s.epochSeq
+		clear(s.epochs)
 		clear(s.failures)
 		clear(s.exhausted)
 		clear(s.pending)
 	} else {
-		s.epochs[name]++
+		s.epochs[name] = s.epochSeq
 		s.failures[name] = 0
 		delete(s.exhausted, name)
 		delete(s.pending, name)
@@ -57,9 +51,17 @@ func (s *Supervisor) resetExhaustion(name string) error {
 	return nil
 }
 
+func (s *Supervisor) epochLocked(name string) uint64 {
+	if epoch, ok := s.epochs[name]; ok {
+		return epoch
+	}
+	return s.epochBase
+}
+
 // persistExhaustion retains required state in this worker's existing loop when
 // storage fails. No process slot, supervisor mutex, or extra goroutine is held
-// during retry/backoff. Stop, reset and shutdown can interrupt it.
+// during retry/backoff. Reset and shutdown interrupt it; Stop never waits for
+// it and does not discard required evidence for an already finished process.
 func (s *Supervisor) persistExhaustion(ctx context.Context, d model.Definition, epoch uint64, attempts int, lastRunID, reason string) bool {
 	reason = fmt.Sprintf("restart attempts exhausted after %d failures: %s", attempts, reason)
 	if len(reason) > 512 {
@@ -70,7 +72,7 @@ func (s *Supervisor) persistExhaustion(ctx context.Context, d model.Definition, 
 	for {
 		s.stateMu.Lock()
 		s.mu.Lock()
-		if ctx.Err() != nil || s.holds[d.Name] || s.epochs[d.Name] != epoch {
+		if ctx.Err() != nil || s.epochLocked(d.Name) != epoch {
 			s.mu.Unlock()
 			s.stateMu.Unlock()
 			return false

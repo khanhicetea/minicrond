@@ -52,6 +52,28 @@ func TestExhaustionPersistsNotifiesAndClears(t *testing.T) {
 	}
 }
 
+func TestFailedClearPreservesExhaustion(t *testing.T) {
+	st, s := setup(t)
+	d := workerDef("clear-failure", "", []string{"/bin/false"}, 30, 3)
+	var err error
+	d, err = st.PutDefinition(t.Context(), d, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.persistExhaustion(t.Context(), d, 0, 3, "", "start_error") {
+		t.Fatal("not persisted")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartDefinition(d); err == nil {
+		t.Fatal("start accepted without durable clear")
+	}
+	if s.State(d.Name).Status != "exhausted" {
+		t.Fatal("failed clear lost evidence")
+	}
+}
+
 func TestOldExhaustionCannotUndoReset(t *testing.T) {
 	st, s := setup(t)
 	d := workerDef("fatal", "", []string{"/bin/false"}, 30, 3)

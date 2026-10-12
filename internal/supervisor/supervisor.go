@@ -27,6 +27,8 @@ type Supervisor struct {
 	// never held with mu during I/O, and Stop/Shutdown never acquire it.
 	stateMu       sync.Mutex
 	epochs        map[string]uint64
+	epochBase     uint64 // default epoch for names without an explicit reset
+	epochSeq      uint64 // unique reset tokens; full reload can discard the name map
 	exhausted     map[string]model.WorkerExhaustion
 	pending       map[string]bool
 	onExhausted   func(model.Definition, model.WorkerExhaustion)
@@ -41,6 +43,7 @@ type Supervisor struct {
 	workerCancels map[string]context.CancelFunc
 	workerDone    map[string]chan struct{}
 	workerDefs    map[string]model.Definition
+	retiring      map[string]bool // committed to leaving the loop; reload must replace it
 	loops         sync.WaitGroup
 }
 
@@ -76,6 +79,7 @@ func New(st *store.Store, ex *executor.Service, onExhausted ...func(model.Defini
 		workerCancels: make(map[string]context.CancelFunc),
 		workerDone:    make(map[string]chan struct{}),
 		workerDefs:    make(map[string]model.Definition),
+		retiring:      make(map[string]bool),
 	}
 }
 
@@ -87,6 +91,7 @@ func (s *Supervisor) startLocked(d model.Definition) workerLoop {
 	s.workerCancels[d.Name] = cancel
 	s.workerDone[d.Name] = make(chan struct{})
 	s.workerDefs[d.Name] = d
+	delete(s.retiring, d.Name)
 	return workerLoop{ctx: ctx, def: d}
 }
 
@@ -129,7 +134,7 @@ func (s *Supervisor) Reload(defs []model.Definition) error {
 	var waits []<-chan struct{}
 	for name, cancel := range s.workerCancels {
 		want, ok := desired[name]
-		if ok && sameDefinition(s.workerDefs[name], want) && !s.holds[name] {
+		if ok && sameDefinition(s.workerDefs[name], want) && !s.holds[name] && !s.retiring[name] {
 			delete(desired, name)
 			continue
 		}
@@ -175,6 +180,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		delete(s.active, d.Name)
 		delete(s.workerCancels, d.Name)
 		delete(s.workerDefs, d.Name)
+		delete(s.retiring, d.Name)
 		if done := s.workerDone[d.Name]; done != nil {
 			close(done)
 			delete(s.workerDone, d.Name)
@@ -187,11 +193,15 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 		slog.Error("supervisor: canonicalizing definition failed", "worker", d.Name, "error", err)
 		return
 	}
+	lastRunID := ""
 	for {
 		if ctx.Err() != nil || s.held(d.Name) {
 			return
 		}
 		r, err := s.exec.Trigger(ctx, d, hash, "startup", nil)
+		if r.ID != "" {
+			lastRunID = r.ID
+		}
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, executor.ErrShutdown) || s.held(d.Name) {
 				return
@@ -200,7 +210,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			// A failed log open may already have persisted a terminal run.
 			// Admission failures still consume the failed-start budget.
 			if !model.Terminal(r.Status) {
-				if d.Restart == "never" || !s.restartAfter(ctx, d, false, r.ID, "start_error: "+err.Error()) {
+				if d.Restart == "never" || !s.restartAfter(ctx, d, false, lastRunID, "start_error: "+err.Error()) {
 					return
 				}
 				continue
@@ -311,11 +321,19 @@ func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healt
 		s.failures[d.Name]++
 	}
 	failures := s.failures[d.Name]
-	epoch := s.epochs[d.Name]
+	epoch := s.epochLocked(d.Name)
 	s.mu.Unlock()
 	if failures >= d.MaxRestartAttempts {
 		if s.persistExhaustion(ctx, d, epoch, failures, lastRunID, reason) {
-			return false
+			s.mu.Lock()
+			retire := s.epochLocked(d.Name) == epoch
+			if retire {
+				s.retiring[d.Name] = true
+			}
+			s.mu.Unlock()
+			if retire {
+				return false
+			}
 		}
 		// An operator reset won the race with the exhaustion write.
 	}
@@ -365,6 +383,12 @@ func (s *Supervisor) StartDefinition(d model.Definition) error {
 	if err := s.resetExhaustion(d.Name); err != nil {
 		return err
 	}
+	return s.startDefinitionLocked(d)
+}
+
+// startDefinitionLocked starts after the caller has durably reset state and
+// acquired lifecycle. Restart's async completion must not need a second clear.
+func (s *Supervisor) startDefinitionLocked(d model.Definition) error {
 	s.mu.Lock()
 	delete(s.holds, d.Name)
 	s.failures[d.Name] = 0
@@ -416,6 +440,7 @@ func (s *Supervisor) Restart(d model.Definition) error {
 	if s.closing {
 		return executor.ErrShutdown
 	}
+	epoch := s.epochLocked(d.Name)
 	s.loops.Go(func() {
 		if done != nil {
 			select {
@@ -424,7 +449,15 @@ func (s *Supervisor) Restart(d model.Definition) error {
 				return // shutdown suppresses the replacement
 			}
 		}
-		if err := s.StartDefinition(d); err != nil {
+		s.lifecycle.Lock()
+		defer s.lifecycle.Unlock()
+		s.mu.Lock()
+		current := !s.closing && s.epochLocked(d.Name) == epoch
+		s.mu.Unlock()
+		if !current {
+			return
+		} // a newer start/reload owns this worker now
+		if err := s.startDefinitionLocked(d); err != nil {
 			slog.Error("starting replacement worker failed", "worker", d.Name, "error", err)
 		}
 	})
