@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           # Keep CI's compiler ahead of the module's Go language version.
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache: true
       - name: Test and vet
         run: |
@@ -80,7 +80,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           # Keep CI's compiler ahead of the module's Go language version.
-          go-version: "1.27.0"
+          go-version: "1.27.2"
           cache: true
       - name: Build Linux binary
         env:
