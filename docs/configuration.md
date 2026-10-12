@@ -30,6 +30,7 @@ allow_insecure_remote = false  # required true for a non-loopback bind
 [scheduler]
 timezone = "UTC"               # IANA name; default schedule timezone
 max_concurrent_runs = 32       # global gate across all definitions
+# trusted_path = ["/usr/local/bin", "/usr/bin", "/bin"] # optional; restart to change
 
 [queue]                        # durable queue for triggers that find the gate full (ADR-9; restart to change)
 enabled = true                 # false: over-capacity triggers are skipped (queue_full) as before
@@ -117,6 +118,18 @@ and `max_concurrent_runs` are unitless.
   whitespace ignored). Any other value enables embedding by omitting
   `X-Frame-Options` and CSP's `frame-ancestors` directive. Restart the daemon
   after changing it.
+- `scheduler.trusted_path` — optional ordered list of 1–32 absolute executable
+  search directories. Omission preserves `/usr/bin:/bin`; an empty list is invalid.
+  For example, `["/usr/local/bin", "/usr/bin", "/bin"]` supports official container
+  toolchains. Directories, executable files and **all traversed symlink paths and
+  ancestors** must be root-owned and not group/other writable. This conservative
+  policy also rejects user-owned read-only directories (their owner could chmod
+  them) and writable POSIX ACL masks. Root is the trusted administrator, not a
+  sandboxed job identity; non-root jobs cannot replace trusted executables.
+  Validation happens at bootstrap and again on spawn. Relative paths, missing
+  directories, colon-containing paths and unsafe symlink routes are rejected.
+  Changing this setting requires daemon restart. Explicit absolute executables
+  retain their existing semantics; `run_as` still requires a root daemon.
 - `scheduler.max_concurrent_runs` — 1..1024. When the cap is reached,
   job triggers (`schedule`, `manual`, `retry`) are queued durably, see
   `[queue]` below; `[[init]]` startup jobs are never queued. See `catch_up`
@@ -332,7 +345,8 @@ restart = "on-failure"
 ### Runtime environment of a process
 
 With `env_base = "clean"` (default) the process gets a minimal environment:
-`PATH=/usr/bin:/bin`, the definition's `TZ`, a passwd-resolved `HOME` when
+`PATH=/usr/bin:/bin` (or the configured `scheduler.trusted_path` joined with `:`),
+the definition's `TZ`, a passwd-resolved `HOME` when
 available, everything from `env`, `env_file`, and resolved `secret_env`, plus the metadata variables
 `MINICRON_JOB`, `MINICRON_RUN_ID`, `MINICRON_TRIGGER` (`schedule`,
 `manual`, `worker`), and `MINICRON_ATTEMPT`.
@@ -345,9 +359,12 @@ the daemon's working directory and no `HOME` is supplied. `~/...` in
 `working_dir` requires a known or explicitly supplied `HOME`. In this case,
 `env_base = "inherit"` does not carry the daemon's `HOME`, `USER`, or
 `LOGNAME`, which could describe a different user. Its `TZ` is set from the
-definition. Set `PATH` in `env` to include `/usr/local/bin` for shell commands;
-bare `argv` executables are resolved only in `/usr/bin` and `/bin`, so use
-an absolute `argv[0]` for executables elsewhere.
+definition. `env_base = "inherit"` preserves ambient `PATH`, and explicit `env.PATH`
+still wins. Neither influences bare `argv` executable lookup: it uses only
+`scheduler.trusted_path`, or `/usr/bin` and `/bin` when unset. Use the bootstrap
+setting above or an absolute `argv[0]` for toolchains elsewhere. This lookup policy
+is not a sandbox: shell commands and programs' own child lookups still use their
+process environment.
 
 ### Alerts
 

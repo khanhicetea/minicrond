@@ -21,6 +21,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/khanhicetea/minicrond/internal/model"
+	"github.com/khanhicetea/minicrond/internal/trustedpath"
 )
 
 type Config struct {
@@ -48,8 +49,9 @@ func (s Server) TCPOn() bool { return s.TCPEnabled == nil || *s.TCPEnabled }
 func (s Server) UnixOn() bool { return s.UnixSocket == nil || *s.UnixSocket }
 
 type Scheduler struct {
-	Timezone          string `toml:"timezone" json:"timezone"`
-	MaxConcurrentRuns int    `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
+	TrustedPath       []string `toml:"trusted_path" json:"trusted_path,omitempty"`
+	Timezone          string   `toml:"timezone" json:"timezone"`
+	MaxConcurrentRuns int      `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
 }
 
 // Queue bounds the durable execution queue and the pending-retry budget
@@ -526,6 +528,9 @@ func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition, ex 
 }
 
 func validateConfig(c *Config) error {
+	if err := trustedpath.Validate(c.Scheduler.TrustedPath); err != nil {
+		return fmt.Errorf("scheduler.trusted_path: %w", err)
+	}
 	if !c.Server.TCPOn() && !c.Server.UnixOn() {
 		return errors.New("server: tcp_enabled and unix_socket cannot both be false")
 	}

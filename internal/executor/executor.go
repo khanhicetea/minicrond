@@ -23,10 +23,14 @@ import (
 	"github.com/khanhicetea/minicrond/internal/logstore"
 	"github.com/khanhicetea/minicrond/internal/model"
 	"github.com/khanhicetea/minicrond/internal/store"
+	"github.com/khanhicetea/minicrond/internal/trustedpath"
 )
 
 // Options configures the execution service.
 type Options struct {
+	// TrustedPath optionally replaces legacy /usr/bin:/bin lookup. Paths are
+	// administrator-controlled and revalidated at spawn time.
+	TrustedPath []string
 	// MaxConcurrentRuns bounds simultaneously running jobs. Workers are not
 	// counted against this limit (they have their own capacity story).
 	MaxConcurrentRuns int
@@ -42,12 +46,13 @@ type Options struct {
 }
 
 type Service struct {
-	store      *store.Store
-	logs       *logstore.Store
-	bootID     string
-	capacity   chan struct{}
-	maxLine    int
-	onFinished func(model.Run, model.Definition)
+	store       *store.Store
+	logs        *logstore.Store
+	bootID      string
+	capacity    chan struct{}
+	maxLine     int
+	trustedPath []string
+	onFinished  func(model.Run, model.Definition)
 	// admission serializes overlap/capacity decisions between triggers. It is
 	// held across storage and log setup, so shutdown and completion must never
 	// wait for it; they use mu and closing instead. It is a one-slot semaphore
@@ -135,7 +140,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 		bootID = uuid.NewV7().String()
 	}
 	stopCtx, stopCancel := context.WithCancel(context.Background())
-	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
+	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
 	s.queue.wake = make(chan struct{}, 1)
 	s.retries.wake = make(chan struct{}, 1)
 	s.finals.wake = make(chan struct{}, 1)
@@ -425,7 +430,7 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 }
 
 func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definition, w *logstore.Writer, a *activeRun) {
-	cmd, identity, err := buildCommand(d, r)
+	cmd, identity, err := buildCommandWithTrustedPath(d, r, s.trustedPath)
 	if err != nil {
 		s.finishStartError(r, d, w, err)
 		return
@@ -733,11 +738,18 @@ func (s *Service) notifyFinished(r model.Run, d model.Definition) {
 	}
 }
 func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
+	return buildCommandWithTrustedPath(d, r, nil)
+}
+
+func buildCommandWithTrustedPath(d model.Definition, r model.Run, paths []string) (*exec.Cmd, string, error) {
 	cred, home, label, err := identity(d.RunAs)
 	if err != nil {
 		return nil, "", err
 	}
-	env, err := environment(d, home, r)
+	if err := trustedpath.Validate(paths); err != nil {
+		return nil, "", fmt.Errorf("trusted PATH: %w", err)
+	}
+	env, err := environmentWithTrustedPath(d, home, r, paths)
 	if err != nil {
 		return nil, "", err
 	}
@@ -746,7 +758,11 @@ func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
 	if len(d.Argv) > 0 {
 		program, args = d.Argv[0], d.Argv[1:]
 	}
-	program, err = trustedExecutable(program)
+	if paths != nil && !filepath.IsAbs(program) && !strings.ContainsRune(program, filepath.Separator) {
+		program, err = trustedpath.LookPath(program, paths)
+	} else {
+		program, err = trustedExecutable(program)
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -849,7 +865,15 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 	return cred, u.HomeDir, u.Username, nil
 }
 func environment(d model.Definition, home string, r model.Run) ([]string, error) {
-	env := []string{"PATH=/usr/bin:/bin", "TZ=" + d.Timezone}
+	return environmentWithTrustedPath(d, home, r, nil)
+}
+
+func environmentWithTrustedPath(d model.Definition, home string, r model.Run, paths []string) ([]string, error) {
+	path := "/usr/bin:/bin"
+	if paths != nil {
+		path = strings.Join(paths, ":")
+	}
+	env := []string{"PATH=" + path, "TZ=" + d.Timezone}
 	if home != "" {
 		env = append(env, "HOME="+home)
 	}

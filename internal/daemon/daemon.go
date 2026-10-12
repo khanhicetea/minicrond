@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,6 +190,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	}()
 	maxLine := int64(cfg.Logs.MaxLine) << 10
 	execService := executor.New(st, logs, executor.Options{
+		TrustedPath:       cfg.Scheduler.TrustedPath,
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
 		MaxLineBytes:      maxLine,
 		Queue:             queueOptions(cfg.Queue),
@@ -546,6 +548,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	if cfg.Scheduler.MaxConcurrentRuns != current.Scheduler.MaxConcurrentRuns || cfg.Logs.MaxLine != current.Logs.MaxLine {
 		return errors.New("scheduler.max_concurrent_runs and logs.max_line require daemon restart")
+	}
+	if !slices.Equal(cfg.Scheduler.TrustedPath, current.Scheduler.TrustedPath) {
+		return errors.New("scheduler.trusted_path requires daemon restart")
 	}
 	if !queueEqual(cfg.Queue, current.Queue) {
 		return errors.New("[queue] settings require daemon restart")

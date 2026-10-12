@@ -396,7 +396,10 @@ For an unprivileged numeric UID without a passwd entry, set an absolute
 `working_dir` and, if needed, `env.HOME` explicitly. Jobs inherit the actual
 daemon UID/GID; they do not inherit an ambient `HOME`, `USER`, or `LOGNAME`
 when that UID has no passwd entry. Set `env.PATH` for shell commands and
-use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`.
+use absolute `argv[0]` paths for programs outside `/usr/bin` or `/bin`, or configure
+`[scheduler] trusted_path = ["/usr/local/bin", "/usr/bin", "/bin"]` and restart.
+Configured paths and executable targets must be root-controlled and non-writable
+by non-root users, including symlink routes; they are revalidated on every spawn.
 
 ## Security model
 

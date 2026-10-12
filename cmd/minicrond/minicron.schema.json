@@ -32,6 +32,13 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "trusted_path": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "type": "string", "pattern": "^/[^:]*$", "maxLength": 4096 },
+          "description": "Optional ordered executable search directories; default remains /usr/bin:/bin. Directories, executable files and all traversed symlink paths must be root-owned and not group/other writable. Root is the trusted administrator. Revalidated at spawn; changing the list requires daemon restart."
+        },
         "timezone": {
           "type": "string",
           "default": "UTC"
