@@ -196,7 +196,7 @@ security, and troubleshooting.
 - [HTTP API](docs/http-api.md) — endpoints, auth, SSE streaming
 - [Operations runbook](docs/operations.md) — storage, backup/restore, tokens, security, systemd, troubleshooting
 - [Architecture](docs/architecture.md) — components, run lifecycle, storage design
-- [Design specs](specs/) and [ADRs](docs/adr/) — how the design was argued out
+- [ADRs](docs/adr/) — accepted design decisions and their trade-offs
 
 Machine-readable contracts, CI-verified: `schema/minicron.schema.json`
 (config; also `minicrond schema`) and `cmd/minicrond/openapi.json`.

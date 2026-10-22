@@ -2,7 +2,7 @@
 
 - Status: accepted; implemented in `b785adb..57063ba` (merged 2026-10-06; see [Implementation status](#implementation-status)). 5A is a planning profile only: no benchmark of it has been run
 - Decision source: owner selected **1B, 2A, 3A, 4B, 5A** after reviewing alternatives
-- Related: [ADR-6](0006-hybrid-log-storage.md), [ADR-9](0009-durable-execution-queue.md) (4B), [ADR-10](0010-log-disk-budget.md) (3A), [ADR-11](0011-read-admission.md) (5A-sized read limits), [audit](../../astra-audit-code.md), [agent guidance](../../AGENTS.md)
+- Related: [ADR-6](0006-hybrid-log-storage.md), [ADR-9](0009-durable-execution-queue.md) (4B), [ADR-10](0010-log-disk-budget.md) (3A), [ADR-11](0011-read-admission.md) (5A-sized read limits), [agent guidance](../../AGENTS.md)
 
 ## Context
 
@@ -90,8 +90,10 @@ large-server throughput. Accept slower burst recovery and historical reads.
 ## Implementation status
 
 The decision text above is unchanged. This section records what the merged tree
-(`57063ba`) does; the per-finding table is in the audit's
-[Implementation status](../../astra-audit-code.md#implementation-status).
+(`57063ba`) does. The audit whose finding IDs (A01–A17) appear below was
+retired from the tree once its findings were resolved; read it in git history
+(`astra-audit-code.md` at `57063ba`). [ADR-16](0016-execution-first.md) later
+changed the finalizer limits and the execution-state persistence rule.
 
 | Choice | Chosen defaults and limits | Where |
 |---|---|---|
@@ -115,7 +117,7 @@ The decision text above is unchanged. This section records what the merged tree
 4. Pending retries are in memory and lost on restart ([ADR-9](0009-durable-execution-queue.md) rejects durable retry timers for now). Queue and drop counters are process-lifetime; the `skipped` rows are the durable evidence.
 5. A04 is only partly closed: `LogDB.usedBytes` read on the writer connection, inline archival in `Store.Close`/`finalize` under `context.Background()`, an in-progress fsync cannot be interrupted (abandoned at the deadline), and the 45 s shutdown budget is a target.
 6. A09: the missed count under `catch_up=none` is a lower bound above 100,000 occurrences and is only warn-logged; no flag in the run model or API.
-7. A15/ADR-9 caps that are constants (finalizer 256/4×/2 min, archiver 4096) may need configuration if operators need them.
+7. A15/ADR-9 caps that are constants (finalizer 256/4×/2 min — since ADR-16 a single 1024 cap with no inline hold — archiver 4096) may need configuration if operators need them.
 8. Embedded web bundle (`internal/api/assets`) was not rebuilt; the UI does not render the SSE `gap` event. Run `make build-web` before release.
 9. Metadata growth (soft-deleted definitions, peak `minicron.db` size) and writer-connection metadata reads on state-feeding paths are unchanged.
 

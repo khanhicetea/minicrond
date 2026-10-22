@@ -12,13 +12,10 @@ embedded web UI. Linux is the supported platform.
 | [http-api.md](http-api.md) | HTTP API surface, auth model, SSE log streaming, OpenAPI |
 | [operations.md](operations.md) | Runbook: data layout, hybrid log storage, backup/restore, retention, tokens, security, troubleshooting |
 | [architecture.md](architecture.md) | Components, run lifecycle, storage design, design decisions |
-| [database-performance-audit.md](database-performance-audit.md) | Database reliability findings, benchmark evidence, and performance priorities |
 | [adr/](adr/) | Accepted architecture decision records, including [ADR-8](adr/0008-background-first-trade-offs.md) (background-first trade-offs and implementation status), [ADR-9](adr/0009-durable-execution-queue.md) (durable execution queue), [ADR-10](adr/0010-log-disk-budget.md) (log disk budget) and [ADR-11](adr/0011-read-admission.md) (read admission) and [ADR-16](adr/0016-execution-first.md) (execution first: runs never wait for history storage) |
 | [releases/](releases/) | Release notes and supporting acceptance tables / measurements |
 
-Design-time specifications (drafted before implementation) live in
-[`specs/`](../specs/). Where a draft conflicts with the documents here or
-with an accepted ADR, these documents and the ADRs govern.
+Older design drafts and audits were retired; they remain in git history.
 
 The machine-readable contracts are checked in and CI-verified:
 

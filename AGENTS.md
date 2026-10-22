@@ -9,7 +9,7 @@
 
 ## Owner-approved choices: 1B, 2A, 3A, 4B, 5A, 6 (execution first)
 
-Implemented as of the merged tree `57063ba` (2026-10-06), with open items. See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for scope, chosen defaults and open items, and the audit's [Implementation status](astra-audit-code.md#implementation-status) for per-finding residual gaps. The priorities below are unchanged.
+1B–5A were implemented in the merged tree `57063ba` (2026-10-06), with open items; 6 on 2026-10-22. See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for scope, chosen defaults and open items, and [ADR-16](docs/adr/0016-execution-first.md) for 6.
 
 1. **Batched log durability:** write accepted frames through to the OS/file immediately; group fsync on a roughly 1–3-second cadence with a byte limit and final sync. Preserve daemon-crash recovery. Accept recent unsynced-log loss after OS crash/power failure; storage stalls can extend that nominal window. No accepted-output buffering solely in RAM.
 2. **Continue on log-storage failure:** keep the child running and drain stdout/stderr, discarding output that cannot be stored. Report missing output/storage failures when possible via bounded observations. This does not relax timeouts. (Execution-state persistence is relaxed separately by ADR-16 below.)
@@ -54,4 +54,4 @@ For a design/performance decision, record:
 
 Use an ADR for substantial architecture/durability changes and update operational/configuration docs when contracts change. Older live-tail-oriented drafts are not a reason to optimize for constant viewers, but do not silently break public APIs or durability promises.
 
-`astra-audit-code.md` is the audit source; `astra-audit-code.html` is its visual companion. Keep findings, evidence caveats, design decisions, severity counts, and remediation order synchronized. Distinguish severity from workload-based investment order: a viewer-only OOM risk remains serious when exposed even though reader speed is secondary. The original findings and evidence describe revision `7198673`; the audit's Implementation status section says which are fixed, partially fixed, and still open.
+Past audits (`astra-audit-code.md`, `audit-claude.md`, `perf.md`, `docs/database-performance-audit.md`) and the pre-implementation `specs/` drafts were removed from the tree on 2026-10-22 because their findings were resolved or superseded; read them in git history if needed. The current sources of truth are `docs/` (including the ADRs), the checked-in schemas and the code. When auditing, distinguish severity from workload-based investment order: a viewer-only OOM risk remains serious when exposed even though reader speed is secondary.

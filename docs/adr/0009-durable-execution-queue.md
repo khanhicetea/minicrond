@@ -2,7 +2,7 @@
 
 - Status: accepted; implemented (merge of `feat/queue`, `57063ba`)
 - Implements: [ADR-8](0008-background-first-trade-offs.md) choice **4B** and audit finding **A15**
-- Related: [audit](../../astra-audit-code.md), [agent guidance](../../AGENTS.md)
+- Related: [agent guidance](../../AGENTS.md)
 
 ## Context
 
@@ -124,7 +124,9 @@ Under the admission lock the current definition is loaded by name:
   that finds no capacity is queued like any trigger (section 1); with the queue
   disabled it waits another `retry_delay`. Pending retries are in memory and are
   still lost on restart, exactly as before.
-- **Finalizers**: one finalizer goroutine owns a map of runs whose terminal write
+- **Finalizers** (*superseded by [ADR-16](0016-execution-first.md): the inline
+  hold is gone, the single cap is 1024 runs, and past it history is dropped and
+  counted instead of holding a slot*): one finalizer goroutine owns a map of runs whose terminal write
   failed (one entry per run), each with its own backoff (1 s .. 30 s) so a
   permanently failing item cannot starve the rest; three consecutive failures end a
   pass (storage down). A job joins the map while it has fewer than 256 entries.

@@ -32,9 +32,12 @@ With no arguments the binary starts the daemon (same as `daemon`).
 minicrond daemon [--config PATH] [--data-dir PATH]
 ```
 
-Starts the daemon (foreground). `SIGHUP` triggers a config reload. Takes
-the instance lock in the data directory; a second daemon against the same
-directory refuses to start.
+Starts the daemon (foreground). `SIGHUP` triggers a config reload;
+`SIGTERM`, `SIGINT` and `SIGQUIT` shut it down cleanly. Takes the instance lock
+in the data directory; a second daemon against the same directory refuses to
+start. As PID 1 (a container entrypoint) it runs a built-in init that forwards
+signals and reaps orphaned processes; `MINICROND_INIT=0` disables it. See
+[containers](operations.md#containers).
 
 ### `init` — write a bootstrap config
 
@@ -67,7 +70,19 @@ Prints every job and worker definition (JSON) with next fire time.
 minicrond status
 ```
 
-Version, schema, uptime, token fingerprint, capabilities.
+Version, schema, uptime, token fingerprint, capabilities, and diagnostics such
+as `diagnostics.run_history` (whether history writes are currently deferred
+because the metadata database is failing).
+
+### `healthcheck` — container probe
+
+```sh
+minicrond healthcheck
+```
+
+GETs `/readyz` over the Unix socket (or `MINICRON_URL`) within 3 s. Prints
+nothing on success; exits 0 when the daemon is ready, 1 otherwise. Suitable for
+Docker `HEALTHCHECK`. Readiness does not depend on the databases.
 
 ### `reload` — hot-reload bootstrap config
 

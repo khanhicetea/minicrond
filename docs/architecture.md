@@ -170,7 +170,6 @@ authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
   buffer + separate SQLite archive
 - [ADR-7: Unix-only and proxy UI](adr/0007-unix-only-and-proxy-ui.md) — optional local transport and browser authentication
 - [ADR-13: database alert channels](adr/0013-database-alert-channels.md) — channel ownership, credential storage and deletion semantics
-- [`specs/`](../specs/) — pre-implementation design drafts and the decision
-  log (drafts yield to ADRs and these docs where they conflict)
+- [ADR-16: execution first](adr/0016-execution-first.md) — runs never wait for history storage; PID 1 init
 - [`releases/`](releases/) — release notes with the v0.1 acceptance tables
   and measurements
