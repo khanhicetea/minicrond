@@ -2,9 +2,11 @@
 
 ## Data directory
 
-Default `~/.local/share/minicron` (`--data-dir` / `MINICRON_DATA` to
-change). The daemon **requires** it to be private (group/other bits zero)
-and refuses to start otherwise.
+Default `~/.local/share/minicron`, or `/var/lib/minicron` when there is no
+usable HOME (`--data-dir` / `MINICRON_DATA` to change). The daemon **requires**
+it to be private (group/other bits zero). An empty directory owned by the
+daemon's user (a fresh container volume) is tightened to 0700 at startup; any
+other non-private directory makes it refuse to start.
 
 ```
 data/
@@ -537,6 +539,8 @@ a unique TCP port. Service mode logs to the journal.
 | `non-loopback plaintext HTTP requires allow_insecure_remote=true` | Intentional; bind loopback or set the opt-in behind TLS |
 | Web UI 401 | Wrong/rotated token — rotate again or re-check `initial-token` |
 | Runs recorded as `interrupted` | Daemon was killed; recovery marks unobservable active runs `interrupted` at boot |
+| `metadata storage is failing; runs keep executing...` | The metadata database rejects writes (full/read-only volume, external lock). Jobs and workers keep running; history is written when storage recovers. Watch `diagnostics.run_history` in `minicrond status`; `dropped > 0` means some history was lost |
+| `run history not recorded ... budget is full` | Storage stayed down long enough for 1024 runs' history to wait; later history is dropped until it recovers |
 | Runs stay `queued` / end `queue_expired` | `max_concurrent_runs` stays full for longer than `queue.max_age`; raise the limit, shorten jobs, or raise `max_age` (see Execution queue) |
 | Jobs didn't fire while daemon was down | By design (`catch_up = "none"` default); use `catch_up = "latest"` to fire the most recent miss |
 

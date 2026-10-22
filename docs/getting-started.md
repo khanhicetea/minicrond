@@ -9,7 +9,7 @@ platform.
 From a checkout:
 
 ```sh
-go build -o minicrond ./cmd/minicrond
+CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond   # static binary
 ```
 
 Release binaries (`minicrond-linux-amd64`, `minicrond-linux-arm64`) with
