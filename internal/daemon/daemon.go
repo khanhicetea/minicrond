@@ -915,8 +915,8 @@ func (d *Daemon) acquireLock() error {
 	if err := os.MkdirAll(d.DataDir, 0o700); err != nil {
 		return err
 	}
-	if info, err := os.Stat(d.DataDir); err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
-		return errors.New("data directory must be a private directory")
+	if err := ensurePrivateDataDir(d.DataDir); err != nil {
+		return err
 	}
 	path := filepath.Join(d.DataDir, "minicron.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
@@ -932,6 +932,41 @@ func (d *Daemon) acquireLock() error {
 	d.lock = f
 	return nil
 }
+
+// ensurePrivateDataDir requires a directory without group/other access. A
+// fresh container volume, bind mount or tmpfs is created 0755/1777 by the
+// runtime, which used to make the daemon refuse to start; an EMPTY directory
+// owned by the daemon's user is tightened to 0700 instead. A directory that
+// already holds data is never changed: its permissions are the operator's.
+func ensurePrivateDataDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return errors.New("data directory must be a private directory")
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	refuse := fmt.Errorf("data directory %s must be a private directory (mode %#o; run chmod 700 on it, or point MINICRON_DATA at a subdirectory, which minicrond creates privately)", dir, info.Mode().Perm())
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != os.Geteuid() {
+		return refuse
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return refuse
+	}
+	for _, e := range entries {
+		if e.Name() != "lost+found" {
+			return refuse
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return errors.Join(refuse, err)
+	}
+	slog.Warn("tightened an empty data directory to mode 0700", "path", dir, "previous_mode", fmt.Sprintf("%#o", info.Mode().Perm()))
+	return nil
+}
+
 func writeLockPID(f *os.File) error {
 	if err := f.Truncate(0); err != nil {
 		return fmt.Errorf("truncate daemon lock: %w", err)

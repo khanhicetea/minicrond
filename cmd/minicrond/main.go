@@ -22,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata" // definitions may name any IANA zone; minimal images ship no zoneinfo
 
 	"github.com/khanhicetea/minicrond/internal/config"
 	"github.com/khanhicetea/minicrond/internal/daemon"
@@ -84,6 +85,8 @@ func run() error {
 		return token(args[1:])
 	case "service":
 		return runService(args[1:])
+	case "healthcheck":
+		return healthcheck()
 	case "schema":
 		return writeOutput("%s\n", configSchema)
 	case "version":
@@ -101,7 +104,9 @@ func runDaemon(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// SIGQUIT also stops cleanly: some images use it as STOPSIGNAL, and the Go
+	// default (stack dump, immediate exit) would skip shutdown entirely.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
@@ -383,6 +388,29 @@ func exportConfig(args []string) (err error) {
 	return nil
 }
 
+// healthcheck is for container HEALTHCHECK probes: GET /readyz over the
+// private Unix socket (or MINICRON_URL) within 3 s, no output on success, exit
+// status 0 when the daemon is ready and 1 otherwise. Readiness does not depend
+// on the databases, so a degraded metadata store never makes an orchestrator
+// restart a daemon that is still running jobs (ADR-16).
+func healthcheck() error {
+	req, err := http.NewRequest("GET", apiBaseURL()+"/readyz", nil)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := client().Do(req.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("daemon not reachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon not ready: HTTP %s", resp.Status)
+	}
+	return nil
+}
+
 func getPrint(path string) error            { return requestPrint("GET", path, nil) }
 func postPrint(path string, body any) error { return requestPrint("POST", path, body) }
 func requestPrint(method, path string, body any) error {
@@ -559,9 +587,15 @@ func env(k, fallback string) string {
 	return fallback
 }
 func defaultDataDir() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		// No usable HOME (common in containers): a relative path would put
+		// the data in whatever the working directory is, and in a container
+		// layer that is lost on recreate. Use the system location instead.
+		return "/var/lib/minicron"
+	}
 	return filepath.Join(home, ".local", "share", "minicron")
 }
 func usage() error {
-	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run start stop restart runs logs delete reload import crontab export status token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")
+	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run start stop restart runs logs delete reload import crontab export status healthcheck token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")
 }

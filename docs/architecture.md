@@ -65,8 +65,9 @@ Panic recovery is scoped to owned operations. An execution panic closes pipes,
 reaps the child, finalizes its logs, and attempts to persist `failed` with
 `internal_error`. Completion and alert callback panics retain stack traces;
 a completion callback failure does not prevent job retries. A failed scheduling
-or supervision loop stops and logs its stack. Maintenance panics and unexpected
-HTTP listener failures cause the daemon to shut down and return an error.
+or supervision loop stops and logs its stack. A panicking maintenance loop is
+logged and restarted with capped backoff ([ADR-16](adr/0016-execution-first.md));
+unexpected HTTP listener failures cause the daemon to shut down and return an error.
 Recovery cannot repair corrupt state or stop a callback that ignores its context.
 
 After a successful spawn, the executor attempts the `process started as …`
@@ -84,13 +85,16 @@ pipes get at most five seconds to drain. Shutdown blocks new API work and worker
 starts, cancels scheduled retries, and forces termination when its run deadline
 expires, even if the definition has a longer grace period; forced runs then get
 a short bounded join to persist their outcome before the databases close.
-Terminal persistence first retries inline for five seconds, then hands off to a
-single background finalizer (at most 256 runs; beyond that the completing run
-retries inline and keeps its concurrency slot) that keeps retrying until storage
-recovers or the daemon stops, and only then sends alerts and schedules retries. Callers must still
-verify the stored status before treating a run as terminal. Scheduling and
-worker supervision loops retry storage failures with capped backoff instead of
-stopping; an occurrence that could not be triggered is handled by `catch_up`.
+Execution comes first ([ADR-16](adr/0016-execution-first.md)): a run row,
+running transition or terminal state that the metadata database cannot take
+never prevents, kills or delays a run. The outcome is kept in memory; alerts,
+retries and worker restart decisions use it at once, and a single background
+history writer (at most 1024 runs; beyond that the run's history is dropped and
+counted) stores the row, running and terminal states in order once storage
+recovers. While storage is known to be failing, launches skip the database. The
+scheduler keeps each job's schedule position in memory, so failed
+schedule-state writes do not stop firing. API callers should still verify the
+stored status before treating a run as terminal.
 Pending retries live in one bounded scheduler (`queue.max_pending_retries`), not
 a goroutine and timer each. A job trigger (`schedule`, `manual`, `retry`) that
 finds `max_concurrent_runs` full is persisted in a bounded durable queue

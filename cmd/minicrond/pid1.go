@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // pid1ChildEnv marks the daemon started by the PID 1 init below; pid1Env set
@@ -69,8 +70,36 @@ func runPID1Init() int {
 			}
 		case <-children:
 			if code, exited := reapAll(daemonPID); exited {
+				stopLeftovers(children)
 				return code
 			}
+		}
+	}
+}
+
+// leftoverGrace is how long processes that escaped the daemon's process
+// groups (daemonized helpers) get after SIGTERM before PID 1 exits and the
+// kernel kills them.
+const leftoverGrace = 2 * time.Second
+
+// stopLeftovers asks every remaining process in the namespace to terminate and
+// reaps them for at most leftoverGrace, so they can flush their own state
+// instead of being killed outright when PID 1 exits.
+func stopLeftovers(children <-chan os.Signal) {
+	if err := syscall.Kill(-1, syscall.SIGTERM); err == syscall.ESRCH {
+		return // nothing left
+	}
+	deadline := time.NewTimer(leftoverGrace)
+	defer deadline.Stop()
+	for {
+		reapAll(-1)
+		if err := syscall.Kill(-1, 0); err == syscall.ESRCH {
+			return
+		}
+		select {
+		case <-children:
+		case <-deadline.C:
+			return
 		}
 	}
 }

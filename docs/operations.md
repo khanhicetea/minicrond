@@ -268,15 +268,17 @@ Workers and `[[init]]` jobs are never queued.
   capped by `queue.max_pending_retries`; they are still lost on restart. Beyond
   the cap a retry is dropped with evidence: an error log, the `dropped` counter
   and a `skipped` / `retry_dropped` run (attempt N+1, linked to the failed run).
-- **Terminal-state writes.** If a run's terminal write fails, one background
-  finalizer retries it, each item with its own 1s to 30s backoff (a permanently
-  failing item never starves the others; three consecutive failures pause the
-  pass). Up to 256 runs wait there. Beyond that a job retries inline for at most
-  two minutes, holding its concurrency slot (new runs are throttled instead of
-  memory growing), then is handed to the background map up to four times the
-  cap; past that it keeps holding its slot, and `diagnostics.finalizers.inline`
-  shows it. Workers always use the background map. Nothing is discarded, and
-  anything unwritten at shutdown is marked `interrupted` by recovery.
+- **History writes ([ADR-16](adr/0016-execution-first.md)).** Execution never
+  waits for the metadata database. If a run's row, running state or terminal
+  state cannot be written, the run keeps executing (alerts, retries and worker
+  restarts use the in-memory outcome) and one background history writer stores
+  the missing stages in order, each item with its own 1s to 30s backoff (a
+  permanently failing item never starves the others; three consecutive failures
+  pause the pass). Up to 1024 runs wait there; beyond that a run's history is
+  not kept (logged, counted in `diagnostics.run_history.dropped`). No
+  concurrency slot is ever held for history, so `diagnostics.finalizers.inline`
+  is always 0. History still waiting at shutdown is lost; a stored nonterminal
+  row is marked `interrupted` by recovery.
 - **Archive discovery.** The archiver keeps at most 4096 sealed run ids in memory;
   beyond that buffers stay on disk and the idle archiver sweeps the directory to
   find them (the periodic worker-flush sweep does too).
@@ -284,7 +286,8 @@ Workers and `[[init]]` jobs are never queued.
 `GET /api/v1/daemon` shows all of it under `diagnostics`: `execution_queue`
 (`depth`, `bytes`, `oldest_age_s`, limits, and `expired`, `rejected`,
 `unavailable`, `dropped` counters since the daemon started), `pending_retries`
-(`count`, `max`, `dropped`), `finalizers` (`background`, `inline`, `max`) and
+(`count`, `max`, `dropped`), `finalizers` (`background`, `inline`, `max`),
+`run_history` (`storage_degraded`, `deferred`, `dropped`, `pending`) and
 `log_archive` (`queued`, `overflow`, `overflow_total`, `sealed_runs`,
 `sealed_bytes`, computed per request from a bounded directory walk). Counters
 reset at restart; the `skipped` run records are the durable evidence. Run
@@ -344,9 +347,9 @@ the next start. A trigger that races with shutdown can be refused with
 (`start_error`) and, for API idempotency keys or scheduled occurrences, is not
 replayed.
 
-A worker whose terminal state cannot be written (storage fault) is finalized in
-the background; its restart policy is applied once that succeeds. Queued runs
-stay queued across shutdown and are not started by it.
+A worker whose terminal state cannot be written (storage fault) is restarted
+per its policy from the in-memory outcome; the state is written in the
+background. Queued runs stay queued across shutdown and are not started by it.
 
 ## Backup and restore
 
