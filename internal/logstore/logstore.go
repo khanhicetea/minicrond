@@ -54,6 +54,9 @@ var (
 
 var errWriterClosed = errors.New("log writer closed")
 
+// errNoChunk is a write to a writer without an open chunk (degraded capture).
+var errNoChunk = errors.New("log writer has no open chunk")
+
 // archiveWorkers bounds concurrent archive transfers, and so the batch memory
 // they hold, without making unrelated runs wait for one another.
 const archiveWorkers = 2
@@ -255,6 +258,26 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 	s.mu.Unlock()
 	return w, nil
 }
+
+// OpenDegraded returns a writer for a run whose log storage could not be
+// opened (cause). ADR-8 2A / ADR-16: the run still executes. The writer starts
+// in degraded capture, discarding and counting output, and recovers lazily on
+// a later line (creating the run directory then), exactly like a writer whose
+// storage failed mid-run. It is registered so Seal and readers treat it as an
+// ordinary active run.
+func (s *Store) OpenDegraded(runID, job, kind string, opt WriterOptions, cause error) *Writer {
+	lock := s.lockRun(runID, true)
+	defer s.unlockRun(runID, lock, true)
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: filepath.Join(s.root, runID), maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
+	w.mu.Lock()
+	w.enterDegraded(cause)
+	w.mu.Unlock()
+	s.mu.Lock()
+	s.writers[runID] = w
+	s.mu.Unlock()
+	return w
+}
+
 func (s *Store) Active(runID string) *Writer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1064,6 +1087,10 @@ func (w *Writer) reopenChunk() error {
 		w.file = nil
 	}
 	w.indexAbandonedChunk()
+	// A writer opened degraded may not have its directory yet.
+	if err := os.Mkdir(w.dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
 	return w.rotate()
 }
 
@@ -1099,6 +1126,10 @@ func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, 
 	}
 	if w.chunkErr != nil {
 		return false, w.chunkErr
+	}
+	if w.file == nil || w.enc == nil {
+		// No open chunk: a writer opened degraded, or a reopen that failed.
+		return false, errNoChunk
 	}
 	// Pipe truncates before calling; its flag must reach the run-level one too.
 	if flags&FlagTruncated != 0 {

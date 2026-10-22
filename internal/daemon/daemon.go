@@ -138,8 +138,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		}
 		runErr = errors.Join(runErr, st.Close())
 	}()
+	// ADR-16: startup writes that only maintain history must not keep jobs
+	// and workers from running. They are logged and the daemon continues.
 	if err := st.InterruptAlerts(ctx); err != nil {
-		return fmt.Errorf("mark interrupted alerts: %w", err)
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("marking interrupted alerts failed; continuing startup", "error", err)
 	}
 	logs, err := logstore.New(filepath.Join(d.DataDir, "logs"))
 	if err != nil {
@@ -205,21 +210,36 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Unlock()
 	recoverable, err := st.Recoverable(ctx)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("reading runs to recover failed; continuing startup", "error", err)
 	}
 	execService.CleanupRecovered(recoverable)
 	if err = st.Recover(ctx); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("marking interrupted runs failed; they stay nonterminal until a later start recovers them", "error", err)
 	}
 	channels, err := st.AlertChannels(ctx)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("reading alert channels failed; starting without alert channels", "error", err)
+		channels = nil
 	}
 	if err := validateAlertReferences(cfg.Definitions(), channels); err != nil {
 		return err
 	}
 	if err := st.SyncConfigDefinitions(ctx, cfg.Definitions()); err != nil {
-		return fmt.Errorf("sync config definitions: %w", err)
+		if ctx.Err() != nil {
+			return err
+		}
+		// Run what the registry already holds rather than nothing; the next
+		// reload or restart applies the file-owned definitions.
+		slog.Error("syncing config definitions failed; running the stored definitions", "error", fmt.Errorf("sync config definitions: %w", err))
 	}
 	// Buffers orphaned by a crash (runs that never reached Close) are swept
 	// into the archive so their pre-crash output is not lost.
@@ -268,14 +288,18 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.mu.Unlock()
 	token, err := apiServer.InitializeToken(ctx)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("initializing the API token failed; TCP API requests are refused until a token exists (the Unix socket still works)", "error", err)
 	}
 	if token != "" {
 		path := filepath.Join(d.DataDir, "initial-token")
 		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-			return fmt.Errorf("write initial token: %w", err)
+			slog.Error("writing the initial token file failed; rotate the token with the local CLI", "path", path, "error", err)
+		} else {
+			slog.Warn("initial bearer token written to restricted one-time file", "path", path)
 		}
-		slog.Warn("initial bearer token written to restricted one-time file", "path", path)
 	}
 	defs, err := st.Definitions(ctx)
 	if err != nil {
@@ -339,9 +363,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 				return ctx.Err()
 			}
 		}
-		finished, err := st.Run(ctx, run.ID)
-		if err != nil {
-			return err
+		// The in-memory outcome decides; the stored row may still be waiting
+		// for a failing database (ADR-16).
+		finished, ok := execService.TakeOutcome(run.ID)
+		if !ok {
+			if finished, err = st.Run(ctx, run.ID); err != nil {
+				return err
+			}
 		}
 		if finished.Status != "succeeded" {
 			return fmt.Errorf("init %s: run %s ended %s", init.Name, run.ID, finished.Status)
@@ -351,7 +379,10 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	// interrupted). Resume the rate-limited drain only now: [[init]] jobs are
 	// never queued and must not find every capacity slot taken by a backlog.
 	if err := execService.ResumeQueue(ctx); err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("resuming the execution queue failed; queued runs wait until the next start", "error", err)
 	}
 	if err := sched.Reload(ctx, defs); err != nil {
 		return err
@@ -370,20 +401,12 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.running = true
 	d.mu.Unlock()
 	apiServer.SetReady(true)
-	maintenanceErrors := make(chan error, 5)
 	loops := map[string]func(context.Context){"retention": d.retentionLoop, "worker log flush": d.workerFlushLoop, "log prune": d.logPruneLoop, "log disk budget": d.diskBudgetLoop}
 	if extraMaintenanceLoop != nil {
 		loops["test"] = extraMaintenanceLoop
 	}
 	for name, loop := range loops {
-		maintenance.Go(func() {
-			if err := fault.Call(func() error {
-				loop(maintenanceCtx)
-				return nil
-			}); err != nil {
-				maintenanceErrors <- fmt.Errorf("%s loop: %w", name, err)
-			}
-		})
+		maintenance.Go(func() { superviseMaintenance(maintenanceCtx, name, loop) })
 	}
 	slog.Info("minicrond ready", "tcp_enabled", cfg.Server.TCPOn(), "bind", cfg.Server.Bind, "socket", socket)
 	select {
@@ -391,8 +414,40 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		return nil
 	case err := <-apiServer.Errors():
 		return fmt.Errorf("HTTP service failed: %w", err)
-	case err := <-maintenanceErrors:
-		return err
+	}
+}
+
+// superviseMaintenance runs one maintenance loop and restarts it with capped
+// backoff when it panics. Retention, pruning and archive checkpoints are
+// housekeeping: a bug in one of them must not stop the daemon and with it
+// every job and worker (ADR-16).
+func superviseMaintenance(ctx context.Context, name string, loop func(context.Context)) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		started := time.Now()
+		err := fault.Call(func() error {
+			loop(ctx)
+			return nil
+		})
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		if time.Since(started) > 10*time.Minute {
+			backoff = time.Second
+		}
+		attrs := []any{"loop", name, "error", err, "restart_in", backoff}
+		if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {
+			attrs = append(attrs, "stack", string(panicErr.Stack))
+		}
+		slog.Error("maintenance loop failed; restarting it", attrs...)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, 5*time.Minute)
 	}
 }
 

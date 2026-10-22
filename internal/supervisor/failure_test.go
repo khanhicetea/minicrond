@@ -11,7 +11,10 @@ import (
 	"github.com/khanhicetea/minicrond/internal/store"
 )
 
-func TestWorkerLogOpenFailureUsesRestartBudget(t *testing.T) {
+// ADR-8 2A / ADR-16: a worker whose log storage cannot be opened still runs;
+// its output is discarded and the run is marked truncated, but supervision is
+// unaffected.
+func TestWorkerRunsWhenLogStorageIsUnusable(t *testing.T) {
 	st, err := store.Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -40,8 +43,7 @@ func TestWorkerLogOpenFailureUsesRestartBudget(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	d := workerDef("no-log", "", []string{"/bin/true"}, 3600, 3)
-	d.RestartDelay = 0
+	d := workerDef("no-log", "", []string{"/bin/sh", "-c", "while :; do echo tick; sleep 0.1; done"}, 3600, 3)
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -50,22 +52,25 @@ func TestWorkerLogOpenFailureUsesRestartBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	sup.Reload(defs)
-	sup.mu.Lock()
-	done := sup.workerDone[d.Name]
-	sup.mu.Unlock()
-	if done != nil {
-		timer := time.NewTimer(5 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-done:
-		case <-timer.C:
-			t.Fatal("worker did not exhaust its restart budget")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runs, err := st.Runs(t.Context(), d.Name, 10)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if len(runs) == 1 && runs[0].Status == "running" && sup.State(d.Name).Active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker never ran without log storage: %+v", runs)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if got := runCount(t, st, d.Name); got != 3 {
-		t.Fatalf("got %d failed starts, want 3", got)
+	time.Sleep(300 * time.Millisecond)
+	if got := runCount(t, st, d.Name); got != 1 {
+		t.Fatalf("worker restarted %d times; want one continuous lifetime", got-1)
 	}
-	if state := sup.State(d.Name); state.Failures != 3 || state.Active {
+	if state := sup.State(d.Name); state.Failures != 0 {
 		t.Fatalf("state = %#v", state)
 	}
 }

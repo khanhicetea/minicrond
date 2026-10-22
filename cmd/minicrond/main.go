@@ -35,6 +35,9 @@ var commit = "unknown"
 var configSchema []byte
 
 func main() {
+	if wantPID1Init(os.Args[1:]) {
+		os.Exit(runPID1Init())
+	}
 	if err := run(); err != nil {
 		attrs := []any{"error", err}
 		if panicErr, ok := errors.AsType[*fault.PanicError](err); ok {

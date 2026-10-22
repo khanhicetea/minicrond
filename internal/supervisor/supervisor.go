@@ -51,6 +51,9 @@ type Supervisor struct {
 type workerExecutor interface {
 	Trigger(context.Context, model.Definition, string, string, *time.Time) (model.Run, error)
 	Wait(string) <-chan struct{}
+	// TakeOutcome returns the in-memory result of a finished startup run, so
+	// a restart decision never waits for the database (ADR-16).
+	TakeOutcome(string) (model.Run, bool)
 	Finalizing(string) bool
 	Stop(string) error
 }
@@ -128,7 +131,13 @@ func (s *Supervisor) Reload(defs []model.Definition) error {
 	}
 	s.mu.Unlock()
 	if err := s.resetExhaustion(""); err != nil {
-		return err
+		if errors.Is(err, executor.ErrShutdown) {
+			return err
+		}
+		// ADR-16: a database that cannot clear stored exhaustion must not keep
+		// workers from starting. The in-memory budgets are reset regardless;
+		// the stale stored record is cleared by the next successful reset.
+		slog.Error("supervisor: clearing stored worker exhaustion failed; starting workers anyway", "error", err)
 	}
 	s.mu.Lock()
 	var waits []<-chan struct{}
@@ -175,6 +184,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			if done := s.exec.Wait(id); done != nil {
 				<-done
 			}
+			s.exec.TakeOutcome(id)
 		}
 		s.mu.Lock()
 		delete(s.active, d.Name)
@@ -230,6 +240,7 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			case <-ctx.Done():
 				s.stopRun(r.ID)
 				<-done
+				s.exec.TakeOutcome(r.ID)
 				s.mu.Lock()
 				if s.active[d.Name] == r.ID {
 					delete(s.active, d.Name)
@@ -244,9 +255,16 @@ func (s *Supervisor) loop(ctx context.Context, d model.Definition) {
 			delete(s.active, d.Name)
 		}
 		s.mu.Unlock()
-		current, abandoned, err := s.terminalRun(ctx, d.Name, r.ID)
-		if err != nil {
-			return // canceled while storage was unavailable
+		// The executor's in-memory outcome decides the restart: the terminal
+		// write may still be waiting for a failing database (ADR-16). Only an
+		// outcome that is unexpectedly missing falls back to the stored row.
+		current, ok := s.exec.TakeOutcome(r.ID)
+		var abandoned bool
+		if !ok {
+			current, abandoned, err = s.terminalRun(ctx, d.Name, r.ID)
+			if err != nil {
+				return // canceled while storage was unavailable
+			}
 		}
 		if abandoned {
 			// Explicit finalization-failure policy: the process is gone, the

@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -57,7 +58,8 @@ func eventually(t *testing.T, timeout time.Duration, what string, cond func() bo
 }
 
 // When storage is unavailable longer than the inline persistence budget, the
-// terminal state and completion callback still arrive once storage recovers.
+// completion callback is not delayed by it and the terminal state is stored
+// once storage recovers (ADR-16).
 func TestTerminalStatePersistsAfterStorageOutage(t *testing.T) {
 	finished := make(chan model.Run, 1)
 	dir, st, s := resilienceService(t, Options{OnFinished: func(r model.Run, _ model.Definition) { finished <- r }})
@@ -91,10 +93,10 @@ func TestTerminalStatePersistsAfterStorageOutage(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("completion callback never ran after storage recovered")
 	}
-	stored, err := st.Run(t.Context(), run.ID)
-	if err != nil || stored.Status != "succeeded" {
-		t.Fatalf("stored run = %s, %v", stored.Status, err)
-	}
+	eventually(t, 15*time.Second, "terminal state never stored after recovery", func() bool {
+		stored, err := st.Run(t.Context(), run.ID)
+		return err == nil && stored.Status == "succeeded"
+	})
 }
 
 // A full concurrency gate is reported distinctly from the overlap policy, and
@@ -136,5 +138,89 @@ func TestCapacityGateSkipsAndDefersRetries(t *testing.T) {
 			}
 		}
 		return false
+	})
+}
+
+// ADR-16: a database that cannot record the running transition no longer
+// stops the process. The run completes normally and its history (running and
+// terminal state) is written once storage accepts writes again.
+func TestRunningStateWriteFailureDoesNotKillProcess(t *testing.T) {
+	dir, st, s := resilienceService(t, Options{})
+	d, hash := putJob(t, st, model.Definition{Name: "keep-going", Kind: model.KindJob, Command: "sleep 1; exit 0", Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saboteur.Close()
+	if _, err := saboteur.Exec(`CREATE TRIGGER reject_updates BEFORE UPDATE ON runs BEGIN SELECT RAISE(ABORT, 'injected update failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.Trigger(t.Context(), d, hash, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := s.Wait(run.ID)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run never finished")
+	}
+	if _, err := saboteur.Exec(`DROP TRIGGER reject_updates`); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 15*time.Second, "history never written", func() bool {
+		r, err := st.Run(t.Context(), run.ID)
+		return err == nil && r.Status == "succeeded" && r.StartedAt != nil && r.PID > 0
+	})
+}
+
+// ADR-16: when the run row itself cannot be inserted, the run still executes
+// and the row is inserted later.
+func TestRunExecutesWhenRowInsertFails(t *testing.T) {
+	dir, st, s := resilienceService(t, Options{})
+	marker := filepath.Join(t.TempDir(), "ran")
+	d, hash := putJob(t, st, model.Definition{Name: "no-row", Kind: model.KindJob, Command: "touch " + marker, Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saboteur.Close()
+	// Another process holds the write lock: the insert times out (busy).
+	if _, err := saboteur.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	run, err := s.Trigger(t.Context(), d, hash, "schedule", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SQLite's busy handler (5 s) is the bound; it does not observe contexts.
+	if took := time.Since(started); took > 7*time.Second {
+		t.Fatalf("launch waited %s for the locked database", took)
+	}
+	waitDone(t, s, run.ID)
+	// While storage is known to be failing, later launches skip the database.
+	started = time.Now()
+	second, err := s.Trigger(t.Context(), d, hash, "schedule", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("second launch waited %s although storage was known to be failing", took)
+	}
+	waitDone(t, s, second.ID)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("run did not execute: %v", err)
+	}
+	if deferred, _ := s.History(); deferred != 2 {
+		t.Fatalf("deferred = %d, want 2", deferred)
+	}
+	if _, err := saboteur.Exec(`COMMIT`); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 15*time.Second, "deferred rows never written", func() bool {
+		a, errA := st.Run(t.Context(), run.ID)
+		b, errB := st.Run(t.Context(), second.ID)
+		return errA == nil && errB == nil && a.Status == "succeeded" && b.Status == "succeeded"
 	})
 }

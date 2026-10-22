@@ -88,11 +88,8 @@ func TestPersistenceLagDuringStorageOutage(t *testing.T) {
 	if _, err := saboteur.Exec("ALTER TABLE runs_offline RENAME TO runs"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-finished:
-	case <-time.After(20 * time.Second):
-		t.Fatal("terminal state never persisted after recovery")
-	}
+	<-finished // announced at completion, independent of the write (ADR-16)
+	eventually(t, 20*time.Second, "terminal state never persisted after recovery", func() bool { return s.PersistenceLag().Persisted == 1 })
 	got := s.PersistenceLag()
 	if got.Pending != 0 || got.Persisted != 1 || got.MaxMS < 1000 {
 		t.Fatalf("after recovery: %+v", got)

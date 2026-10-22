@@ -66,17 +66,14 @@ func TestFinalizerPreservesExitAccounting(t *testing.T) {
 		t.Fatal("run was not handed to finalizer")
 	}
 	failing.Store(false)
-	select {
-	case event := <-events:
-		got, err := st.Run(t.Context(), r.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.ResourceUsage == nil || event.ResourceUsage == nil || *got.ResourceUsage != *event.ResourceUsage {
-			t.Fatalf("usage=%+v event=%+v", got.ResourceUsage, event.ResourceUsage)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("finalizer did not recover")
+	event := <-events // announced at completion, before the write (ADR-16)
+	eventually(t, 10*time.Second, "finalizer did not recover", func() bool { return !s.Finalizing(r.ID) })
+	got, err := st.Run(t.Context(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceUsage == nil || event.ResourceUsage == nil || *got.ResourceUsage != *event.ResourceUsage {
+		t.Fatalf("usage=%+v event=%+v", got.ResourceUsage, event.ResourceUsage)
 	}
 }
 

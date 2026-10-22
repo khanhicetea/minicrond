@@ -39,6 +39,10 @@ type scheduledLoop struct {
 	done   chan struct{}
 }
 
+// stateWriteTimeout bounds one schedule-state write; a stalled database must
+// not delay the next fire.
+const stateWriteTimeout = 2 * time.Second
+
 // ErrStopped is returned by Reload after Stop.
 var ErrStopped = errors.New("scheduler stopped")
 
@@ -112,9 +116,12 @@ func (s *Scheduler) Reload(ctx context.Context, defs []model.Definition) error {
 func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	const maxBackoff = time.Minute
 	backoff := time.Second
+	// The schedule position survives failed passes in memory, so a database
+	// that cannot be read or written never stops a job from firing (ADR-16).
+	var state scheduleMemory
 	for {
 		started := time.Now()
-		err := s.runPass(ctx, d)
+		err := s.runPass(ctx, d, &state)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
@@ -133,10 +140,34 @@ func (s *Scheduler) loop(ctx context.Context, d model.Definition) {
 	}
 }
 
+// scheduleMemory is a job's schedule position as last known in memory. The
+// database copy is a persistence of it, not a precondition for firing.
+type scheduleMemory struct {
+	known        bool
+	hash         string
+	anchor, last time.Time
+	// persistFailing marks an episode of failed schedule-state writes, logged
+	// once when it begins and once when it ends.
+	persistFailing bool
+}
+
+func (m *scheduleMemory) persistResult(job string, err error) {
+	switch {
+	case err != nil && !m.persistFailing:
+		m.persistFailing = true
+		slog.Error("scheduler: persisting schedule state failed; firing continues from memory", "job", job, "error", err)
+	case err == nil && m.persistFailing:
+		m.persistFailing = false
+		slog.Info("scheduler: persisting schedule state recovered", "job", job)
+	}
+}
+
 // runPass schedules d until ctx ends or a step fails. It returns nil when the
 // loop should stop for good (cancellation or an unusable schedule) and an
-// error when a retry may succeed.
-func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
+// error when a retry may succeed. mem carries the schedule position across
+// passes: only the first pass (or a changed schedule) reads the database, and
+// failed schedule-state writes are logged without stopping the schedule.
+func (s *Scheduler) runPass(ctx context.Context, d model.Definition, mem *scheduleMemory) error {
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -155,38 +186,57 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 	}
 	hashBytes := sha256.Sum256([]byte(d.Schedule + "\x00" + d.Timezone))
 	hash := hex.EncodeToString(hashBytes[:])
-	anchor, last, persistedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
-	if ctx.Err() != nil {
-		return nil
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("read schedule state: %w", err)
-	}
-	persistedLast := last
-	hasPersisted := err == nil && storedHash == hash
+	var anchor, last, persistedLast, persistedNext time.Time
+	var hasPersisted bool
 	now := time.Now().UTC()
-	if err != nil || storedHash != hash {
-		anchor = now
-		last = time.Time{}
-		if err := s.store.SetScheduleState(ctx, d.ID, hash, anchor, time.Time{}); err != nil {
+	if mem.known && mem.hash == hash {
+		anchor, last = mem.anchor, mem.last
+	} else {
+		storedAnchor, storedLast, storedNext, storedHash, err := s.store.ScheduleState(ctx, d.ID)
+		if ctx.Err() != nil {
+			return nil
+		}
+		switch {
+		case err == nil && storedHash == hash:
+			anchor, last = storedAnchor, storedLast
+			persistedLast, persistedNext, hasPersisted = storedLast, storedNext, true
+		case err != nil && !errors.Is(err, sql.ErrNoRows):
+			// The database cannot be read: start a fresh schedule from now
+			// instead of not firing at all. Missed occurrences before this
+			// start are not caught up.
+			slog.Error("scheduler: reading schedule state failed; scheduling from now in memory", "job", d.Name, "error", err)
+			anchor, last = now, time.Time{}
+		default:
+			anchor, last = now, time.Time{}
+			err := s.store.SetScheduleState(ctx, d.ID, hash, anchor, time.Time{})
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("initialize schedule state: %w", err)
+			mem.persistResult(d.Name, err)
+			if err == nil {
+				persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
+			}
 		}
-		persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
+		mem.known, mem.hash, mem.anchor, mem.last = true, hash, anchor, last
 	}
-	// Only a successful database write advances the cached state. A reload can
-	// start from the next fire already stored by the previous loop.
-	persistNext := func(next time.Time) error {
+	// Only a successful database write advances the cached persisted state; a
+	// failed one is retried with the next write. A reload can start from the
+	// next fire already stored by the previous loop.
+	persistNext := func(next time.Time) {
 		if hasPersisted && persistedLast.Equal(last) && persistedNext.Equal(next) {
-			return nil
+			return
 		}
-		if err := s.store.SetScheduleStateWithNext(context.Background(), d.ID, hash, anchor, last, next); err != nil {
-			return err
+		writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
+		err := s.store.SetScheduleStateWithNext(writeCtx, d.ID, hash, anchor, last, next)
+		cancel()
+		mem.persistResult(d.Name, err)
+		if err == nil {
+			persistedLast, persistedNext, hasPersisted = last, next, true
 		}
-		persistedLast, persistedNext, hasPersisted = last, next, true
-		return nil
+	}
+	advance := func(to time.Time) {
+		last = to
+		mem.last = to
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -222,13 +272,16 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 				}
 				return fmt.Errorf("catch up: %w", err)
 			}
-			last = overdue.latest
-			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
-				// The run row is unique per occurrence, so retrying catch-up
-				// after this failure cannot fire the occurrence twice.
-				return fmt.Errorf("persist catch-up watermark: %w", stateErr)
+			advance(overdue.latest)
+			writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
+			stateErr := s.store.SetScheduleState(writeCtx, d.ID, hash, anchor, last)
+			cancel()
+			mem.persistResult(d.Name, stateErr)
+			if stateErr == nil {
+				persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
+			} else {
+				hasPersisted = false
 			}
-			persistedLast, persistedNext = last, time.Time{}
 		}
 	}
 	for ctx.Err() == nil {
@@ -239,9 +292,7 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 		}
 		// Keep the pending fire in durable state so API clients can display
 		// the same instant the scheduler is waiting for.
-		if err := persistNext(next); err != nil {
-			return fmt.Errorf("persist next fire: %w", err)
-		}
+		persistNext(next)
 		for time.Now().Before(next) {
 			wait := min(time.Until(next), 30*time.Second)
 			timer := time.NewTimer(max(wait, 0))
@@ -265,9 +316,7 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 				return nil
 			}
 			next = recomputed
-			if err := persistNext(next); err != nil {
-				return fmt.Errorf("persist recomputed fire: %w", err)
-			}
+			persistNext(next)
 		}
 		scheduled := next
 		if _, err := s.exec.Trigger(ctx, d, defHash, "schedule", &scheduled); err != nil {
@@ -278,7 +327,7 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 			// applies catch_up to it instead of silently dropping it.
 			return fmt.Errorf("trigger occurrence %s: %w", scheduled.Format(time.RFC3339), err)
 		}
-		last = next
+		advance(next)
 
 		// Publish the following fire immediately after triggering this one.
 		// This prevents the API from reporting the just-fired instant while
@@ -286,14 +335,12 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition) error {
 		following, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
 			slog.Error("scheduler: calculating following fire failed", "job", d.Name, "error", err)
-			if stateErr := s.store.SetScheduleState(context.Background(), d.ID, hash, anchor, last); stateErr != nil {
-				return fmt.Errorf("persist watermark: %w", stateErr)
-			}
+			writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
+			mem.persistResult(d.Name, s.store.SetScheduleState(writeCtx, d.ID, hash, anchor, last))
+			cancel()
 			return nil
 		}
-		if err := persistNext(following); err != nil {
-			return fmt.Errorf("persist following fire: %w", err)
-		}
+		persistNext(following)
 	}
 	return nil
 }

@@ -4,11 +4,12 @@ package sqlite
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	sqlitedrv "modernc.org/sqlite"
 )
 
 // Options tunes both the writer and the reader pool of one database file.
@@ -88,4 +89,15 @@ func open(path string, query url.Values) (*sql.DB, error) {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 	return db, nil
+}
+
+// IsConstraint reports whether err is an SQLite constraint violation
+// (SQLITE_CONSTRAINT and its extended codes), as opposed to the database being
+// unavailable (full, read-only, busy, I/O error, closed, or a canceled wait).
+func IsConstraint(err error) bool {
+	var e *sqlitedrv.Error
+	if errors.As(err, &e) {
+		return e.Code()&0xff == 19 // SQLITE_CONSTRAINT
+	}
+	return false
 }

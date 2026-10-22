@@ -38,12 +38,13 @@ func setupWithExecutor(t *testing.T) (string, *store.Store, *executor.Service, *
 	return dir, st, ex, sup
 }
 
-// A02: terminal writes fail while reads work, so the executor finalizes in the
-// background. Supervision must keep waiting and honor restart=always once the
-// state is finally terminal.
-func TestWorkerRestartsAfterBackgroundFinalization(t *testing.T) {
+// ADR-16 (supersedes A02's wait): terminal writes fail while reads work. The
+// worker is restarted from the executor's in-memory outcome without waiting for
+// the database, and the earlier lifetime is stored once writes recover.
+func TestWorkerRestartsWithoutWaitingForFinalization(t *testing.T) {
 	dir, st, ex, sup := setupWithExecutor(t)
 	def := workerDef("finalize-later", "", []string{"/bin/sleep", "0.3"}, 3600, 100)
+	def.RestartDelay = 0
 	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +68,8 @@ func TestWorkerRestartsAfterBackgroundFinalization(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(runs) == 1 && ex.Finalizing(runs[0].ID) {
-			first = runs[0]
+		if len(runs) >= 1 && ex.Finalizing(runs[len(runs)-1].ID) {
+			first = runs[len(runs)-1]
 			break
 		}
 		if time.Now().After(deadline) {
@@ -76,24 +77,35 @@ func TestWorkerRestartsAfterBackgroundFinalization(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Let the supervisor observe the nonterminal row, then restore writes.
-	time.Sleep(1500 * time.Millisecond)
-	if got := runCount(t, st, def.Name); got != 1 {
-		t.Fatalf("restarted before the previous lifetime was finalized: %d runs", got)
+	// The next lifetime starts while the first is still unfinalized. Its row
+	// may itself be deferred while storage is degraded, so count lifetimes
+	// through the supervisor's run ids.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		sup.mu.Lock()
+		current := sup.active[def.Name]
+		sup.mu.Unlock()
+		if current != "" && current != first.ID {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("restart=always waited for the database before starting the next lifetime")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if _, err := saboteur.Exec(`DROP TRIGGER reject_terminal`); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(20 * time.Second)
-	for runCount(t, st, def.Name) < 2 {
+	deadline = time.Now().Add(30 * time.Second)
+	for {
+		stored, err := st.Run(t.Context(), first.ID)
+		if err == nil && stored.Status == "succeeded" {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("worker with restart=always never started its next lifetime after background finalization")
+			t.Fatalf("first lifetime = %s, %v; want succeeded after recovery", stored.Status, err)
 		}
 		time.Sleep(50 * time.Millisecond)
-	}
-	stored, err := st.Run(t.Context(), first.ID)
-	if err != nil || stored.Status != "succeeded" {
-		t.Fatalf("first lifetime = %s, %v; want succeeded", stored.Status, err)
 	}
 }
 

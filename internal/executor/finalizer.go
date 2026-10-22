@@ -1,113 +1,137 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/fault"
 	"github.com/khanhicetea/minicrond/internal/model"
+	"github.com/khanhicetea/minicrond/internal/sqlite"
 	"github.com/khanhicetea/minicrond/internal/store"
 )
 
-// finalItem is a run whose process has stopped but whose terminal state could
-// not be written yet.
+// finalItem is a run whose history could not be written when it happened
+// (ADR-16). Execution never waits for it: the run was started, supervised and
+// announced from memory; this item only carries the row to the database once
+// it accepts writes again. Stages are written in order: the pending row (when
+// even the insert failed), the running transition, then the terminal state.
 type finalItem struct {
-	r        model.Run
+	r        model.Run // the pending row as admitted
 	d        model.Definition
+	create   bool // the pending row was never stored
+	start    bool // the running transition is not stored yet (see started)
+	started  startInfo
+	done     bool // t is valid: the process has stopped
 	t        terminal
-	token    uint64 // persistLag pending token
+	token    uint64 // persistLag pending token (terminal items only)
 	backoff  time.Duration
 	nextTry  time.Time
 	attempts int
 }
 
-// finalState is the single background finalizer. Its items live in
+// startInfo is the running transition of a spawned process.
+type startInfo struct {
+	pid, pgid int
+	id        string
+	at        time.Time
+}
+
+// finalState is the single background history writer. Its items live in
 // Service.finalizing (guarded by Service.mu), at most one per run.
 //
-// Bounds: a job whose terminal write fails joins the map while it has fewer than
-// QueueOptions.MaxFinalizers entries. Beyond that it retries inline for at most
-// QueueOptions.InlineHold, keeping its capacity slot (backpressure on
-// admission), and is then handed to the map anyway, up to the hard cap of
-// finalizerHardFactor x MaxFinalizers; past the hard cap it keeps holding its
-// slot. Workers always join the map (they hold no slot and the supervisor waits
-// for them), so the map exceeds the hard cap by at most the worker count.
+// Bounds: at most QueueOptions.MaxFinalizers items. When the map is full the
+// history of the next run is not kept (counted in historyDropped and logged);
+// its execution, retries, alerts and supervision are unaffected. Nothing on the
+// execution path waits for this writer or holds a capacity slot for it.
 type finalState struct {
 	started bool // guarded by Service.mu
 	wake    chan struct{}
-	inline  atomic.Int64 // jobs finalizing inline because the soft cap was full
 }
 
 const (
 	finalizerBackoffMin = time.Second
 	finalizerBackoffMax = 30 * time.Second
-	// finalizerHardFactor scales MaxFinalizers into the cap for hand-offs.
-	finalizerHardFactor = 4
 	// finalizerFailStreak ends a pass: that many consecutive failures mean
 	// storage is down, so the rest wait for the next (global backoff) pass
 	// instead of each hitting the database.
 	finalizerFailStreak = 3
-	defaultInlineHold   = 2 * time.Minute
+	// historyWriteTimeout bounds one background history write.
+	historyWriteTimeout = 5 * time.Second
 )
 
-type finalizerResult int
-
-const (
-	finalizerQueued finalizerResult = iota
-	finalizerClosing
-	finalizerFull
-)
-
-type finalizerMode int
-
-const (
-	// finalizerSoft joins the map below the soft cap (jobs, first attempt).
-	finalizerSoft finalizerMode = iota
-	// finalizerHandoff joins below the hard cap (jobs that held a slot too long).
-	finalizerHandoff
-	// finalizerWorker always joins.
-	finalizerWorker
-)
-
-// addFinalizer registers a run for background finalization. It is registered
-// before the run's done channel closes, which supervisors use to tell a pending
-// background finalization from an abandoned one. When the map is full the
-// caller keeps the work (finalizeInline), so nothing is ever discarded.
-func (s *Service) addFinalizer(r model.Run, d model.Definition, t terminal, mode finalizerMode) finalizerResult {
+// spool registers or updates the deferred history of run id. update runs under
+// s.mu on the existing item, or on a new one built from r and d. It reports
+// false when the daemon is closing or the map is full; the caller then counts
+// the run's history as dropped.
+func (s *Service) spool(r model.Run, d model.Definition, update func(*finalItem)) bool {
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
-		return finalizerClosing
+		return false
 	}
-	limit := s.queueOpt.MaxFinalizers
-	switch mode {
-	case finalizerHandoff:
-		limit *= finalizerHardFactor
-	case finalizerWorker:
-		limit = int(^uint(0) >> 1)
+	it, ok := s.finalizing[r.ID]
+	if !ok {
+		if len(s.finalizing) >= s.queueOpt.MaxFinalizers {
+			s.mu.Unlock()
+			return false
+		}
+		it = &finalItem{r: r.Clone(), d: d.Clone(), backoff: finalizerBackoffMin, nextTry: time.Now()}
+		if s.health.down.Load() {
+			// Storage is known to be failing: wait for the global backoff
+			// pass instead of an immediate attempt.
+			it.nextTry = time.Now().Add(finalizerBackoffMin)
+		}
+		s.finalizing[r.ID] = it
 	}
-	if _, ok := s.finalizing[r.ID]; !ok && len(s.finalizing) >= limit {
-		s.mu.Unlock()
-		return finalizerFull
+	hadTerminal := it.done
+	update(it)
+	if it.done && !hadTerminal {
+		it.token = s.persistLag.startPending(it.t.ended)
 	}
-	s.finalizing[r.ID] = &finalItem{r: r, d: d, t: t, token: s.persistLag.startPending(t.ended), backoff: finalizerBackoffMin, nextTry: time.Now().Add(finalizerBackoffMin)}
 	s.mu.Unlock()
 	if !s.startLoop(&s.finals.started, s.finalizeLoop) {
 		s.dropFinalizer(r.ID)
-		return finalizerClosing
+		return false
 	}
 	signal(s.finals.wake)
-	return finalizerQueued
+	return true
 }
 
-// Finalizers reports runs awaiting background finalization and jobs
-// finalizing inline because the soft cap was exhausted.
+// spooled reports whether run id has deferred history; update, when non-nil,
+// is applied to the item under s.mu.
+func (s *Service) spooled(id string, update func(*finalItem)) bool {
+	s.mu.Lock()
+	it, ok := s.finalizing[id]
+	if ok && update != nil {
+		hadTerminal := it.done
+		update(it)
+		if it.done && !hadTerminal {
+			it.token = s.persistLag.startPending(it.t.ended)
+		}
+	}
+	s.mu.Unlock()
+	if ok && update != nil {
+		signal(s.finals.wake)
+	}
+	return ok
+}
+
+// historyLost records that a run's history could not be kept at all.
+func (s *Service) historyLost(r model.Run, what string) {
+	n := s.health.dropped.Add(1)
+	slog.Error("run history not recorded: metadata storage is failing and the deferred-history budget is full; execution continues", "run", r.ID, "job", r.Job, "missing", what, "limit", s.queueOpt.MaxFinalizers, "dropped_total", n)
+}
+
+// Finalizers reports runs whose history waits for the background writer. The
+// second value is kept for diagnostics compatibility and is always zero: no run
+// finalizes inline while holding a capacity slot any more.
 func (s *Service) Finalizers() (background, inline int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.finalizing), int(s.finals.inline.Load())
+	return len(s.finalizing), 0
 }
 
 func (s *Service) finalizeLoop() {
@@ -121,7 +145,7 @@ func (s *Service) finalizeLoop() {
 		}
 		var failedEarly bool
 		if err := fault.Call(func() error { failedEarly = s.finalizePass(); return nil }); err != nil {
-			logFailure("run finalizer panicked", err)
+			logFailure("run history writer panicked", err)
 			failedEarly = true
 		}
 		var wait time.Duration
@@ -161,44 +185,54 @@ func (s *Service) untilNextFinalizer() time.Duration {
 	return next
 }
 
+// finalItemView is a snapshot of an item taken under s.mu; the writes happen
+// without the lock.
+type finalItemView struct {
+	item          *finalItem
+	r             model.Run
+	create, start bool
+	started       startInfo
+	done          bool
+	t             terminal
+}
+
 // finalizePass tries every due item once, oldest first. Each item has its own
 // backoff, so one that keeps failing (a poison item) does not starve the rest;
 // finalizerFailStreak consecutive failures end the pass early (storage down).
 func (s *Service) finalizePass() (failedEarly bool) {
 	now := time.Now()
 	s.mu.Lock()
-	items := make([]*finalItem, 0, len(s.finalizing))
+	views := make([]finalItemView, 0, len(s.finalizing))
 	for _, it := range s.finalizing {
 		if !it.nextTry.After(now) {
-			items = append(items, it)
+			views = append(views, finalItemView{item: it, r: it.r, create: it.create, start: it.start, started: it.started, done: it.done, t: it.t})
 		}
 	}
 	s.mu.Unlock()
-	slices.SortFunc(items, func(a, b *finalItem) int { return a.t.ended.Compare(b.t.ended) })
+	slices.SortFunc(views, func(a, b finalItemView) int { return a.r.QueuedAt.Compare(b.r.QueuedAt) })
 	streak := 0
-	for _, it := range items {
+	for _, v := range views {
 		if s.isClosing() {
 			return false
 		}
-		t := it.t
-		err := s.finishRun(it.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
+		err := s.writeHistory(v)
 		switch {
 		case err == nil:
-			slog.Info("persisted terminal run state after retry", "run", it.r.ID, "status", t.status)
-			s.dropFinalizer(it.r.ID)
-			s.finished(it.r, it.d, t)
+			s.storageRecovered()
 			streak = 0
-		case errors.Is(err, store.ErrInvalidTransition):
-			logFailure("persisting terminal run state rejected", err, "run", it.r.ID, "status", t.status)
-			s.dropFinalizer(it.r.ID)
+		case errors.Is(err, store.ErrInvalidTransition), errors.Is(err, errHistoryConflict):
+			logFailure("deferred run history rejected", err, "run", v.r.ID)
+			s.dropFinalizer(v.r.ID)
 			streak = 0
 		default:
-			it.attempts++
-			it.backoff = min(it.backoff*2, finalizerBackoffMax)
+			s.storageFailed(err)
 			s.mu.Lock()
-			it.nextTry = time.Now().Add(it.backoff)
+			v.item.attempts++
+			v.item.backoff = min(v.item.backoff*2, finalizerBackoffMax)
+			v.item.nextTry = time.Now().Add(v.item.backoff)
+			attempts, backoff := v.item.attempts, v.item.backoff
 			s.mu.Unlock()
-			logFailure("persisting terminal run state failed; retrying", err, "run", it.r.ID, "status", t.status, "attempts", it.attempts, "retry_in", it.backoff)
+			logFailure("writing deferred run history failed; retrying", err, "run", v.r.ID, "attempts", attempts, "retry_in", backoff)
 			if streak++; streak >= finalizerFailStreak {
 				return true
 			}
@@ -207,10 +241,73 @@ func (s *Service) finalizePass() (failedEarly bool) {
 	return false
 }
 
+var errHistoryConflict = errors.New("another run already recorded this scheduled occurrence")
+
+// writeHistory writes the stages of one snapshot and then retires what it
+// wrote. Stages a concurrent update added after the snapshot stay pending.
+func (s *Service) writeHistory(v finalItemView) error {
+	ctx, cancel := context.WithTimeout(s.stopCtx, historyWriteTimeout)
+	defer cancel()
+	if v.create {
+		if err := s.store.CreateRun(ctx, v.r); err != nil {
+			if !sqlite.IsConstraint(err) {
+				return err
+			}
+			// A previous attempt may have committed before reporting an error.
+			// Otherwise the row is a duplicate scheduled occurrence.
+			if _, lookupErr := s.store.Run(ctx, v.r.ID); lookupErr != nil {
+				return errors.Join(errHistoryConflict, err)
+			}
+		}
+		s.mu.Lock()
+		v.item.create = false
+		s.mu.Unlock()
+		slog.Info("recorded deferred run", "run", v.r.ID, "job", v.r.Job)
+	}
+	if v.start {
+		st := v.started
+		if err := s.store.StartRun(ctx, v.r.ID, st.pid, st.pgid, st.id, st.at); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
+			return err
+		}
+		s.mu.Lock()
+		v.item.start = false
+		s.mu.Unlock()
+	}
+	if v.done {
+		t := v.t
+		if s.finishHook != nil {
+			if err := s.finishHook(v.r.ID); err != nil {
+				return err
+			}
+		}
+		if err := s.store.FinishRunWithUsage(ctx, v.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage); err != nil {
+			return err
+		}
+		slog.Info("persisted terminal run state after retry", "run", v.r.ID, "status", t.status)
+		s.persistLag.observe(t.ended)
+	}
+	s.mu.Lock()
+	it := s.finalizing[v.r.ID]
+	retire := it == v.item && !it.create && !it.start && (v.done || !it.done)
+	if retire {
+		if it.done {
+			s.persistLag.endPending(it.token)
+		}
+		delete(s.finalizing, v.r.ID)
+	}
+	s.mu.Unlock()
+	if !retire {
+		signal(s.finals.wake) // a stage arrived meanwhile
+	}
+	return nil
+}
+
 func (s *Service) dropFinalizer(id string) {
 	s.mu.Lock()
 	if it, ok := s.finalizing[id]; ok {
-		s.persistLag.endPending(it.token)
+		if it.done {
+			s.persistLag.endPending(it.token)
+		}
 		delete(s.finalizing, id)
 	}
 	s.mu.Unlock()
@@ -221,53 +318,13 @@ func (s *Service) abandonFinalizers() {
 	ids := make([]string, 0, len(s.finalizing))
 	for id, it := range s.finalizing {
 		ids = append(ids, id)
-		s.persistLag.endPending(it.token)
+		if it.done {
+			s.persistLag.endPending(it.token)
+		}
 	}
 	clear(s.finalizing)
 	s.mu.Unlock()
 	for _, id := range ids {
-		slog.Warn("run left unfinalized at shutdown; recovery will mark it interrupted", "run", id)
-	}
-}
-
-// finalizeInline retries a job's terminal write in the completing goroutine,
-// which keeps the run's capacity slot. After InlineHold it hands the item to the
-// background map (up to the hard cap) and returns, releasing the slot. It also
-// ends at shutdown.
-func (s *Service) finalizeInline(r model.Run, d model.Definition, t terminal) {
-	defer s.persistLag.endPending(s.persistLag.startPending(t.ended))
-	hold := s.queueOpt.InlineHold
-	deadline := time.Now().Add(hold)
-	backoff := finalizerBackoffMin
-	for {
-		timer := time.NewTimer(backoff)
-		select {
-		case <-s.stopping:
-			timer.Stop()
-			slog.Warn("run left unfinalized at shutdown; recovery will mark it interrupted", "run", r.ID)
-			return
-		case <-timer.C:
-		}
-		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
-		if err == nil {
-			slog.Info("persisted terminal run state after retry", "run", r.ID, "status", t.status)
-			s.finished(r, d, t)
-			return
-		}
-		if errors.Is(err, store.ErrInvalidTransition) {
-			logFailure("persisting terminal run state rejected", err, "run", r.ID, "status", t.status)
-			return
-		}
-		backoff = min(backoff*2, finalizerBackoffMax)
-		logFailure("persisting terminal run state failed; retrying", err, "run", r.ID, "status", t.status, "retry_in", backoff)
-		if time.Now().After(deadline) {
-			switch s.addFinalizer(r, d, t, finalizerHandoff) {
-			case finalizerQueued, finalizerClosing:
-				slog.Warn("terminal write still failing; handed to the background finalizer and released the capacity slot", "run", r.ID, "held", hold)
-				return
-			}
-			// Hard cap reached: keep holding the slot (documented backpressure).
-			deadline = time.Now().Add(hold)
-		}
+		slog.Warn("run history left unwritten at shutdown; a stored nonterminal row is marked interrupted at the next start", "run", id)
 	}
 }

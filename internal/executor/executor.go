@@ -94,6 +94,12 @@ type Service struct {
 	systemWriteJoin time.Duration
 	// persistLag observes terminal-state persistence latency (diagnostics).
 	persistLag persistLag
+	// health tracks failing metadata writes on the execution path (ADR-16).
+	health storageHealth
+	// outcomes keeps the in-memory result of finished startup runs (workers and
+	// [[init]] tasks) until their waiter takes it, so supervision never needs
+	// the database to decide a restart. Guarded by mu; bounded by maxOutcomes.
+	outcomes map[string]model.Run
 }
 type activeRun struct {
 	cancel  context.CancelCauseFunc
@@ -102,12 +108,20 @@ type activeRun struct {
 	force   chan struct{}
 	forced  bool
 	monitor ProcessTarget
+	// unrecorded runs have no stored row and no deferred history (the
+	// deferred-history budget was full); they execute without any metadata
+	// writes. Set before execution starts.
+	unrecorded bool
 }
+
+// maxOutcomes bounds startup-run outcomes nobody has taken yet (a waiter that
+// was canceled). Each live worker leaves at most one.
+const maxOutcomes = 1024
 
 // startPersistTimeout bounds the running-state write that follows a spawn.
 // It no longer delays timeout enforcement; it only bounds how long a stalled
 // database keeps the run from being finalized.
-const startPersistTimeout = 10 * time.Second
+const startPersistTimeout = 3 * time.Second
 
 // forcedRunJoin bounds how long shutdown waits for runs to finish cleanup
 // after its deadline has forced them to stop.
@@ -140,7 +154,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 		bootID = uuid.NewV7().String()
 	}
 	stopCtx, stopCancel := context.WithCancel(context.Background())
-	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
+	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), outcomes: make(map[string]model.Run), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
 	s.queue.wake = make(chan struct{}, 1)
 	s.retries.wake = make(chan struct{}, 1)
 	s.finals.wake = make(chan struct{}, 1)
@@ -291,7 +305,12 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 			existing, err := s.store.Run(ctx, existingID)
 			return existing, true, err
 		}
-	} else if err := s.store.CreateRun(ctx, r); err != nil {
+		capacityOwned = false // launch owns the slot from here, on every path.
+		failedStart, err = s.launch(r, d, true)
+		return r, false, err
+	}
+	recorded, err := s.admitRow(ctx, r)
+	if err != nil {
 		releaseCapacity()
 		if trigger == "schedule" && scheduled != nil {
 			if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
@@ -300,10 +319,51 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		}
 		return r, false, err
 	}
+	if !recorded {
+		// ADR-16: the database cannot take the row now. Execute anyway and let
+		// the background history writer insert it later.
+		s.health.deferred.Add(1)
+		if !s.spool(r, d, func(it *finalItem) { it.create = true }) {
+			s.historyLost(r, "run row")
+			capacityOwned = false
+			failedStart, err = s.launch(r, d, false)
+			return r, false, err
+		}
+	}
 	capacityOwned = false // launch owns the slot from here, on every path.
-	var err error
-	failedStart, err = s.launch(r, d)
+	failedStart, err = s.launch(r, d, true)
 	return r, false, err
+}
+
+// admitRow stores a new run row before execution. It reports recorded=false,
+// without an error, when the database is unavailable (ADR-16): the caller then
+// executes the run and defers its history. While storage is known to be
+// failing and history is already waiting, it does not try the database at all,
+// so a dead or locked disk adds no latency to launches.
+func (s *Service) admitRow(ctx context.Context, r model.Run) (recorded bool, err error) {
+	if s.health.down.Load() && s.historyPending() {
+		return false, ctx.Err()
+	}
+	wctx, cancel := context.WithTimeout(ctx, createRunTimeout)
+	err = s.store.CreateRun(wctx, r)
+	cancel()
+	switch {
+	case err == nil:
+		s.storageRecovered()
+		return true, nil
+	case storageUnavailable(ctx, err):
+		s.storageFailed(err)
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// historyPending reports whether the background history writer has work.
+func (s *Service) historyPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.finalizing) > 0
 }
 
 // launch starts execution of a run whose row is already persisted as pending.
@@ -311,7 +371,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 // every failure path; execute releases it after full cleanup otherwise. A
 // non-nil failedStart means the run was finalized as failed/start_error and the
 // caller should announce it (after releasing admission).
-func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Run, err error) {
+func (s *Service) launch(r model.Run, d model.Definition, recorded bool) (failedStart *model.Run, err error) {
 	releaseCapacity := func() {
 		if d.Kind == model.KindJob {
 			s.releaseSlot()
@@ -319,20 +379,16 @@ func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Ru
 	}
 	d = d.Clone()
 	maxBytes := resolveLogMax(d.LogMax)
-	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"})
+	writerOpt := logstore.WriterOptions{MaxBytes: maxBytes, MaxLine: s.maxLine, DropNew: d.LogOnFull == "drop_new"}
+	writer, err := s.logs.Open(r.ID, d.Name, d.Kind, writerOpt)
 	if err != nil {
-		ended := time.Now().UTC()
-		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", ended, 0, false, nil); finishErr == nil {
-			r.Status, r.EndReason, r.EndedAt = "failed", "start_error", &ended
-			failedStart = &r
-		} else {
-			err = errors.Join(err, fmt.Errorf("persist failed start: %w", finishErr))
-		}
-		releaseCapacity()
-		return failedStart, fmt.Errorf("open run logs: %w", err)
+		// ADR-8 2A / ADR-16: log storage trouble never prevents execution. The
+		// run starts with output discarded; capture recovers on its own.
+		logFailure("opening run logs failed; the run executes and its output is discarded until log storage recovers", err, "run", r.ID, "job", d.Name)
+		writer = s.logs.OpenDegraded(r.ID, d.Name, d.Kind, writerOpt, err)
 	}
 	runCtx, cancel := context.WithCancelCause(context.Background())
-	a := &activeRun{cancel: cancel, done: make(chan struct{}), force: make(chan struct{}), monitor: ProcessTarget{RunID: r.ID, Job: r.Job, Kind: r.Kind}}
+	a := &activeRun{cancel: cancel, done: make(chan struct{}), force: make(chan struct{}), monitor: ProcessTarget{RunID: r.ID, Job: r.Job, Kind: r.Kind}, unrecorded: !recorded}
 	// Register under mu: shutdown snapshots active under the same lock, so a
 	// run is either joined by shutdown or refused here.
 	s.mu.Lock()
@@ -344,6 +400,11 @@ func (s *Service) launch(r model.Run, d model.Definition) (failedStart *model.Ru
 		}
 		// Not retried or announced: the daemon is stopping, and the run
 		// never started.
+		s.dropFinalizer(r.ID)
+		if !recorded {
+			releaseCapacity()
+			return nil, ErrShutdown
+		}
 		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", time.Now().UTC(), 0, false, nil); finishErr != nil {
 			logFailure("persisting refused run failed; recovery will mark it interrupted", finishErr, "run", r.ID)
 		}
@@ -380,23 +441,38 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 		}
 		return r, false, nil
 	}
-	err := s.store.CreateRun(ctx, r)
+	recorded, err := s.admitRow(ctx, r)
 	if err != nil && trigger == "schedule" && scheduled != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
 			return existing, true, nil
 		}
 	}
+	if err == nil && !recorded {
+		s.deferRecord(r, d)
+	}
 	return r, false, err
+}
+
+// deferRecord hands an already terminal row (skipped, missed) to the
+// background history writer because the database cannot take it now.
+func (s *Service) deferRecord(r model.Run, d model.Definition) {
+	s.health.deferred.Add(1)
+	if !s.spool(r, d, func(it *finalItem) { it.create = true }) {
+		s.historyLost(r, "run row")
+	}
 }
 func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash string, count int, scheduled time.Time) (model.Run, error) {
 	id := uuid.NewV7()
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "missed", EndReason: "crash_recovery", Trigger: "schedule", Attempt: 1, ScheduledFor: &scheduled, MissedCount: count, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
-	err := s.store.CreateRun(ctx, r)
+	recorded, err := s.admitRow(ctx, r)
 	if err != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, scheduled); lookupErr == nil {
 			return existing, nil
 		}
+	}
+	if err == nil && !recorded {
+		s.deferRecord(r, d)
 	}
 	return r, err
 }
@@ -425,14 +501,14 @@ func (s *Service) execute(ctx context.Context, r model.Run, d model.Definition, 
 		if closeErr := s.logs.Seal(r.ID); closeErr != nil {
 			logFailure("finalizing panicked-run logs failed", closeErr, "run", r.ID)
 		}
-		s.complete(r, d, terminal{status: "failed", reason: "internal_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated})
+		s.complete(r, d, a, terminal{status: "failed", reason: "internal_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated})
 	}
 }
 
 func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definition, w *logstore.Writer, a *activeRun) {
 	cmd, identity, err := buildCommandWithTrustedPath(d, r, s.trustedPath)
 	if err != nil {
-		s.finishStartError(r, d, w, err)
+		s.finishStartError(r, d, a, w, err)
 		return
 	}
 	// Caller-owned pipes: cmd.Wait would close StdoutPipe read-ends while
@@ -440,14 +516,14 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// closed" errors). We own the lifecycle: pumps drain to EOF, then we close.
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
-		s.finishStartError(r, d, w, err)
+		s.finishStartError(r, d, a, w, err)
 		return
 	}
 	defer closePipe(stdoutR)
 	defer closePipe(stdoutW)
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
-		s.finishStartError(r, d, w, err)
+		s.finishStartError(r, d, a, w, err)
 		return
 	}
 	defer closePipe(stderrR)
@@ -455,7 +531,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
 	if err = cmd.Start(); err != nil {
-		s.finishStartError(r, d, w, err)
+		s.finishStartError(r, d, a, w, err)
 		return
 	}
 	// The child owns its duplicates now; drop the parent's write ends so EOF
@@ -525,12 +601,8 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// a chatty child's pipes or delay timeout/stop enforcement.
 	persisted := make(chan error, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), startPersistTimeout)
-		defer cancel()
-		err := fault.Call(func() error {
-			return s.store.StartRun(ctx, r.ID, cmd.Process.Pid, pgid, startID, started)
-		})
-		persisted <- err
+		info := startInfo{pid: cmd.Process.Pid, pgid: pgid, id: startID, at: started}
+		persisted <- fault.Call(func() error { return s.persistStart(r, d, a, info) })
 	}()
 	persistedCh := (<-chan error)(persisted)
 	var startErr error
@@ -628,10 +700,41 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 		logFailure("finalizing run logs failed; keeping execution status, marking logs truncated", err, "run", r.ID)
 		truncated = true
 	}
-	s.complete(r, d, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true, usage: exitUsage(cmd.ProcessState)})
+	s.complete(r, d, a, terminal{status: status, reason: reason, code: code, signal: signal, ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true, usage: exitUsage(cmd.ProcessState)})
 }
 
-func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.Writer, err error) {
+// persistStart records the running transition. ADR-16: a database that cannot
+// take it never stops the process; the transition joins the run's deferred
+// history instead. Only a refused transition (the row is no longer pending, for
+// example it was deleted) is returned, and the caller stops the process.
+func (s *Service) persistStart(r model.Run, d model.Definition, a *activeRun, info startInfo) error {
+	if a.unrecorded {
+		return nil
+	}
+	set := func(it *finalItem) { it.start, it.started = true, info }
+	if s.spooled(r.ID, set) {
+		return nil
+	}
+	if !s.health.down.Load() {
+		ctx, cancel := context.WithTimeout(context.Background(), startPersistTimeout)
+		err := s.store.StartRun(ctx, r.ID, info.pid, info.pgid, info.id, info.at)
+		cancel()
+		if err == nil {
+			s.storageRecovered()
+			return nil
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			return err
+		}
+		s.storageFailed(err)
+	}
+	if !s.spool(r, d, set) {
+		s.historyLost(r, "running state")
+	}
+	return nil
+}
+
+func (s *Service) finishStartError(r model.Run, d model.Definition, a *activeRun, w *logstore.Writer, err error) {
 	logFailure("starting run failed", err, "run", r.ID, "job", d.Name)
 	writeSystem(w, r.ID, "start error: "+err.Error())
 	bytes, truncated := w.Stats()
@@ -639,7 +742,7 @@ func (s *Service) finishStartError(r model.Run, d model.Definition, w *logstore.
 		slog.Error("finalizing failed-run logs failed", "run", r.ID, "error", closeErr)
 		truncated = true
 	}
-	s.complete(r, d, terminal{status: "failed", reason: "start_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
+	s.complete(r, d, a, terminal{status: "failed", reason: "start_error", ended: time.Now().UTC(), bytes: bytes, truncated: truncated, retry: true})
 }
 
 // terminal is the outcome of a run that has stopped executing.
@@ -654,41 +757,73 @@ type terminal struct {
 	usage          *model.ResourceUsage
 }
 
-// complete persists a run's terminal state, then notifies and schedules any
-// retry. If storage stays unavailable past the inline budget, the background
-// finalizer keeps trying. Past the soft cap a job retries inline holding its
-// capacity slot for at most InlineHold, then hands off (see finalState), so the
-// run cannot stay "running" with no alert and unfinalized runs stay bounded.
-func (s *Service) complete(r model.Run, d model.Definition, t terminal) {
-	err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
-	if err == nil {
-		s.finished(r, d, t)
-		return
+// complete records a run's terminal state and announces it. Execution first
+// (ADR-16): the outcome is kept in memory for supervision, and the completion
+// callback and any retry are issued even when the terminal write cannot be
+// stored now. A failed write joins the run's deferred history; nothing here
+// holds a capacity slot or delays the run's done signal beyond one bounded
+// inline attempt while storage is believed healthy.
+func (s *Service) complete(r model.Run, d model.Definition, a *activeRun, t terminal) {
+	s.recordOutcome(r, t)
+	setTerminal := func(it *finalItem) { it.done, it.t = true, t }
+	switch {
+	case a != nil && a.unrecorded:
+	case s.spooled(r.ID, setTerminal):
+		// The row (or its running state) is still waiting: keep the order.
+	case !s.health.down.Load():
+		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
+		if err == nil {
+			s.storageRecovered()
+			s.persistLag.observe(t.ended)
+			break
+		}
+		if errors.Is(err, store.ErrInvalidTransition) {
+			logFailure("persisting terminal run state rejected", err, "run", r.ID, "status", t.status)
+			return
+		}
+		s.storageFailed(err)
+		logFailure("persisting terminal run state failed; writing it in the background", err, "run", r.ID, "status", t.status)
+		fallthrough
+	default:
+		if !s.spool(r, d, setTerminal) && !s.isClosing() {
+			s.historyLost(r, "terminal state")
+		}
 	}
-	if errors.Is(err, store.ErrInvalidTransition) {
-		logFailure("persisting terminal run state rejected", err, "run", r.ID, "status", t.status)
-		return
-	}
-	logFailure("persisting terminal run state failed; retrying in background", err, "run", r.ID, "status", t.status)
-	mode := finalizerSoft
-	if d.Kind == model.KindWorker {
-		// Workers hold no capacity slot and their supervisor waits for the
-		// run, so inline retrying would only delay its restart policy.
-		mode = finalizerWorker
-	}
-	switch s.addFinalizer(r, d, t, mode) {
-	case finalizerQueued, finalizerClosing:
-		// Closing: startup recovery marks the run interrupted.
-	case finalizerFull:
-		slog.Warn("finalizer budget exhausted; retrying this run's terminal state inline, holding its capacity slot", "run", r.ID, "limit", s.queueOpt.MaxFinalizers, "hold", s.queueOpt.InlineHold)
-		s.finals.inline.Add(1)
-		defer s.finals.inline.Add(-1)
-		s.finalizeInline(r, d, t)
-	}
+	s.finished(r, d, t)
 }
 
+// recordOutcome keeps the in-memory outcome of a startup run for its waiter.
+func (s *Service) recordOutcome(r model.Run, t terminal) {
+	if r.Trigger != "startup" {
+		return
+	}
+	out := r.Clone()
+	out.Status, out.EndReason, out.ExitCode, out.Signal, out.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.outcomes) >= maxOutcomes {
+		for id := range s.outcomes {
+			delete(s.outcomes, id)
+			break
+		}
+	}
+	s.outcomes[r.ID] = out
+}
+
+// TakeOutcome returns, once, the in-memory outcome of a finished startup run
+// (a worker lifetime or an [[init]] task). It is available as soon as the
+// run's Wait channel closes, whether or not the database stored it.
+func (s *Service) TakeOutcome(id string) (model.Run, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.outcomes[id]
+	delete(s.outcomes, id)
+	return r, ok
+}
+
+// finished announces a completed run: the completion callback and the retry
+// policy. It does not depend on the terminal state being stored.
 func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
-	s.persistLag.observe(t.ended)
 	r.Status, r.EndReason, r.ExitCode, r.Signal, r.EndedAt = t.status, t.reason, t.code, t.signal, &t.ended
 	r.ResourceUsage = t.usage
 	s.notifyFinished(r, d)

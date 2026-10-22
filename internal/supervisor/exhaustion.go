@@ -30,8 +30,9 @@ func (s *Supervisor) resetExhaustion(name string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := s.store.ClearWorkerExhaustion(ctx, name); err != nil {
-		return err
+	clearErr := s.store.ClearWorkerExhaustion(ctx, name)
+	if clearErr != nil && name != "" {
+		return clearErr
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -48,7 +49,9 @@ func (s *Supervisor) resetExhaustion(name string) error {
 		delete(s.exhausted, name)
 		delete(s.pending, name)
 	}
-	return nil
+	// A full reset (reload) still resets memory when the clear failed; the
+	// caller decides whether that failure matters.
+	return clearErr
 }
 
 func (s *Supervisor) epochLocked(name string) uint64 {

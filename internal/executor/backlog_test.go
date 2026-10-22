@@ -102,11 +102,11 @@ func TestRetrySchedulerFiresDueRetries(t *testing.T) {
 	})
 }
 
-// A15: when terminal writes fail, background finalizers are capped. Runs beyond
-// the cap keep their own goroutine (and capacity slot) and retry inline, so
-// nothing is dropped and the total stays bounded by max_concurrent_runs. Once
-// storage recovers every run reaches its terminal state and is announced.
-func TestFinalizersAreBoundedAndNothingIsDiscarded(t *testing.T) {
+// ADR-16: when terminal writes fail, completions are announced at once, no
+// capacity slot is held for history, and the deferred-history map is capped.
+// Runs beyond the cap keep executing; only their history is counted as lost.
+// Once storage recovers every deferred run reaches its terminal state.
+func TestFailedTerminalWritesNeverHoldCapacity(t *testing.T) {
 	const runs, finalizerCap = 6, 2
 	var failing atomic.Bool
 	failing.Store(true)
@@ -129,40 +129,50 @@ func TestFinalizersAreBoundedAndNothingIsDiscarded(t *testing.T) {
 		}
 		ids = append(ids, r.ID)
 	}
-	eventually(t, 10*time.Second, "finalizer accounting", func() bool {
-		background, inline := s.Finalizers()
-		return background == finalizerCap && inline == runs-finalizerCap
-	})
-	// The inline ones still hold capacity: admissions are throttled, not unbounded.
-	if got := len(s.capacity); got != runs-finalizerCap {
-		t.Fatalf("capacity slots held = %d, want %d", got, runs-finalizerCap)
+	for _, id := range ids {
+		waitDone(t, s, id)
 	}
-	diag := s.Diagnostics(t.Context())
-	if diag.Finalizers != finalizerCap || diag.InlineFinalizers != runs-finalizerCap || diag.MaxFinalizers != finalizerCap {
-		t.Fatalf("diagnostics = %+v", diag)
+	// Every completion is announced while storage is still failing.
+	mu.Lock()
+	announced := len(finished)
+	mu.Unlock()
+	if announced != runs {
+		t.Fatalf("announced %d of %d runs while storage failed", announced, runs)
 	}
-	owned := 0
+	if got := len(s.capacity); got != 0 {
+		t.Fatalf("capacity slots held = %d, want 0", got)
+	}
+	background, inline := s.Finalizers()
+	if background > finalizerCap || inline != 0 {
+		t.Fatalf("finalizers = %d background, %d inline; cap %d", background, inline, finalizerCap)
+	}
+	// Lost history is counted per record (a run can lose its running state
+	// and later its terminal state), so it is at least the runs left out.
+	deferred, dropped := s.History()
+	if dropped < int64(runs-background) {
+		t.Fatalf("history dropped = %d (deferred %d), want %d", dropped, deferred, runs-background)
+	}
+	if !s.StorageDegraded() {
+		t.Fatal("storage not reported degraded")
+	}
+	spooled := map[string]bool{}
 	for _, id := range ids {
 		if s.Finalizing(id) {
-			owned++
+			spooled[id] = true
 		}
 	}
-	if owned != finalizerCap {
-		t.Fatalf("%d runs report a background finalizer, want %d", owned, finalizerCap)
-	}
 	failing.Store(false)
-	eventually(t, 20*time.Second, "terminal states after recovery", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(finished) == runs
+	eventually(t, 20*time.Second, "deferred history written after recovery", func() bool {
+		background, _ := s.Finalizers()
+		return background == 0
 	})
-	for _, id := range ids {
+	for id := range spooled {
 		if got := runStatus(t, st, id); got.Status != "succeeded" {
 			t.Fatalf("run %s = %s", id, got.Status)
 		}
 	}
-	if background, inline := s.Finalizers(); background != 0 || inline != 0 {
-		t.Fatalf("finalizers left: %d background, %d inline", background, inline)
+	if s.StorageDegraded() {
+		t.Fatal("storage still reported degraded after recovery")
 	}
 }
 
@@ -218,8 +228,9 @@ func TestSustainedFailuresWithDegradedMetadataStayBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Every accepted run eventually reaches a terminal state.
-	eventually(t, 60*time.Second, "all runs terminal", func() bool {
+	// Every accepted run eventually reaches a terminal state, or its history
+	// is counted as lost because the deferred-history budget was full.
+	eventually(t, 60*time.Second, "all runs terminal or counted", func() bool {
 		runs, err := st.Runs(t.Context(), "storm", 500)
 		if err != nil {
 			t.Fatal(err)
@@ -230,7 +241,9 @@ func TestSustainedFailuresWithDegradedMetadataStayBounded(t *testing.T) {
 				terminal++
 			}
 		}
-		return terminal == accepted
+		background, _ := s.Finalizers()
+		_, dropped := s.History()
+		return background == 0 && int64(terminal)+dropped >= int64(accepted)
 	})
 	close(stop)
 	<-sampled
@@ -278,57 +291,42 @@ func TestSealFailureKeepsFailureAndStartErrorStatus(t *testing.T) {
 	}
 }
 
-// S5: with a permanently failing terminal write, jobs past the soft cap hold
-// their slot only for InlineHold, then hand off to the background map, which is
-// itself capped (hard cap = 4 x MaxFinalizers). Beyond that jobs keep holding
-// (documented backpressure) and nothing is discarded.
-func TestInlineFinalizerHoldIsBoundedThenHandsOff(t *testing.T) {
-	const soft = 1
+// ADR-16: with a permanently failing terminal write and a tiny history
+// budget, every run still executes and is announced promptly; the map stays at
+// its cap and the rest of the history is counted as lost.
+func TestHistoryOverflowNeverBlocksExecution(t *testing.T) {
+	const cap = 1
 	var finished atomic.Int64
-	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 3, Queue: QueueOptions{MaxFinalizers: soft, InlineHold: 300 * time.Millisecond, DrainRate: 1000},
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 3, Queue: QueueOptions{MaxFinalizers: cap, DrainRate: 1000},
 		OnFinished: func(model.Run, model.Definition) { finished.Add(1) }})
-	var broken atomic.Bool
-	broken.Store(true)
-	s.finishHook = func(string) error {
-		if broken.Load() {
-			return errors.New("permanent update failure")
-		}
-		return nil
-	}
+	s.finishHook = func(string) error { return errors.New("permanent update failure") }
 	d, h := putJob(t, st, parallelJob("wedge", "true"))
 	for range 8 {
-		if _, err := s.Trigger(t.Context(), d, h, "manual", nil); err != nil {
+		r, err := s.Trigger(t.Context(), d, h, "manual", nil)
+		if err != nil {
 			t.Fatal(err)
 		}
+		waitDone(t, s, r.ID)
 	}
-	// Hand-offs fill the map up to the hard cap and no further.
-	eventually(t, 15*time.Second, "hard cap reached", func() bool {
-		background, _ := s.Finalizers()
-		return background == soft*finalizerHardFactor
-	})
-	time.Sleep(1500 * time.Millisecond)
-	if background, _ := s.Finalizers(); background != soft*finalizerHardFactor {
-		t.Fatalf("background finalizers = %d, hard cap %d", background, soft*finalizerHardFactor)
+	if got := finished.Load(); got != 8 {
+		t.Fatalf("announced %d of 8 runs", got)
 	}
-	// Slots were released by the hand-offs, so later admissions progressed past
-	// the first soft-cap runs rather than wedging on them.
-	runs, err := st.Runs(t.Context(), "wedge", 20)
-	if err != nil || len(runs) != 8 {
-		t.Fatalf("runs = %d, %v", len(runs), err)
+	if background, _ := s.Finalizers(); background != cap {
+		t.Fatalf("background finalizers = %d, cap %d", background, cap)
 	}
-	// Nothing is lost: when storage recovers every run reaches a terminal state.
-	broken.Store(false)
-	eventually(t, 60*time.Second, "all terminal after recovery", func() bool {
-		return finished.Load() == 8
-	})
+	if _, dropped := s.History(); dropped != 7 {
+		t.Fatalf("history dropped = %d, want 7", dropped)
+	}
+	if got := len(s.capacity); got != 0 {
+		t.Fatalf("capacity slots held = %d", got)
+	}
 }
 
-// S5: workers always use the background map (no inline hold), even past the cap,
-// so a failing terminal write never delays the run's done signal.
+// Workers never wait for their terminal write: the done signal closes
+// promptly and the outcome is available in memory for supervision.
 func TestWorkerFinalizationNeverHoldsInline(t *testing.T) {
-	_, st, s := resilienceService(t, Options{Queue: QueueOptions{MaxFinalizers: 1, InlineHold: time.Hour}})
+	_, st, s := resilienceService(t, Options{Queue: QueueOptions{MaxFinalizers: 1}})
 	s.finishHook = func(string) error { return errors.New("permanent update failure") }
-	var ids []string
 	for i := range 3 {
 		w := parallelJob("worker-"+string(rune('a'+i)), "true")
 		w.Kind = model.KindWorker
@@ -338,28 +336,26 @@ func TestWorkerFinalizationNeverHoldsInline(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitDone(t, s, r.ID) // must close promptly, not after storage recovers
-		ids = append(ids, r.ID)
-	}
-	if background, inline := s.Finalizers(); background != 3 || inline != 0 {
-		t.Fatalf("finalizers = %d background, %d inline; want all 3 workers in the map", background, inline)
-	}
-	for _, id := range ids {
-		if !s.Finalizing(id) {
-			t.Fatalf("run %s not reported as finalizing", id)
+		out, ok := s.TakeOutcome(r.ID)
+		if !ok || out.Status != "succeeded" || out.StartedAt == nil || out.EndedAt == nil {
+			t.Fatalf("outcome = %+v, %v", out, ok)
 		}
+		if _, again := s.TakeOutcome(r.ID); again {
+			t.Fatal("outcome returned twice")
+		}
+	}
+	if background, inline := s.Finalizers(); background != 1 || inline != 0 {
+		t.Fatalf("finalizers = %d background, %d inline; want the capped 1", background, inline)
 	}
 }
 
 // S5: a poison item (permanent error for one run) must not starve the others.
 func TestPoisonFinalizerDoesNotStarveOthers(t *testing.T) {
-	var mu sync.Mutex
-	done := map[string]bool{}
 	var failAll atomic.Bool
 	failAll.Store(true)
 	var poison atomic.Value
 	poison.Store("")
-	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 8, Queue: QueueOptions{MaxFinalizers: 16},
-		OnFinished: func(r model.Run, _ model.Definition) { mu.Lock(); done[r.ID] = true; mu.Unlock() }})
+	_, st, s := resilienceService(t, Options{MaxConcurrentRuns: 8, Queue: QueueOptions{MaxFinalizers: 16}})
 	s.finishHook = func(id string) error {
 		if failAll.Load() || id == poison.Load().(string) {
 			return errors.New("injected failure")
@@ -376,20 +372,23 @@ func TestPoisonFinalizerDoesNotStarveOthers(t *testing.T) {
 		ids = append(ids, r.ID)
 		waitDone(t, s, r.ID)
 	}
-	eventually(t, 15*time.Second, "all items in the background map", func() bool {
-		background, _ := s.Finalizers()
-		return background == 5
-	})
+	if background, _ := s.Finalizers(); background != 5 {
+		t.Fatalf("background = %d, want 5", background)
+	}
 	// The oldest item becomes permanently failing; storage works for the rest.
 	poison.Store(ids[0])
 	failAll.Store(false)
 	eventually(t, 30*time.Second, "others finalized despite the poison item", func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(done) == 4 && !done[ids[0]]
+		background, _ := s.Finalizers()
+		return background == 1
 	})
-	if background, _ := s.Finalizers(); background != 1 {
-		t.Fatalf("background = %d, want only the poison item left", background)
+	for _, id := range ids[1:] {
+		if got := runStatus(t, st, id); got.Status != "succeeded" {
+			t.Fatalf("run %s = %s", id, got.Status)
+		}
+	}
+	if !s.Finalizing(ids[0]) {
+		t.Fatal("poison item left the map")
 	}
 }
 

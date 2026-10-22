@@ -18,9 +18,10 @@ func (e *blockingExecutor) Trigger(ctx context.Context, d model.Definition, _, _
 	<-ctx.Done()
 	return model.Run{}, ctx.Err()
 }
-func (*blockingExecutor) Wait(string) <-chan struct{} { return nil }
-func (*blockingExecutor) Finalizing(string) bool      { return false }
-func (*blockingExecutor) Stop(string) error           { return nil }
+func (*blockingExecutor) Wait(string) <-chan struct{}          { return nil }
+func (*blockingExecutor) Finalizing(string) bool               { return false }
+func (*blockingExecutor) TakeOutcome(string) (model.Run, bool) { return model.Run{}, false }
+func (*blockingExecutor) Stop(string) error                    { return nil }
 
 func TestReloadResetsBudget(t *testing.T) {
 	for _, change := range []string{"reload", "revision", "hash"} {

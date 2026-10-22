@@ -575,13 +575,20 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		diagnostics["execution_queue"] = pending.Queue
 		diagnostics["pending_retries"] = map[string]any{"count": pending.PendingRetries, "max": pending.MaxPendingRetries, "dropped": pending.RetriesDropped}
 		diagnostics["finalizers"] = map[string]any{"background": pending.Finalizers, "inline": pending.InlineFinalizers, "max": pending.MaxFinalizers}
+		// ADR-16: execution continues while metadata writes fail; history is
+		// written behind it. These say whether that is happening right now.
+		diagnostics["run_history"] = map[string]any{"storage_degraded": pending.StorageDegraded, "deferred": pending.HistoryDeferred, "dropped": pending.HistoryDropped, "pending": pending.Finalizers}
 	}
-	exhaustions, err := s.store.WorkerExhaustions(r.Context())
-	if err != nil {
-		internal(w, r, err)
-		return
+	// Diagnostics stay available while the metadata database is failing.
+	if exhaustions, err := s.store.WorkerExhaustions(r.Context()); err != nil {
+		if r.Context().Err() != nil {
+			internal(w, r, err)
+			return
+		}
+		info["worker_exhaustions_error"] = err.Error()
+	} else {
+		info["worker_exhaustions"] = exhaustions
 	}
-	info["worker_exhaustions"] = exhaustions
 	info["diagnostics"] = diagnostics
 	writeJSON(w, 200, info)
 }

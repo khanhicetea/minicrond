@@ -31,11 +31,11 @@ type QueueOptions struct {
 	DrainRate int
 	// MaxPendingRetries caps retries waiting for their delay.
 	MaxPendingRetries int
-	// MaxFinalizers caps runs whose terminal write is retried in the
-	// background; beyond it the completing job retries inline for at most
-	// InlineHold, then hands off up to 4x this cap.
+	// MaxFinalizers caps runs whose history (row, running state or terminal
+	// state) waits for the background writer because the metadata database
+	// is failing (ADR-16). Beyond it a run's history is not kept; its
+	// execution is unaffected.
 	MaxFinalizers int
-	InlineHold    time.Duration
 }
 
 func (o QueueOptions) withDefaults() QueueOptions {
@@ -58,10 +58,7 @@ func (o QueueOptions) withDefaults() QueueOptions {
 		o.MaxPendingRetries = 500
 	}
 	if o.MaxFinalizers <= 0 {
-		o.MaxFinalizers = 256
-	}
-	if o.InlineHold <= 0 {
-		o.InlineHold = defaultInlineHold
+		o.MaxFinalizers = 1024
 	}
 	return o
 }
@@ -393,7 +390,7 @@ func (s *Service) startQueued(ctx context.Context, item *store.QueueItem) (start
 		return false, def, nil, fmt.Errorf("dequeue run %s: %w", run.ID, err)
 	}
 	run.Status, run.Revision, run.DefinitionHash, run.BootID = "pending", current.Revision, hash, s.bootID
-	failed, launchErr := s.launch(run, current)
+	failed, launchErr := s.launch(run, current, true)
 	if launchErr != nil && !errors.Is(launchErr, ErrShutdown) {
 		slog.Error("starting queued run failed", "run", run.ID, "job", run.Job, "error", launchErr)
 	}
@@ -429,6 +426,11 @@ type Diagnostics struct {
 	Finalizers        int              `json:"finalizers"`
 	InlineFinalizers  int              `json:"inline_finalizers"`
 	MaxFinalizers     int              `json:"max_finalizers"`
+	// StorageDegraded, HistoryDeferred and HistoryDropped describe execution
+	// continuing without metadata writes (ADR-16).
+	StorageDegraded bool  `json:"storage_degraded"`
+	HistoryDeferred int64 `json:"history_deferred"`
+	HistoryDropped  int64 `json:"history_dropped"`
 }
 
 // Diagnostics computes the report on demand from the read pool.
@@ -448,6 +450,8 @@ func (s *Service) Diagnostics(ctx context.Context) Diagnostics {
 		}
 	}
 	background, inline := s.Finalizers()
+	deferred, dropped := s.History()
 	return Diagnostics{Queue: q, PendingRetries: s.PendingRetries(), MaxPendingRetries: o.MaxPendingRetries, RetriesDropped: s.RetriesDropped(),
-		Finalizers: background, InlineFinalizers: inline, MaxFinalizers: o.MaxFinalizers}
+		Finalizers: background, InlineFinalizers: inline, MaxFinalizers: o.MaxFinalizers,
+		StorageDegraded: s.StorageDegraded(), HistoryDeferred: deferred, HistoryDropped: dropped}
 }

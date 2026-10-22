@@ -204,7 +204,11 @@ func (s *Service) retryNow(it retryItem) {
 	current, hash, err := s.store.Definition(s.stopCtx, it.name)
 	if err != nil {
 		if s.stopCtx.Err() == nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, sql.ErrNoRows) {
-			logFailure("reading retry definition failed", err, "job", it.name, "run", it.runID)
+			// ADR-16: an unreadable database must not cancel the retry. Wait
+			// one more retry delay (at least a second) and check again.
+			logFailure("reading retry definition failed; retrying later", err, "job", it.name, "run", it.runID)
+			it.due = time.Now().Add(max(it.delay, time.Second))
+			s.addRetry(it)
 		}
 		return
 	}
