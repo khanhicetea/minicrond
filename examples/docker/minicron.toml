@@ -1,0 +1,35 @@
+# Bootstrap config for the container image. Mount your own over
+# /etc/minicron/minicron.toml (read-only is fine).
+
+[server]
+# Socket-only by default: `docker exec <container> minicrond status` and the
+# other CLI commands work through the private Unix socket in the data volume.
+# To publish the web UI, set bind = "0.0.0.0:7423", tcp_enabled = true and
+# allow_insecure_remote = true, and put it behind a TLS reverse proxy.
+bind = "127.0.0.1:7423"
+tcp_enabled = false
+unix_socket = true
+
+[scheduler]
+timezone = "UTC"
+max_concurrent_runs = 8
+# Bare argv programs are looked up in /usr/bin and /bin only; add root-owned
+# directories such as /usr/local/bin here (ADR-15).
+# trusted_path = ["/usr/local/bin", "/usr/bin", "/bin"]
+
+# [[init]] tasks run in order before anything else; a failure stops startup.
+# [[init]]
+# name = "migrate"
+# argv = ["/app/bin/migrate"]
+
+# Long-running services, restarted per policy.
+# [[worker]]
+# name = "queue"
+# argv = ["/app/bin/queue-worker"]
+# restart = "always"
+
+# Scheduled jobs.
+# [[job]]
+# name = "cleanup"
+# argv = ["/app/bin/cleanup"]
+# schedule = "*/15 * * * *"

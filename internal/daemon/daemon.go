@@ -153,11 +153,22 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	// Long-term logs live in their own SQLite file, separate from minicron.db:
 	// the file buffer stays the crash-safe hot path, the archive is the
 	// durable, prunable history.
+	// ADR-16: the archive is history, so a log database that cannot be opened
+	// or migrated (for example a full disk at boot) leaves the daemon on the
+	// file buffers alone instead of refusing to run anything. Buffers stay on
+	// disk and are swept into the archive by the next start that can open it.
 	ldb, err := logdb.Open(d.DataDir, dbOptions)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return err
+		}
+		slog.Error("opening the log archive database failed; running with file log buffers only until the next start", "error", err)
+		ldb = nil
 	}
 	defer func() {
+		if ldb == nil {
+			return
+		}
 		if maintenanceStuck.Load() {
 			slog.Error("not closing the log database: a maintenance loop is still running; SQLite recovers at the next start")
 			return
@@ -168,7 +179,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	d.ldb = ldb
 	d.logs = logs
 	d.mu.Unlock()
-	logs.AttachDB(ldb)
+	if ldb != nil {
+		logs.AttachDB(ldb)
+	}
 	logs.SetFrameSync(cfg.Logs.Durability == "frame")
 	logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
 	d.diskHint = make(chan struct{}, 1)
@@ -848,6 +861,9 @@ func (d *Daemon) logPruneLoop(ctx context.Context) {
 	}
 }
 func (d *Daemon) pruneLogs(ctx context.Context) {
+	if d.ldb == nil {
+		return // running on file buffers only (ADR-16)
+	}
 	defer d.timed("log_prune")()
 	d.mu.Lock()
 	keepFor := d.cfg.Logs.DBKeepFor

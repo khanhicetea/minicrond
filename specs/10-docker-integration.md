@@ -1,5 +1,10 @@
 # 10 — Docker Integration
 
+> **Implemented so far (2026-10-22):** Mode A basics — a `Dockerfile`, a Compose
+> example, `minicrond healthcheck`, and a built-in PID 1 init. See
+> [docs/operations.md#containers](../docs/operations.md#containers). Modes B/C
+> and the image variants below remain proposals.
+
 Status: Draft · Scope/phasing: OQ-14 · Nice-to-have per D-3 — nothing here
 blocks v0.1.
 

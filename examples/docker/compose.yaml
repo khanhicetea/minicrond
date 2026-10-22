@@ -1,0 +1,14 @@
+# docker compose -f examples/docker/compose.yaml up -d --build
+services:
+  minicrond:
+    build:
+      context: ../..
+    restart: unless-stopped
+    # Shutdown stops runs with their `grace` (10 s by default) before forcing
+    # them; Docker's default 10 s stop timeout is too tight for that.
+    stop_grace_period: 30s
+    volumes:
+      - minicron-data:/var/lib/minicron
+      - ./minicron.toml:/etc/minicron/minicron.toml:ro
+volumes:
+  minicron-data:

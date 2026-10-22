@@ -4,20 +4,22 @@
 
 - Treat approximately **99.9999% of jobs/workers as unattended**, with **zero live-log viewers**. This is the owner's product assumption, not measured telemetry. People inspect logs mainly during setup or when something fails.
 - Prefer the design that makes background execution cheaper and more reliable. **1–3 seconds of live-log display lag is acceptable**; subsecond delivery and polished live-view UX are not optimization goals.
-- Decision order: correctness/security and recoverable history → bounded resources and low background cost → simplicity/maintainability → on-demand diagnostic speed.
+- Decision order: correctness/security → **continuous execution of schedules and workers** → recoverable history → bounded resources and low background cost → simplicity/maintainability → on-demand diagnostic speed. Run history and run logs are important but rank below execution (owner decision, [ADR-16](docs/adr/0016-execution-first.md)).
 - Display lag alone does **not** permit delayed termination, broken worker restart policies, lost accepted logs, or incorrect final state. The explicit owner-approved overload/durability exceptions below are separate decisions. Rare readers must still be prevented from exhausting or blocking the daemon.
 
-## Owner-approved choices: 1B, 2A, 3A, 4B, 5A
+## Owner-approved choices: 1B, 2A, 3A, 4B, 5A, 6 (execution first)
 
 Implemented as of the merged tree `57063ba` (2026-10-06), with open items. See [ADR-8](docs/adr/0008-background-first-trade-offs.md) for scope, chosen defaults and open items, and the audit's [Implementation status](astra-audit-code.md#implementation-status) for per-finding residual gaps. The priorities below are unchanged.
 
 1. **Batched log durability:** write accepted frames through to the OS/file immediately; group fsync on a roughly 1–3-second cadence with a byte limit and final sync. Preserve daemon-crash recovery. Accept recent unsynced-log loss after OS crash/power failure; storage stalls can extend that nominal window. No accepted-output buffering solely in RAM.
-2. **Continue on log-storage failure:** keep the child running and drain stdout/stderr, discarding output that cannot be stored. Report missing output/storage failures when possible via bounded observations. This does not relax timeouts or required execution-state persistence.
+2. **Continue on log-storage failure:** keep the child running and drain stdout/stderr, discarding output that cannot be stored. Report missing output/storage failures when possible via bounded observations. This does not relax timeouts. (Execution-state persistence is relaxed separately by ADR-16 below.)
 3. **Disk budget before retention age:** prune oldest eligible logs early under pressure. Account for all log tiers and disk headroom; quarantine needs a separate explicit policy. Never reclaim metadata or pending execution records as log space.
 4. **Bounded durable queue before skipping:** queue excess execution work for later with count/byte/age limits, persist before acknowledging durable enqueue, and drain at a bounded rate. Reject explicitly when full or persistence is unavailable; expose expiry. Define replay semantics and respect definition/overlap/retry/catch-up policies, without assuming exactly-once execution.
 5. **Small-server-first tuning:** benchmark roughly 1 CPU / 512 MiB, 10 workers, four concurrent jobs, and modest output. This is a planning profile, not a capacity guarantee or fixed runtime limits; child resources are additional. Favor small caches/queues and limited archive concurrency.
 
-Chosen defaults are in ADR-8 and ADR-9/10/11; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
+6. **Execution first (ADR-16, 2026-10-22):** schedules and workers keep running when the metadata database or log storage fails (full, read-only, locked, stalled). Launches, running/terminal transitions, restarts, retries and alerts never wait for a history write; history is written synchronously while storage is healthy and by a bounded background writer (1024 runs) otherwise, then dropped with a counter. Constraint violations (e.g. an already-recorded scheduled occurrence) still refuse a launch; idempotent API triggers and the durable queue still require the database. minicrond runs as a container's PID 1 with a built-in init. Do not reintroduce a database dependency on the execution path.
+
+Chosen defaults are in ADR-8 and ADR-9/10/11/16; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
 
 ## System design defaults
 

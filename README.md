@@ -5,9 +5,14 @@ single binary: durable cron jobs, supervised workers, compressed tagged
 logs, a REST + SSE API, and an embedded web UI. Linux, v0.2.
 
 ```
-go build -o minicrond ./cmd/minicrond
+CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
 ./minicrond init && ./minicrond daemon
 ```
+
+In a container: `docker compose -f examples/docker/compose.yaml up -d --build`
+(see [containers](docs/operations.md#containers)). minicrond runs as PID 1 with a
+built-in init, and keeps jobs and workers running even when its history
+database or log storage fails ([ADR-16](docs/adr/0016-execution-first.md)).
 
 ## Why minicrond
 
@@ -49,7 +54,7 @@ go build -o minicrond ./cmd/minicrond
 On Linux, build from source (or use a [release binary](docs/getting-started.md)):
 
 ```sh
-go build -o minicrond ./cmd/minicrond
+CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
 ./minicrond init       # creates ./minicron.toml (mode 0600)
 ./minicrond validate   # check bootstrap settings before starting
 ./minicrond daemon     # foreground; leave running in this terminal

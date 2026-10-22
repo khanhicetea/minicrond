@@ -351,6 +351,60 @@ A worker whose terminal state cannot be written (storage fault) is restarted
 per its policy from the in-memory outcome; the state is written in the
 background. Queued runs stay queued across shutdown and are not started by it.
 
+## Containers
+
+The repository ships a [`Dockerfile`](../Dockerfile) and a
+[Compose example](../examples/docker/compose.yaml). What matters for running
+minicrond as a container's process manager:
+
+- **PID 1.** When minicrond is PID 1 and runs the daemon, it starts the daemon
+  as its only child and acts as a minimal init: it forwards SIGTERM, SIGINT,
+  SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2, reaps every orphaned process, and exits
+  with the daemon's status after giving leftover processes SIGTERM and up to 2 s.
+  Without it, a job such as `sleep 1 & exit 0` leaves zombies that are never
+  reaped (about 3 per second in tests) until the PID limit is exhausted, and
+  stops wait the full `grace` for zombie group members. No `--init`/tini is
+  needed; with one, set `MINICROND_INIT=0` (or leave it: minicrond is then not
+  PID 1 and does nothing extra).
+- **Stop timeout.** Shutdown sends each run its `stop_signal` and waits up to
+  its `grace` (10 s by default) before killing it. Docker's default `docker stop`
+  timeout is also 10 s, so give the container more: Compose
+  `stop_grace_period: 30s`, `docker run --stop-timeout 30`, or Kubernetes
+  `terminationGracePeriodSeconds` of at least the largest `grace` plus 10 s. If
+  the runtime kills the daemon first, nothing is corrupted: the next start marks
+  the runs `interrupted` and salvages their logs.
+- **Data volume.** Mount a volume at the data directory
+  (`MINICRON_DATA=/var/lib/minicron` in the image). An **empty** directory owned
+  by the daemon's user is tightened to 0700 at startup (runtimes create mount
+  points 0755 or 1777); a non-empty directory with group/other access is refused.
+  Run one daemon per data directory: a second container on the same volume exits
+  with `locked by another daemon`, so rolling deploys must stop the old
+  container first.
+- **Health.** `minicrond healthcheck` probes `/readyz` over the private socket
+  within 3 s and exits 0 or 1 without output. Readiness does not depend on the
+  databases: a failing metadata store degrades history, not execution
+  ([ADR-16](adr/0016-execution-first.md)), so an orchestrator will not restart a
+  daemon that is still running jobs. HTTP starts after `[[init]]` tasks finish;
+  cover their duration with the healthcheck start period.
+- **Storage faults.** A full or read-only volume or a locked database does not
+  stop jobs or workers, and does not count against a worker's restart budget;
+  check `diagnostics.run_history` in `minicrond status`. If the log archive
+  database cannot be opened at boot, the daemon runs on file log buffers alone.
+- **Exhausted workers.** A worker that crash-loops past `max_restart_attempts`
+  stays down (with an alert). Config-owned workers are view-only in the API, so
+  revive them with `docker exec <container> minicrond reload` (or `docker kill
+  -s HUP <container>`); a reload leaves healthy workers running.
+- **Time zones.** The binary embeds the IANA time zone database, so
+  definitions may name any zone on minimal images. Child processes still need
+  zoneinfo in the image for their own `TZ` handling.
+- **Output.** Job and worker output goes to minicrond's log store (UI, `minicrond
+  logs`), not to `docker logs`; only the daemon's own log goes to stderr.
+- **Executables.** Bare `argv` names are looked up in `/usr/bin` and `/bin`
+  only; add root-owned directories such as `/usr/local/bin` with
+  `scheduler.trusted_path` ([ADR-15](adr/0015-trusted-executable-path.md)).
+- **Static binary.** Build with `CGO_ENABLED=0` (`make build`, the Dockerfile and
+  releases do) so it runs on scratch, distroless and musl images.
+
 ## Backup and restore
 
 1. Stop the daemon (`systemctl stop minicrond` or SIGTERM; wait for exit).
