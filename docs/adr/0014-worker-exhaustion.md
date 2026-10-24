@@ -47,3 +47,15 @@ Tests cover persistence/reopen, revision guards, reset ordering, cancellation,
 query surfaces, alert formatting/batching, and UI labels. Revisit an alert outbox
 only if operators require guaranteed delivery rather than queryable evidence.
 No performance improvement is claimed; no power-loss experiment was performed.
+
+## Addendum (2026-10-24): opt-in restart backoff
+
+Owner choice: keep retirement as the default and add an opt-in instead of
+giving up on a container's main service. With `restart_backoff_max` (seconds)
+set, a worker is never retired and no exhaustion record is written; each
+consecutive unhealthy exit doubles `restart_delay` up to the cap, a healthy
+run resets it, and reaching `max_restart_attempts` only logs a `crash
+looping` warning once per episode. The cost is one timer per waiting worker,
+as before; nothing new is persisted. Worker start/stop/restart are now
+accepted for config-owned workers (runtime control, not edits), so an
+exhausted config-owned worker can be revived without a reload.

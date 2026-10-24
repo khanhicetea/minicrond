@@ -1,4 +1,4 @@
-# minicrond (next release): log disk budget
+# minicrond (next release): log disk budget, execution first
 
 The log disk budget (ADR-8 3A, [ADR-10](../adr/0010-log-disk-budget.md)) is new and
 its headroom rule is **on by default**.
@@ -38,43 +38,51 @@ its headroom rule is **on by default**.
   shuts down cleanly. The binary embeds time zone data. An empty data directory
   created 0755 by a container runtime is tightened to 0700 instead of refusing
   to start; without HOME the default data directory is `/var/lib/minicron`.
+- New `scheduler.shutdown_grace` (seconds, default 0 = off): caps each run's
+  grace when the daemon shuts down, workers included. The image's example
+  config sets 5 so `docker stop` (10 s) finishes cleanly (measured 5.2 s,
+  exit 0; previously 10.2 s and SIGKILL).
+- Stops no longer wait the full `grace` for zombie members of a process group
+  (outside the built-in init or tini).
+- A data directory that cannot be written (read-only volume, full disk at
+  boot) still starts when its metadata database is readable and its schema is
+  current: the database is opened read-only, jobs and workers run, nothing is
+  stored, the Unix socket may be unavailable and `minicrond healthcheck` then
+  fails. A missing, unreadable or outdated database is still fatal.
+- A database write lock held by another process no longer slows scheduled
+  jobs: schedule-state writes are skipped while storage is degraded.
+- Alert delivery records of runs whose history was deferred are written after
+  the run row instead of failing (and rolling back other records).
 
-## Not done yet / next steps
+## Workers
 
-Status at commit time (2026-10-22). Ordered by impact on "keep jobs and workers
-running".
+- New worker field `restart_backoff_max` (seconds, default 0 = off): the
+  worker is never retired; each consecutive unhealthy exit doubles
+  `restart_delay` up to the cap. Without it `max_restart_attempts` still
+  retires a crash-looping worker.
+- `POST /api/v1/workers/{name}/start|stop|restart` (and `minicrond start|stop|
+  restart`) now accept config-owned workers; edits stay refused.
 
-1. **Independent re-test of storage faults against the new code.** The first
-   fault-injection pass (full disk, locked DB, dead filesystem, unwritable logs,
-   faults at boot) ran on the old code and found every issue ADR-16 fixes; the
-   re-run on the new code was stopped before it reported. Unit and integration
-   tests cover each case, and a full-disk/locked/missing-table run passes, but
-   repeat the real-filesystem scenarios (ext4 `-m 0` images, `EXT4_IOC_SHUTDOWN`).
-2. **Still fatal at boot:** a read-only data directory (the lock file cannot be
-   created) and a metadata database that cannot be opened or migrated. Both stop
-   everything; consider a retry loop or an in-memory mode for config-owned
-   definitions.
-3. **Shutdown vs. `docker stop`.** The run-stop stage allows 15 s and each run's
-   `grace` defaults to 10 s, so a worker that ignores SIGTERM can outlast
-   Docker's default 10 s stop timeout. Docs recommend `stop_grace_period: 30s`;
-   a `shutdown.timeout` setting that caps grace at shutdown would remove the
-   need.
-4. **History written behind execution is lost on restart.** Deferred history
-   lives in memory (1024 runs); a daemon restart during an outage loses it, and
+## Memory
+
+- Each open run's log encoder uses a 128 KiB zstd window instead of 1 MiB (8
+  MiB with a large `max_line`): about 0.6 MiB instead of 1.46 MiB of heap per
+  running job or worker, for 1–2% lower compression. Large lines still work.
+
+## Not done yet
+
+Status 2026-10-24, ordered by impact on "keep jobs and workers running".
+
+1. **Degraded-storage log noise.** While storage fails, each run logs its
+   log-open failure and each history retry; bounded by backoff, not rate
+   limited. In read-only mode the history writer retries writes that cannot
+   succeed until its 1024-run budget fills.
+2. **History written behind execution is lost on restart** (ADR-16 accepted
+   cost; a journal was rejected). After a crash during an outage,
    `catch_up = "latest"` may re-run an occurrence whose row was never stored.
-   Alert delivery records can fail (foreign key) while the run row is deferred.
-5. **Worker crash loops.** `max_restart_attempts` (default 5) still retires a
-   worker for good; config-owned workers can only be revived with `reload`
-   (the API refuses `start` for them). For containers consider exponential
-   backoff instead of giving up, and allowing lifecycle actions (not edits) on
-   config-owned workers.
-6. **5A benchmark** (`docs/benchmarks/2026-10-22-5a-baseline/`): baseline only,
-   no profile and no A/B against ADR-16. Profile the ~1.7 MiB of heap per open
-   run (likely per-writer zstd buffers).
-7. **Container image** was verified with a scratch image in real Docker, but
-   the shipped `Dockerfile` itself was not built (Docker Hub rate limit).
-8. `groupAlive` treats zombie group members as alive, so a stop waits the full
-   `grace` when no init reaps orphans (only outside the built-in init/tini).
-9. Pre-existing: pending retries are in memory and lost on restart; the
-   embedded web bundle was not rebuilt, so the UI does not show
-   `run_history` yet.
+3. **First writes of a locked-database episode** each wait SQLite's 5 s busy
+   handler before the circuit breaker opens (one delayed fire per job, one
+   delayed restart per worker).
+4. Pending retries are in memory and lost on restart (documented design).
+5. Not measured: power-loss behavior of batched fsync, `EIO` in the middle of
+   log archival, numerical log-volume targets.
