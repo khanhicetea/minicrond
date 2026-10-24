@@ -1130,6 +1130,7 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error, force <-chan str
 	defer ticker.Stop()
 	var leaderErr error
 	leaderDone := false
+	ticks := 0
 	for {
 		select {
 		case err := <-wait:
@@ -1138,7 +1139,13 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error, force <-chan str
 				return leaderErr
 			}
 		case <-ticker.C:
-			if leaderDone && !groupAlive(pgid) {
+			if !leaderDone {
+				continue
+			}
+			// kill(-pgid, 0) every tick; the procfs scan that tells zombies
+			// from live members (groupAlive) only every 8th (200 ms), so a
+			// descendant ignoring the stop signal costs little for the grace.
+			if ticks++; !groupSignalable(pgid) || (ticks%8 == 0 && !groupAlive(pgid)) {
 				return leaderErr
 			}
 		case <-force:
@@ -1162,14 +1169,19 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error, force <-chan str
 // init, no tini) they stay in the group forever and a stop would otherwise
 // wait the full grace.
 func groupAlive(pgid int) bool {
-	err := syscall.Kill(-pgid, 0)
-	if err != nil && !errors.Is(err, syscall.EPERM) {
+	if !groupSignalable(pgid) {
 		return false
 	}
 	if runtime.GOOS != "linux" {
 		return true
 	}
 	return groupHasLiveMember(pgid)
+}
+
+// groupSignalable reports whether the group has any member, zombies included.
+func groupSignalable(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // groupHasLiveMember scans procfs for a non-zombie member of pgid. It only
