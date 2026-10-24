@@ -43,6 +43,10 @@ type Options struct {
 	// OnFinished is called after a terminal run transition is persisted.
 	// Implementations should return quickly and do slow work asynchronously.
 	OnFinished func(model.Run, model.Definition)
+	// OnRunStored is called by the background history writer after it stores
+	// the row of a run that was admitted without one (ADR-16). It runs on that
+	// writer's goroutine and must stay short and bounded.
+	OnRunStored func(runID string)
 	// Queue bounds the durable execution queue and the pending-retry and
 	// finalizer budgets (ADR-9). Zero values select the defaults.
 	Queue QueueOptions
@@ -56,6 +60,7 @@ type Service struct {
 	maxLine     int
 	trustedPath []string
 	onFinished  func(model.Run, model.Definition)
+	onRunStored func(string)
 	// shutdownGrace caps each run's grace when it is stopped by Shutdown
 	// (nanoseconds; 0 = no cap). Updated by reload.
 	shutdownGrace atomic.Int64
@@ -160,7 +165,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 		bootID = uuid.NewV7().String()
 	}
 	stopCtx, stopCancel := context.WithCancel(context.Background())
-	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), outcomes: make(map[string]model.Run), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
+	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, onRunStored: opt.OnRunStored, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), outcomes: make(map[string]model.Run), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
 	s.SetShutdownGrace(opt.ShutdownGrace)
 	s.queue.wake = make(chan struct{}, 1)
 	s.retries.wake = make(chan struct{}, 1)
@@ -176,6 +181,16 @@ func (s *Service) Finalizing(id string) bool {
 	defer s.mu.Unlock()
 	_, ok := s.finalizing[id]
 	return ok
+}
+
+// RowPending reports whether run id was admitted without a stored row and the
+// background history writer has not stored it yet. The writer clears this
+// before it calls Options.OnRunStored.
+func (s *Service) RowPending(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it, ok := s.finalizing[id]
+	return ok && it.create
 }
 
 // beginAdmission registers a trigger with shutdown. It fails once shutdown

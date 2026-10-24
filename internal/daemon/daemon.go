@@ -207,6 +207,9 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		}
 	}()
 	maxLine := int64(cfg.Logs.MaxLine) << 10
+	// Alert observations of runs admitted without a stored row wait here for
+	// the history writer (ADR-16) instead of failing the run foreign key.
+	var parked *alertPark
 	execService := executor.New(st, logs, executor.Options{
 		TrustedPath:       cfg.Scheduler.TrustedPath,
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
@@ -218,7 +221,13 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 				dispatcher.Notify(run, definition)
 			}
 		},
+		OnRunStored: func(runID string) {
+			if parked != nil {
+				parked.runStored(runID)
+			}
+		},
 	})
+	parked = newAlertPark(st, execService.RowPending)
 	d.mu.Lock()
 	d.exec = execService
 	d.mu.Unlock()
@@ -327,7 +336,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		for i, r := range records {
 			updates[i] = store.AlertUpdate{RunID: r.RunID, Channel: r.Channel, Status: r.Status, Attempts: r.Attempts, LastError: r.Reason}
 		}
-		return st.RecordAlerts(ctx, updates)
+		return parked.record(ctx, updates)
 	})
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,7 +178,15 @@ func TestRunningStateWriteFailureDoesNotKillProcess(t *testing.T) {
 // ADR-16: when the run row itself cannot be inserted, the run still executes
 // and the row is inserted later.
 func TestRunExecutesWhenRowInsertFails(t *testing.T) {
-	dir, st, s := resilienceService(t, Options{})
+	var storedMu sync.Mutex
+	stored := map[string]bool{}
+	var s *Service
+	dir, st, s := resilienceService(t, Options{OnRunStored: func(id string) {
+		storedMu.Lock()
+		defer storedMu.Unlock()
+		// The row is stored and no longer pending when the callback runs.
+		stored[id] = !s.RowPending(id)
+	}})
 	marker := filepath.Join(t.TempDir(), "ran")
 	d, hash := putJob(t, st, model.Definition{Name: "no-row", Kind: model.KindJob, Command: "touch " + marker, Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
 	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
@@ -215,6 +224,9 @@ func TestRunExecutesWhenRowInsertFails(t *testing.T) {
 	if deferred, _ := s.History(); deferred != 2 {
 		t.Fatalf("deferred = %d, want 2", deferred)
 	}
+	if !s.RowPending(run.ID) {
+		t.Fatal("a run admitted without a row is not reported pending")
+	}
 	if _, err := saboteur.Exec(`COMMIT`); err != nil {
 		t.Fatal(err)
 	}
@@ -223,4 +235,9 @@ func TestRunExecutesWhenRowInsertFails(t *testing.T) {
 		b, errB := st.Run(t.Context(), second.ID)
 		return errA == nil && errB == nil && a.Status == "succeeded" && b.Status == "succeeded"
 	})
+	storedMu.Lock()
+	defer storedMu.Unlock()
+	if !stored[run.ID] || !stored[second.ID] {
+		t.Fatalf("run-stored callback = %v", stored)
+	}
 }

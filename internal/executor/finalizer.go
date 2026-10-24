@@ -263,6 +263,11 @@ func (s *Service) writeHistory(v finalItemView) error {
 		v.item.create = false
 		s.mu.Unlock()
 		slog.Info("recorded deferred run", "run", v.r.ID, "job", v.r.Job)
+		if s.onRunStored != nil {
+			if err := fault.Call(func() error { s.onRunStored(v.r.ID); return nil }); err != nil {
+				logFailure("run-stored callback panicked", err, "run", v.r.ID)
+			}
+		}
 	}
 	if v.start {
 		st := v.started

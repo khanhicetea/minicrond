@@ -115,8 +115,12 @@ execution** while it is not.
   depends on rows that may not have been written: after a crash during an
   outage, `catch_up = "latest"` may run an occurrence again. There was never an
   exactly-once guarantee.
-- Alerts are sent before the run is stored when storage is degraded; their
-  delivery records (`alert_deliveries`, FK to `runs`) may then fail to store.
+- Alerts are sent before the run is stored when storage is degraded. Their
+  delivery records (`alert_deliveries`, FK to `runs`) are parked in memory
+  (256 observations, oldest kept) and written right after the history writer
+  stores the run row (2026-10-24); an older observation never overwrites a
+  newer one. They are lost when the run's history is dropped, at shutdown, or
+  beyond that bound.
 - An unrecorded run's process group is not in the database, so after a daemon
   crash (not in a container, where the namespace dies with PID 1) startup
   recovery cannot kill its leftovers.

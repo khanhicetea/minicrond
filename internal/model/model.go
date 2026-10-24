@@ -62,7 +62,7 @@ type Definition struct {
 	// up to this cap and the worker keeps restarting.
 	RestartBackoffMax int `json:"restart_backoff_max,omitzero" toml:"restart_backoff_max"`
 	HealthyAfter      int `json:"healthy_after,omitzero" toml:"healthy_after"`
-	Priority           int `json:"priority,omitzero" toml:"priority"`
+	Priority          int `json:"priority,omitzero" toml:"priority"`
 	// NextFireAt is populated by the scheduler for API responses only.
 	NextFireAt *time.Time `json:"next_fire_at,omitzero" toml:"-"`
 }

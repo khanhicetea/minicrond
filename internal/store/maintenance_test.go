@@ -107,3 +107,34 @@ func TestReadPoolSeesCommittedRuns(t *testing.T) {
 		t.Fatal("read pool accepted a write")
 	}
 }
+
+// Observations for a run whose row is not stored yet are returned instead of
+// failing the batch, and an older observation never overwrites a newer one.
+func TestRecordAlertsForStoredRunsReturnsMissing(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	def, err := s.PutDefinition(t.Context(), model.Definition{Name: "example", Kind: model.KindJob}, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(t.Context(), model.Run{ID: "a", DefinitionID: def.ID, Job: def.Name, Kind: def.Kind, Status: "pending", Trigger: "manual", QueuedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	missing, err := s.RecordAlertsForStoredRuns(t.Context(), []AlertUpdate{
+		{RunID: "a", Channel: "ops", Status: "sent", Attempts: 1, At: now},
+		{RunID: "later", Channel: "ops", Status: "queued", At: now},
+	})
+	if err != nil || len(missing) != 1 || missing[0].RunID != "later" {
+		t.Fatalf("missing = %+v, error %v", missing, err)
+	}
+	if missing, err := s.RecordAlertsForStoredRuns(t.Context(), []AlertUpdate{{RunID: "a", Channel: "ops", Status: "queued", At: now.Add(-time.Second)}}); err != nil || len(missing) != 0 {
+		t.Fatalf("stale write: %+v %v", missing, err)
+	}
+	if a, _ := s.RunAlerts(t.Context(), "a"); len(a) != 1 || a[0].Status != "sent" {
+		t.Fatalf("an older observation overwrote a newer one: %+v", a)
+	}
+}
