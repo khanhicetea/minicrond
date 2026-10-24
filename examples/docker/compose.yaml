@@ -4,9 +4,10 @@ services:
     build:
       context: ../..
     restart: unless-stopped
-    # Shutdown stops runs with their `grace` (10 s by default) before forcing
-    # them; Docker's default 10 s stop timeout is too tight for that.
-    stop_grace_period: 30s
+    # The image's config caps each run's grace at shutdown to 5 s
+    # (scheduler.shutdown_grace), which fits Docker's default 10 s stop
+    # timeout. Raise both together if your programs need longer to stop.
+    stop_grace_period: 15s
     volumes:
       - minicron-data:/var/lib/minicron
       - ./minicron.toml:/etc/minicron/minicron.toml:ro

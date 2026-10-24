@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"uuid"
@@ -34,6 +35,8 @@ type Options struct {
 	// MaxConcurrentRuns bounds simultaneously running jobs. Workers are not
 	// counted against this limit (they have their own capacity story).
 	MaxConcurrentRuns int
+	// ShutdownGrace, when positive, caps each run's grace at shutdown.
+	ShutdownGrace time.Duration
 	// MaxLineBytes is the global logs.max_line cap applied to every run's
 	// single-line truncation. Defaults to 256 KiB when zero.
 	MaxLineBytes int64
@@ -53,6 +56,9 @@ type Service struct {
 	maxLine     int
 	trustedPath []string
 	onFinished  func(model.Run, model.Definition)
+	// shutdownGrace caps each run's grace when it is stopped by Shutdown
+	// (nanoseconds; 0 = no cap). Updated by reload.
+	shutdownGrace atomic.Int64
 	// admission serializes overlap/capacity decisions between triggers. It is
 	// held across storage and log setup, so shutdown and completion must never
 	// wait for it; they use mu and closing instead. It is a one-slot semaphore
@@ -155,6 +161,7 @@ func New(st *store.Store, logs *logstore.Store, opt Options) *Service {
 	}
 	stopCtx, stopCancel := context.WithCancel(context.Background())
 	s := &Service{store: st, logs: logs, bootID: bootID, capacity: make(chan struct{}, opt.MaxConcurrentRuns), maxLine: int(opt.MaxLineBytes), onFinished: opt.OnFinished, trustedPath: slices.Clone(opt.TrustedPath), active: make(map[string]*activeRun), byJob: make(map[string]int), admission: make(chan struct{}, 1), stopping: make(chan struct{}), finalizing: make(map[string]*finalItem), outcomes: make(map[string]model.Run), retryDone: make(chan struct{}), stopCtx: stopCtx, stopCancel: stopCancel, queueOpt: opt.Queue.withDefaults()}
+	s.SetShutdownGrace(opt.ShutdownGrace)
 	s.queue.wake = make(chan struct{}, 1)
 	s.retries.wake = make(chan struct{}, 1)
 	s.finals.wake = make(chan struct{}, 1)
@@ -644,7 +651,11 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 			leaderDone = true
 		case <-ctx.Done():
 			cause = context.Cause(ctx)
-			waitErr = s.stopWithNote(w, r.ID, "stop requested", pgid, d, wait, a.force)
+			stopDef := d
+			if errors.Is(cause, ErrShutdown) {
+				stopDef.Grace = s.shutdownGraceFor(d.Grace)
+			}
+			waitErr = s.stopWithNote(w, r.ID, "stop requested", pgid, stopDef, wait, a.force)
 			leaderDone = true
 		}
 	}
@@ -1131,9 +1142,57 @@ func stopGroup(pgid int, d model.Definition, wait <-chan error, force <-chan str
 	}
 }
 
+// groupAlive reports whether the process group has a member that can still
+// run. Zombies count as gone: without an init that reaps orphans (no built-in
+// init, no tini) they stay in the group forever and a stop would otherwise
+// wait the full grace.
 func groupAlive(pgid int) bool {
 	err := syscall.Kill(-pgid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	if runtime.GOOS != "linux" {
+		return true
+	}
+	return groupHasLiveMember(pgid)
+}
+
+// groupHasLiveMember scans procfs for a non-zombie member of pgid. It only
+// runs after kill(-pgid, 0) found members, i.e. on stop paths. An unreadable
+// procfs reports the group as alive.
+func groupHasLiveMember(pgid int) bool {
+	dir, err := os.Open("/proc")
+	if err != nil {
+		return true
+	}
+	defer dir.Close()
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		return true
+	}
+	want := strconv.Itoa(pgid)
+	for _, name := range names {
+		if name[0] < '0' || name[0] > '9' {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + name + "/stat")
+		if err != nil {
+			continue
+		}
+		_, rest, ok := strings.CutLast(string(b), ")")
+		if !ok {
+			continue
+		}
+		// Fields after the command name: state, ppid, pgrp, ...
+		fields := strings.Fields(rest)
+		if len(fields) < 3 || fields[2] != want {
+			continue
+		}
+		if fields[0] != "Z" && fields[0] != "X" {
+			return true
+		}
+	}
+	return false
 }
 func killGroup(pgid int, sig syscall.Signal) {
 	// A zero/negative PGID can signal the daemon's own group or all processes.
@@ -1310,6 +1369,20 @@ func (s *Service) BeginShutdown() {
 // work that ignores cancellation (storage calls without a deadline) can still
 // outlive the returned error, which callers must treat as "databases may still
 // be in use".
+// SetShutdownGrace caps each run's grace at shutdown (scheduler.shutdown_grace);
+// zero or negative removes the cap.
+func (s *Service) SetShutdownGrace(d time.Duration) { s.shutdownGrace.Store(int64(max(d, 0))) }
+
+// shutdownGraceFor returns the grace, in seconds, for a run stopped by
+// Shutdown. A grace of 0 (immediate SIGKILL) is never lengthened.
+func (s *Service) shutdownGraceFor(grace int) int {
+	limit := time.Duration(s.shutdownGrace.Load())
+	if limit <= 0 || time.Duration(grace)*time.Second <= limit {
+		return grace
+	}
+	return max(int(limit/time.Second), 1)
+}
+
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.BeginShutdown()
 	s.mu.Lock()

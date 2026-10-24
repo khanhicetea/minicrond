@@ -52,6 +52,10 @@ type Scheduler struct {
 	TrustedPath       []string `toml:"trusted_path" json:"trusted_path,omitempty"`
 	Timezone          string   `toml:"timezone" json:"timezone"`
 	MaxConcurrentRuns int      `toml:"max_concurrent_runs" json:"max_concurrent_runs"`
+	// ShutdownGrace is measured in seconds: at daemon shutdown each run's
+	// grace is capped at this value. 0 (the default) keeps every definition's
+	// own grace.
+	ShutdownGrace int `toml:"shutdown_grace" json:"shutdown_grace,omitempty"`
 }
 
 // Queue bounds the durable execution queue and the pending-retry budget
@@ -546,6 +550,9 @@ func validateConfig(c *Config) error {
 	}
 	if c.Scheduler.MaxConcurrentRuns < 1 || c.Scheduler.MaxConcurrentRuns > 1024 {
 		return errors.New("scheduler.max_concurrent_runs: must be between 1 and 1024")
+	}
+	if c.Scheduler.ShutdownGrace < 0 || c.Scheduler.ShutdownGrace > 3600 {
+		return errors.New("scheduler.shutdown_grace: must be between 0 and 3600")
 	}
 	if c.Queue.MaxItems < 1 || c.Queue.MaxItems > 10000 {
 		return errors.New("queue.max_items: must be between 1 and 10000")

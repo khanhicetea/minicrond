@@ -30,6 +30,7 @@ allow_insecure_remote = false  # required true for a non-loopback bind
 [scheduler]
 timezone = "UTC"               # IANA name; default schedule timezone
 max_concurrent_runs = 32       # global gate across all definitions
+shutdown_grace = 0             # seconds; caps each run's grace at daemon shutdown (0 = definition grace)
 # trusted_path = ["/usr/local/bin", "/usr/bin", "/bin"] # optional; restart to change
 
 [queue]                        # durable queue for triggers that find the gate full (ADR-9; restart to change)
@@ -118,6 +119,12 @@ and `max_concurrent_runs` are unitless.
   whitespace ignored). Any other value enables embedding by omitting
   `X-Frame-Options` and CSP's `frame-ancestors` directive. Restart the daemon
   after changing it.
+- `scheduler.shutdown_grace` — seconds (0..3600, default 0). When positive,
+  a run stopped because the daemon is shutting down gets at most this long
+  after its `stop_signal` before SIGKILL, instead of its own `grace` (a shorter
+  `grace`, including 0, is kept). Use it to fit a container runtime's stop
+  timeout: `5` suits Docker's default 10 s. Ordinary stops, timeouts and
+  reloads still use each definition's `grace`. Applied on reload.
 - `scheduler.trusted_path` — optional ordered list of 1–32 absolute executable
   search directories. Omission preserves `/usr/bin:/bin`; an empty list is invalid.
   For example, `["/usr/local/bin", "/usr/bin", "/bin"]` supports official container

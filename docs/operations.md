@@ -332,7 +332,8 @@ stored.
 
 On SIGTERM the daemon stops accepting work, cancels log maintenance, signals
 worker supervision and the executor, stops the scheduler (5s), then stops runs
-(15s grace before a forced kill), joins worker supervision (5s) and
+(each run's `grace`, capped by `scheduler.shutdown_grace` when set, within a
+15s stage before a forced kill), joins worker supervision (5s) and
 maintenance (10s), drains alerts, and shuts down HTTP (5s). The stages before
 alert drain share a 45s target; alert delivery always gets at least 5s and HTTP
 and the log archiver keep small reserved slices, so the worst case is somewhat
@@ -364,17 +365,18 @@ minicrond as a container's process manager:
   SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2, reaps every orphaned process, and exits
   with the daemon's status after giving leftover processes SIGTERM and up to 2 s.
   Without it, a job such as `sleep 1 & exit 0` leaves zombies that are never
-  reaped (about 3 per second in tests) until the PID limit is exhausted, and
-  stops wait the full `grace` for zombie group members. No `--init`/tini is
+  reaped (about 3 per second in tests) until the PID limit is exhausted.
+  Stops ignore zombie group members (they used to wait the full `grace`). No `--init`/tini is
   needed; with one, set `MINICROND_INIT=0` (or leave it: minicrond is then not
   PID 1 and does nothing extra).
 - **Stop timeout.** Shutdown sends each run its `stop_signal` and waits up to
   its `grace` (10 s by default) before killing it. Docker's default `docker stop`
-  timeout is also 10 s, so give the container more: Compose
-  `stop_grace_period: 30s`, `docker run --stop-timeout 30`, or Kubernetes
-  `terminationGracePeriodSeconds` of at least the largest `grace` plus 10 s. If
-  the runtime kills the daemon first, nothing is corrupted: the next start marks
-  the runs `interrupted` and salvages their logs.
+  timeout is also 10 s. Either cap the grace used at shutdown with
+  `scheduler.shutdown_grace` (the image's example config sets `5`), or give the
+  container more time: Compose `stop_grace_period`, `docker run --stop-timeout`,
+  or Kubernetes `terminationGracePeriodSeconds` of at least the largest grace
+  used at shutdown plus 10 s. If the runtime kills the daemon first, nothing is
+  corrupted: the next start marks the runs `interrupted` and salvages their logs.
 - **Data volume.** Mount a volume at the data directory
   (`MINICRON_DATA=/var/lib/minicron` in the image). An **empty** directory owned
   by the daemon's user is tightened to 0700 at startup (runtimes create mount

@@ -13,6 +13,9 @@ unix_socket = true
 [scheduler]
 timezone = "UTC"
 max_concurrent_runs = 8
+# At shutdown, give each run at most 5 s after its stop_signal (instead of its
+# own `grace`) so the daemon finishes before Docker's default 10 s stop timeout.
+shutdown_grace = 5
 # Bare argv programs are looked up in /usr/bin and /bin only; add root-owned
 # directories such as /usr/local/bin here (ADR-15).
 # trusted_path = ["/usr/local/bin", "/usr/bin", "/bin"]

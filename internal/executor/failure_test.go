@@ -175,6 +175,61 @@ ready:
 	}
 }
 
+// scheduler.shutdown_grace caps a long definition grace at shutdown, so a run
+// that ignores its stop signal is killed before a container runtime's stop
+// timeout. The shutdown context itself stays generous.
+func TestShutdownGraceCapsDefinitionGrace(t *testing.T) {
+	st, logs, s := failureService(t, Options{ShutdownGrace: time.Second})
+	d := model.Definition{Name: "capped-grace", Kind: model.KindJob, Shell: "/bin/sh", Command: "trap '' TERM; echo ready; exec sleep 30", Grace: 3600, SuccessCodes: []int{0}, Timezone: "UTC"}
+	r := admitFailureRun(t, st, s, d)
+	deadline := time.Now().Add(3 * time.Second)
+	for !hasStdoutLine(t, logs, r.ID, "ready") {
+		if time.Now().After(deadline) {
+			t.Fatal("process did not become ready")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	began := time.Now()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown = %v", err)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("shutdown took %v with a 1 s shutdown grace", took)
+	}
+	if finished := waitFailureRun(t, st, s, r.ID); finished.Status != "stopped" {
+		t.Fatalf("status = %s", finished.Status)
+	}
+}
+
+func TestShutdownGraceForNeverLengthens(t *testing.T) {
+	var s Service
+	if got := s.shutdownGraceFor(30); got != 30 {
+		t.Fatalf("no cap: %d", got)
+	}
+	s.SetShutdownGrace(5 * time.Second)
+	for grace, want := range map[int]int{0: 0, 3: 3, 5: 5, 3600: 5} {
+		if got := s.shutdownGraceFor(grace); got != want {
+			t.Fatalf("grace %d: got %d, want %d", grace, got, want)
+		}
+	}
+}
+
+func hasStdoutLine(t *testing.T, logs *logstore.Store, runID, line string) bool {
+	t.Helper()
+	frames, err := logs.Read(runID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, frame := range frames {
+		if frame.Stream == logstore.Stdout && string(frame.Payload) == line {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCompletedRunTerminatesBackgroundDescendants(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("uses procfs to distinguish running processes from zombies")

@@ -210,6 +210,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	execService := executor.New(st, logs, executor.Options{
 		TrustedPath:       cfg.Scheduler.TrustedPath,
 		MaxConcurrentRuns: cfg.Scheduler.MaxConcurrentRuns,
+		ShutdownGrace:     time.Duration(cfg.Scheduler.ShutdownGrace) * time.Second,
 		MaxLineBytes:      maxLine,
 		Queue:             queueOptions(cfg.Queue),
 		OnFinished: func(run model.Run, definition model.Definition) {
@@ -647,7 +648,9 @@ func (d *Daemon) Reload(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	d.cfg = cfg
+	exec := d.exec
 	d.mu.Unlock()
+	exec.SetShutdownGrace(time.Duration(cfg.Scheduler.ShutdownGrace) * time.Second)
 	d.logs.SetFrameSync(cfg.Logs.Durability == "frame")
 	d.logs.SetGroupSync(time.Duration(cfg.Logs.SyncInterval)*time.Millisecond, int64(cfg.Logs.SyncMaxDirty)<<10)
 	d.applyDiskPolicy(cfg.Logs)

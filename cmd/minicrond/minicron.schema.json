@@ -47,6 +47,13 @@
           "type": "integer",
           "minimum": 1,
           "default": 32
+        },
+        "shutdown_grace": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 0,
+          "description": "Seconds: at daemon shutdown each run's grace is capped at this value (0 keeps each definition's grace). Set it below the container runtime's stop timeout, e.g. 5 for Docker's default 10 s."
         }
       }
     },
