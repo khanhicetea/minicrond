@@ -11,7 +11,7 @@ import { downloadFile } from '../lib/download';
 import { formatDayTime, formatSpan, formatUptime, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
-import type { Definition } from '../types';
+import type { Definition, RunHistoryDiagnostics } from '../types';
 
 /** Tight badge sizing shared across settings panels. */
 const BADGE = '!gap-1 !px-1.5 !py-0 !text-[0.68rem] font-medium';
@@ -20,6 +20,17 @@ interface Check {
   name: string;
   ok: boolean;
   detail: string;
+}
+
+/** Run history storage (ADR-16): jobs keep running while it is degraded. */
+function runHistoryCheck(history: RunHistoryDiagnostics | undefined): Check {
+  const name = 'Run history storage';
+  if (!history) return { name, ok: true, detail: 'unknown' };
+  const lost = history.dropped > 0 ? ` · ${history.dropped} lost` : '';
+  if (history.read_only) return { name, ok: false, detail: `read-only data directory; history not stored${lost}` };
+  if (history.storage_degraded) return { name, ok: false, detail: `degraded; ${history.pending} waiting to be written${lost}` };
+  if (history.dropped > 0) return { name, ok: false, detail: `${history.dropped} runs' history lost during an outage` };
+  return { name, ok: true, detail: history.pending > 0 ? `${history.pending} catching up` : 'writing' };
 }
 
 /** Shared daemon/jobs/runs state + diagnostics checks, used by header and panels. */
@@ -33,6 +44,7 @@ function useDiagnostics() {
     { name: 'Definitions readable', ok: !jobs.isError && jobs.data !== undefined, detail: jobs.isError ? errorText(jobs.error) : `${definitions.length} loaded` },
     { name: 'Run history readable', ok: !runs.isError && runs.data !== undefined, detail: runs.isError ? errorText(runs.error) : `${runs.data?.length ?? 0} recent runs` },
     { name: 'Log streaming', ok: !runs.isError, detail: runs.isError ? 'unavailable' : 'SSE ready' },
+    runHistoryCheck(daemon.data?.diagnostics?.run_history),
   ];
   return { daemon, jobs, runs, definitions, checks };
 }

@@ -591,7 +591,9 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 		diagnostics["finalizers"] = map[string]any{"background": pending.Finalizers, "inline": pending.InlineFinalizers, "max": pending.MaxFinalizers}
 		// ADR-16: execution continues while metadata writes fail; history is
 		// written behind it. These say whether that is happening right now.
-		diagnostics["run_history"] = map[string]any{"storage_degraded": pending.StorageDegraded, "deferred": pending.HistoryDeferred, "dropped": pending.HistoryDropped, "pending": pending.Finalizers}
+		// read_only: the metadata database was opened read-only at boot
+		// (unwritable data directory); nothing is stored until a restart.
+		diagnostics["run_history"] = map[string]any{"storage_degraded": pending.StorageDegraded || s.store.ReadOnly(), "read_only": s.store.ReadOnly(), "deferred": pending.HistoryDeferred, "dropped": pending.HistoryDropped, "pending": pending.Finalizers}
 	}
 	// Diagnostics stay available while the metadata database is failing.
 	if exhaustions, err := s.store.WorkerExhaustions(r.Context()); err != nil {

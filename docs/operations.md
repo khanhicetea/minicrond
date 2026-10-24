@@ -289,7 +289,8 @@ Workers and `[[init]]` jobs are never queued.
 (`depth`, `bytes`, `oldest_age_s`, limits, and `expired`, `rejected`,
 `unavailable`, `dropped` counters since the daemon started), `pending_retries`
 (`count`, `max`, `dropped`), `finalizers` (`background`, `inline`, `max`),
-`run_history` (`storage_degraded`, `deferred`, `dropped`, `pending`) and
+`run_history` (`storage_degraded`, `read_only`, `deferred`, `dropped`, `pending`;
+shown as the "Run history storage" check in the web UI's diagnostics) and
 `log_archive` (`queued`, `overflow`, `overflow_total`, `sealed_runs`,
 `sealed_bytes`, computed per request from a bounded directory walk). Counters
 reset at restart; the `skipped` run records are the durable evidence. Run

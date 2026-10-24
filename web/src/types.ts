@@ -39,6 +39,18 @@ export interface DaemonInfo {
   tcp_enabled: boolean;
   token_fingerprint?: string;
   worker_exhaustions: Record<string, WorkerExhaustion>;
+  diagnostics?: {
+    /** ADR-16: execution continues while history cannot be written. */
+    run_history?: RunHistoryDiagnostics;
+  };
+}
+
+export interface RunHistoryDiagnostics {
+  storage_degraded: boolean;
+  read_only?: boolean;
+  deferred: number;
+  dropped: number;
+  pending: number;
 }
 
 export interface RunMetricBucket {
