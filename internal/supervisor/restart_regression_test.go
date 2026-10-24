@@ -33,6 +33,7 @@ func (*instantExecutor) Wait(string) <-chan struct{}          { return nil }
 func (*instantExecutor) Finalizing(string) bool               { return false }
 func (*instantExecutor) TakeOutcome(string) (model.Run, bool) { return model.Run{}, false }
 func (*instantExecutor) Stop(string) error                    { return nil }
+func (*instantExecutor) StopForShutdown(string) bool          { return false }
 
 func TestQuickTerminalOutcomes(t *testing.T) {
 	for _, status := range []string{"succeeded", "failed"} {

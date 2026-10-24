@@ -1347,6 +1347,20 @@ func (s *Service) Stop(id string) error {
 	return nil
 }
 
+// StopForShutdown stops run id as part of daemon shutdown, so its grace is
+// capped by scheduler.shutdown_grace like the runs Shutdown stops itself.
+// Worker supervision stops its runs this way when the daemon is stopping.
+func (s *Service) StopForShutdown(id string) bool {
+	s.mu.Lock()
+	a := s.active[id]
+	s.mu.Unlock()
+	if a == nil {
+		return false
+	}
+	a.cancel(ErrShutdown)
+	return true
+}
+
 func (s *Service) stopActive(id string) bool {
 	s.mu.Lock()
 	a := s.active[id]
@@ -1530,7 +1544,9 @@ func logFailure(message string, err error, attrs ...any) {
 }
 
 func writeSystem(w *logstore.Writer, runID, message string) {
-	if err := w.Write(logstore.System, []byte(message), 0); err != nil {
+	// A degraded writer discards output by policy (ADR-8 2A) and has logged
+	// its failure once; do not log every system line it cannot store.
+	if err := w.Write(logstore.System, []byte(message), 0); err != nil && !errors.Is(err, logstore.ErrNoChunk) {
 		logFailure("writing run system log failed", err, "run", runID)
 	}
 }

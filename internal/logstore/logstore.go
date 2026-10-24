@@ -63,8 +63,9 @@ var (
 
 var errWriterClosed = errors.New("log writer closed")
 
-// errNoChunk is a write to a writer without an open chunk (degraded capture).
-var errNoChunk = errors.New("log writer has no open chunk")
+// ErrNoChunk is a write to a writer without an open chunk (degraded capture,
+// already reported once per episode).
+var ErrNoChunk = errors.New("log writer has no open chunk")
 
 // archiveWorkers bounds concurrent archive transfers, and so the batch memory
 // they hold, without making unrelated runs wait for one another.
@@ -1128,7 +1129,7 @@ func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, 
 	}
 	if w.file == nil || w.enc == nil {
 		// No open chunk: a writer opened degraded, or a reopen that failed.
-		return false, errNoChunk
+		return false, ErrNoChunk
 	}
 	// Pipe truncates before calling; its flag must reach the run-level one too.
 	if flags&FlagTruncated != 0 {

@@ -56,6 +56,9 @@ type workerExecutor interface {
 	TakeOutcome(string) (model.Run, bool)
 	Finalizing(string) bool
 	Stop(string) error
+	// StopForShutdown stops a run because the daemon is stopping, so the
+	// shutdown grace cap applies.
+	StopForShutdown(string) bool
 }
 
 type workerLoop struct {
@@ -385,7 +388,17 @@ func restartDelay(d model.Definition, failures int) time.Duration {
 	return min(delay, limit)
 }
 
+// stopRun stops a worker run. During daemon shutdown it is a shutdown stop,
+// so scheduler.shutdown_grace caps the worker's grace: supervision usually
+// reaches its runs before the executor's own shutdown does.
 func (s *Supervisor) stopRun(id string) {
+	s.mu.Lock()
+	closing := s.closing
+	s.mu.Unlock()
+	if closing {
+		s.exec.StopForShutdown(id)
+		return
+	}
 	if err := s.exec.Stop(id); err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Error("stopping supervised worker failed", "run", id, "error", err)
 	}

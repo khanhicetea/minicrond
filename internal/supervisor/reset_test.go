@@ -22,6 +22,7 @@ func (*blockingExecutor) Wait(string) <-chan struct{}          { return nil }
 func (*blockingExecutor) Finalizing(string) bool               { return false }
 func (*blockingExecutor) TakeOutcome(string) (model.Run, bool) { return model.Run{}, false }
 func (*blockingExecutor) Stop(string) error                    { return nil }
+func (*blockingExecutor) StopForShutdown(string) bool          { return false }
 
 func TestReloadResetsBudget(t *testing.T) {
 	for _, change := range []string{"reload", "revision", "hash"} {
