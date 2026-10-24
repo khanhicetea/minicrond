@@ -30,6 +30,15 @@ import (
 
 const Version byte = 1
 const chunkLimit = 1 << 20
+
+// encoderWindow is the zstd match window of each open run's encoder. The
+// encoder stays allocated for the whole run, so it is the main per-run heap
+// cost (5A: 10 workers). Measured 2026-10-24 on journal text/JSON and syslog
+// corpora: 128 KiB costs 0.58 MiB per encoder against 1.46 MiB for 1 MiB (the
+// previous minimum, raised to 8 MiB for large max_line), for 1-2% lower
+// compression. A frame larger than the window still encodes; matches just
+// cannot reach further back.
+const encoderWindow = 128 << 10
 const maxFramePayload = 16 << 20
 
 // In batch durability mode (ADR-8 1B) every accepted frame is written through
@@ -863,20 +872,10 @@ func (w *Writer) rotate() error {
 	}
 	enc := w.enc
 	if enc == nil {
-		// Most chunks are at most 1 MiB. Reserve a larger match window only
-		// when the configured line limit permits an oversized single frame.
-		window := chunkLimit
-		if w.maxLine <= 0 || w.maxLine > 8<<20 {
-			window = 8 << 20
-		} else {
-			for window < w.maxLine {
-				window *= 2
-			}
-		}
 		enc, err = zstd.NewWriter(f,
 			zstd.WithEncoderLevel(zstd.SpeedFastest),
 			zstd.WithEncoderConcurrency(1),
-			zstd.WithWindowSize(window),
+			zstd.WithWindowSize(encoderWindow),
 			zstd.WithLowerEncoderMem(true),
 		)
 		if err != nil {
