@@ -310,18 +310,21 @@ func (s *Server) Start(bind, socket string) error {
 	// Acquire all listeners before serving, so a partial startup cannot leave
 	// an HTTP server running against resources the caller has already closed.
 	if socket != "" {
-		if err := removeStaleUnixSocket(socket); err != nil {
+		unixListener, err := listenUnix(socket)
+		if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {
+			// ADR-16: a data directory that is not writable must not stop
+			// execution. Jobs and workers run; the local CLI cannot connect.
+			slog.Error("Unix socket unavailable: the data directory is not writable; the local CLI cannot connect", "path", socket, "tcp_enabled", s.tcpEnabled, "error", err)
 			if ln != nil {
-				_ = ln.Close()
+				go s.serve("tcp", s.tcp, ln)
 			}
-			return err
+			return nil
 		}
-		unixListener, err := net.Listen("unix", socket)
 		if err != nil {
 			if ln != nil {
 				_ = ln.Close()
 			}
-			return fmt.Errorf("listen on Unix socket: %w", err)
+			return err
 		}
 		if err = os.Chmod(socket, 0o600); err != nil {
 			_ = unixListener.Close()
@@ -337,6 +340,17 @@ func (s *Server) Start(bind, socket string) error {
 		go s.serve("tcp", s.tcp, ln)
 	}
 	return nil
+}
+
+func listenUnix(path string) (net.Listener, error) {
+	if err := removeStaleUnixSocket(path); err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("listen on Unix socket: %w", err)
+	}
+	return ln, nil
 }
 
 func removeStaleUnixSocket(path string) error {

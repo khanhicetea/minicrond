@@ -64,6 +64,27 @@ func OpenReader(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// OpenImmutable opens a database on storage this process cannot write (a
+// read-only volume or directory) for reading only. SQLite cannot open a WAL
+// database there without its -shm file, so the file is opened immutable: no
+// locking and no change detection. Only use it while the caller holds the
+// data directory lock, so no other minicrond writes the file. Every write
+// fails with SQLITE_READONLY.
+func OpenImmutable(path string) (*sql.DB, error) {
+	query := url.Values{
+		"mode":      {"ro"},
+		"immutable": {"1"},
+		"_pragma":   {"foreign_keys(ON)"},
+	}
+	db, err := open(path, query)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(readerConns)
+	db.SetMaxIdleConns(readerConns)
+	return db, nil
+}
+
 func options(opt []Options) Options {
 	var o Options
 	if len(opt) > 0 {

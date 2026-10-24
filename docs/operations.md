@@ -392,7 +392,10 @@ minicrond as a container's process manager:
   cover their duration with the healthcheck start period.
 - **Storage faults.** A full or read-only volume or a locked database does not
   stop jobs or workers, and does not count against a worker's restart budget;
-  check `diagnostics.run_history` in `minicrond status`. If the log archive
+  check `diagnostics.run_history` in `minicrond status`. A volume that is
+  already read-only at boot still starts when its metadata database is readable
+  and current (opened read-only; see the troubleshooting table); an empty,
+  unreadable or outdated one is fatal. If the log archive
   database cannot be opened at boot, the daemon runs on file log buffers alone.
 - **Exhausted workers.** A worker that crash-loops past `max_restart_attempts`
   stays down (with an alert). Revive it with `minicrond start <name>`
@@ -545,6 +548,7 @@ a unique TCP port. Service mode logs to the journal.
 | Web UI 401 | Wrong/rotated token — rotate again or re-check `initial-token` |
 | Runs recorded as `interrupted` | Daemon was killed; recovery marks unobservable active runs `interrupted` at boot |
 | `metadata storage is failing; runs keep executing...` | The metadata database rejects writes (full/read-only volume, external lock). Jobs and workers keep running; history is written when storage recovers. Watch `diagnostics.run_history` in `minicrond status`; `dropped > 0` means some history was lost |
+| `metadata database opened read-only` / `Unix socket unavailable` | The data directory is not writable (read-only volume or mode). Jobs and workers run from the stored definitions; no history, logs, schedule state or API token can be written, the local CLI cannot connect (TCP still works when enabled), and `minicrond healthcheck` fails. Make the volume writable and restart. Boot still fails when the metadata database is missing, unreadable, or needs a schema migration |
 | `run history not recorded ... budget is full` | Storage stayed down long enough for 1024 runs' history to wait; later history is dropped until it recovers |
 | Runs stay `queued` / end `queue_expired` | `max_concurrent_runs` stays full for longer than `queue.max_age`; raise the limit, shorten jobs, or raise `max_age` (see Execution queue) |
 | Jobs didn't fire while daemon was down | By design (`catch_up = "none"` default); use `catch_up = "latest"` to fire the most recent miss |

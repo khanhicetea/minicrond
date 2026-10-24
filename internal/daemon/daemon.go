@@ -88,6 +88,7 @@ type Daemon struct {
 	running       bool
 	stopping      bool
 	lock          *os.File
+	dirLock       *os.File // flock on the data directory itself
 	store         *store.Store
 	ldb           *logdb.LogDB
 	logs          *logstore.Store
@@ -946,18 +947,42 @@ func (d *Daemon) acquireLock() error {
 	if err := ensurePrivateDataDir(d.DataDir); err != nil {
 		return err
 	}
-	path := filepath.Join(d.DataDir, "minicron.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	// The directory itself is locked too, so a daemon that can only read the
+	// data directory still excludes (and is excluded by) a writable one.
+	dir, err := os.Open(d.DataDir)
 	if err != nil {
 		return err
 	}
+	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.Join(fmt.Errorf("data directory is locked by another daemon: %w", err), dir.Close())
+	}
+	path := filepath.Join(d.DataDir, "minicron.lock")
+	readOnly := false
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {
+		// A read-only volume or directory. Boot needs a readable metadata
+		// database, not a writable directory (ADR-16): keep the directory
+		// lock and lock an existing lock file read-only when there is one.
+		readOnly = true
+		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Warn("data directory is not writable; running without history writes", "path", d.DataDir)
+			d.dirLock = dir
+			return nil
+		}
+	}
+	if err != nil {
+		return errors.Join(err, dir.Close())
+	}
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.Join(fmt.Errorf("data directory is locked by another daemon: %w", err), f.Close())
+		return errors.Join(fmt.Errorf("data directory is locked by another daemon: %w", err), f.Close(), dir.Close())
 	}
-	if err := writeLockPID(f); err != nil {
-		return errors.Join(err, f.Close()) // Closing releases the advisory lock.
+	if readOnly {
+		slog.Warn("data directory is not writable; running without history writes", "path", d.DataDir)
+	} else if err := writeLockPID(f); err != nil {
+		return errors.Join(err, f.Close(), dir.Close()) // Closing releases the advisory lock.
 	}
-	d.lock = f
+	d.lock, d.dirLock = f, dir
 	return nil
 }
 
@@ -1009,14 +1034,16 @@ func writeLockPID(f *os.File) error {
 }
 
 func (d *Daemon) releaseLock() error {
-	if d.lock == nil {
-		return nil
+	var err error
+	for _, f := range []*os.File{d.lock, d.dirLock} {
+		if f == nil {
+			continue
+		}
+		if unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); unlockErr != nil {
+			err = errors.Join(err, fmt.Errorf("unlock daemon data directory: %w", unlockErr))
+		}
+		err = errors.Join(err, f.Close())
 	}
-	f := d.lock
-	d.lock = nil
-	var unlockErr error
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
-		unlockErr = fmt.Errorf("unlock daemon data directory: %w", err)
-	}
-	return errors.Join(unlockErr, f.Close())
+	d.lock, d.dirLock = nil, nil
+	return err
 }

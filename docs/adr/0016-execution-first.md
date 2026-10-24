@@ -91,6 +91,15 @@ execution** while it is not.
    `wait4(-1)` races `os/exec`'s own wait of each run. `MINICROND_INIT=0`
    disables it (for `docker run --init`/tini).
 
+10. **Read-only data directory at boot** (2026-10-24, owner: "leave fatal, at
+    least metadata db should readable"). Boot requires a readable metadata
+    database, not a writable directory. When the lock file cannot be created
+    (EROFS/EACCES) the daemon locks the data directory itself (always locked
+    too, so read-only and writable daemons still exclude each other) and, when
+    the WAL database cannot be opened, opens it `immutable` read-only; its
+    schema must be current. An unwritable Unix socket path is logged, not
+    fatal. Missing, unreadable, or outdated databases remain fatal.
+
 ## Alternatives rejected
 
 - **A local append-only journal file** for unwritten history: it would fail on

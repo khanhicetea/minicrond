@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
@@ -34,7 +36,12 @@ var ErrInvalidTransition = errors.New("invalid state transition")
 // Store owns the metadata database. db is the single writer connection; rdb
 // is a small read-only pool for API listings and metrics, so a slow read can
 // never hold up run transitions or schedule state.
-type Store struct{ db, rdb *sql.DB }
+type Store struct {
+	db, rdb *sql.DB
+	// readOnly: the data directory is not writable and both pools are the
+	// same immutable connection pool (openReadOnly).
+	readOnly bool
+}
 
 type RunMetrics struct {
 	Total         int               `json:"total"`
@@ -71,7 +78,7 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create metadata directory: %w", err)
 	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
+	if err := makePrivate(dataDir); err != nil {
 		return nil, fmt.Errorf("set metadata directory permissions: %w", err)
 	}
 	path := filepath.Join(dataDir, "minicron.db")
@@ -81,19 +88,72 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	}
 	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
-		return nil, errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close())
+		err = errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close())
+		if syscall.Access(dataDir, 2 /* W_OK */) == nil {
+			return nil, err
+		}
+		return openReadOnly(ctx, path, err)
 	}
 	if s.rdb, err = sqlite.OpenReader(path); err != nil {
 		return nil, errors.Join(fmt.Errorf("open metadata read pool: %w", err), db.Close())
 	}
 	for _, dbPath := range []string{path, path + "-wal", path + "-shm"} {
-		if err := os.Chmod(dbPath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := makePrivate(dbPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, errors.Join(fmt.Errorf("set metadata database permissions: %w", err), s.Close())
 		}
 	}
 	return s, nil
 }
-func (s *Store) Close() error                   { return errors.Join(s.rdb.Close(), s.db.Close()) }
+
+// openReadOnly opens the metadata database of a data directory this process
+// cannot write (ADR-16: boot needs a readable metadata database, not a
+// writable one). Definitions and history can be read; every write fails as
+// unavailable storage, which execution already tolerates. The schema must be
+// current: a read-only database cannot be migrated.
+func openReadOnly(ctx context.Context, path string, cause error) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, errors.Join(cause, err)
+	}
+	db, err := sqlite.OpenImmutable(path)
+	if err != nil {
+		return nil, errors.Join(cause, err)
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("read-only metadata database: %w", err), db.Close())
+	}
+	if version != SchemaVersion {
+		return nil, errors.Join(fmt.Errorf("read-only metadata database has schema %d, this daemon needs %d and cannot migrate it", version, SchemaVersion), db.Close())
+	}
+	slog.Warn("metadata database opened read-only: the data directory is not writable; jobs and workers run, history is not stored", "path", path)
+	return &Store{db: db, rdb: db, readOnly: true}, nil
+}
+
+// makePrivate removes group and other permissions. It never adds owner
+// permissions and does nothing when there are none to remove, so a private
+// data directory on a read-only volume, or one the operator made read-only,
+// is accepted as is (ADR-16: boot needs a readable database).
+func makePrivate(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 == 0 {
+		return nil
+	}
+	return os.Chmod(path, info.Mode().Perm()&^0o077)
+}
+
+func (s *Store) Close() error {
+	if s.readOnly {
+		return s.db.Close()
+	}
+	return errors.Join(s.rdb.Close(), s.db.Close())
+}
+
+// ReadOnly reports that the metadata database was opened read-only because
+// the data directory is not writable.
+func (s *Store) ReadOnly() bool                 { return s.readOnly }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 // PoolStats reports how long callers waited for the writer connection and
