@@ -974,10 +974,8 @@ func (s *Server) workerStart(w http.ResponseWriter, r *http.Request) {
 		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
 		return
 	}
-	if d.Source == "config" {
-		writeError(w, 403, "read_only", "config-owned definition is view only")
-		return
-	}
+	// Lifecycle actions are runtime control, not edits: config-owned workers
+	// accept them too (the file stays authoritative for the definition).
 	if err := s.super.StartDefinition(d); err != nil {
 		internal(w, r, err)
 		return
@@ -994,10 +992,6 @@ func (s *Server) workerStop(w http.ResponseWriter, r *http.Request) {
 		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
 		return
 	}
-	if d.Source == "config" {
-		writeError(w, 403, "read_only", "config-owned definition is view only")
-		return
-	}
 	if err := s.super.Stop(r.PathValue("name")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		internal(w, r, err)
 		return
@@ -1012,10 +1006,6 @@ func (s *Server) workerRestart(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		internal(w, r, fmt.Errorf("read worker definition %s: %w", r.PathValue("name"), err))
-		return
-	}
-	if d.Source == "config" {
-		writeError(w, 403, "read_only", "config-owned definition is view only")
 		return
 	}
 	if err := s.super.Restart(d); err != nil {

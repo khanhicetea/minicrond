@@ -72,10 +72,16 @@ export interface Definition {
   autostart?: boolean;
   restart?: string;
   /**
-   * RestartDelay and HealthyAfter are measured in seconds.
+   * RestartDelay, RestartBackoffMax and HealthyAfter are measured in seconds.
    */
   restart_delay?: number /* int */;
   max_restart_attempts?: number /* int */;
+  /**
+   * RestartBackoffMax, when positive, replaces retirement after
+   * max_restart_attempts: consecutive unhealthy exits double restart_delay
+   * up to this cap and the worker keeps restarting.
+   */
+  restart_backoff_max?: number /* int */;
   healthy_after?: number /* int */;
   priority?: number /* int */;
   /**

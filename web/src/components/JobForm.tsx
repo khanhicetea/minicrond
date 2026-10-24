@@ -382,6 +382,20 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                 />
               </div>
               <div>
+                <label htmlFor={`${formId}-rbackoff`} className={label}>Restart backoff max (seconds)</label>
+                <input
+                  id={`${formId}-rbackoff`}
+                  type="number"
+                  min={0}
+                  step={1}
+                  className={field}
+                  value={draft.restart_backoff_max ?? ''}
+                  disabled={disabled}
+                  onChange={event => onChange({ restart_backoff_max: optionalNumber(event.target.value) })}
+                  placeholder="0 = retire after max attempts"
+                />
+              </div>
+              <div>
                 <label htmlFor={`${formId}-healthy`} className={label}>Healthy after (seconds)</label>
                 <input
                   id={`${formId}-healthy`}

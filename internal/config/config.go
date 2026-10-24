@@ -528,6 +528,7 @@ func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition, ex 
 		d.RestartDelay = cmp.Or(d.RestartDelay, defaults.RestartDelay)
 		d.HealthyAfter = cmp.Or(d.HealthyAfter, defaults.HealthyAfter)
 		d.MaxRestartAttempts = cmp.Or(d.MaxRestartAttempts, defaults.MaxRestartAttempts)
+		d.RestartBackoffMax = cmp.Or(d.RestartBackoffMax, defaults.RestartBackoffMax)
 	}
 }
 
@@ -648,7 +649,7 @@ func validateConfig(c *Config) error {
 	}
 	if c.Defaults.Name != "" || c.Defaults.Command != "" || len(c.Defaults.Argv) > 0 || c.Defaults.Schedule != "" ||
 		c.Defaults.Autostart != nil || c.Defaults.Restart != "" || c.Defaults.RestartDelay != 0 ||
-		c.Defaults.HealthyAfter != 0 || c.Defaults.MaxRestartAttempts != 0 {
+		c.Defaults.HealthyAfter != 0 || c.Defaults.MaxRestartAttempts != 0 || c.Defaults.RestartBackoffMax != 0 {
 		return errors.New("defaults: only common job settings are allowed")
 	}
 	probe := model.Definition{Name: "defaults", Kind: model.KindJob, Command: "true"}
@@ -710,6 +711,9 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		}
 		if d.MaxRestartAttempts < 1 || d.MaxRestartAttempts > 1000 {
 			return fmt.Errorf("%s.max_restart_attempts must be between 1 and 1000", d.Name)
+		}
+		if d.RestartBackoffMax != 0 && (d.RestartBackoffMax < d.RestartDelay || d.RestartBackoffMax > 86400) {
+			return fmt.Errorf("%s.restart_backoff_max must be 0 or between restart_delay and 86400 seconds", d.Name)
 		}
 		for _, code := range d.SuccessCodes {
 			if code < 0 || code > 255 {

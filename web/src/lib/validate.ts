@@ -76,6 +76,12 @@ export function validateDefinition(def: Definition, lineOf: Record<string, numbe
     }
   }
 
+  if (def.restart_backoff_max !== undefined && def.restart_backoff_max !== 0) {
+    const value = def.restart_backoff_max;
+    if (!Number.isInteger(value) || value < (def.restart_delay ?? 5) || value > 86400) {
+      add({ field: 'restart_backoff_max', title: 'Invalid: Restart backoff max', message: 'Must be 0 (off) or between the restart delay and 86400 seconds.', severity: 'error' });
+    }
+  }
   if (def.retry_delay !== undefined && def.retry_delay > 86400) {
     add({ field: 'retry_delay', title: 'Invalid: Retry delay', message: 'Must not exceed 86400 seconds.', severity: 'error' });
   }

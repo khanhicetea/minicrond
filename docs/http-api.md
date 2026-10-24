@@ -72,6 +72,10 @@ a second CSP header cannot relax the daemon's framing restriction.
 | `POST /api/v1/workers/{name}/stop` | Stop a worker (graceful, then kill) |
 | `POST /api/v1/workers/{name}/restart` | Restart a worker |
 
+Worker start/stop/restart are runtime control and are accepted for
+config-owned workers too; create, update, delete, enable/disable and job
+triggers of config-owned definitions are refused with `403 read_only`.
+
 `POST /api/v1/jobs` and `PUT /api/v1/jobs/{name}` accept
 `If-None-Match: *` for an atomic create-only operation. An existing or
 previously deleted name returns 412 without replacing it. Updates may use

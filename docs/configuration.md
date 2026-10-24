@@ -313,6 +313,7 @@ schema below.
 | `restart` | `always` | worker | `always`, `on-failure` (non-zero exit), or `never` |
 | `restart_delay` | `5` | worker | Delay between restart attempts, in seconds |
 | `max_restart_attempts` | `5` | worker | 1..1000; supervisor gives up after this many consecutive failures. Reload, a new definition/revision, and explicit start/restart reset the counter |
+| `restart_backoff_max` | `0` (off) | worker | Seconds (`restart_delay`..86400). When set, the worker is **never retired**: each consecutive unhealthy exit doubles `restart_delay` up to this cap, and reaching `max_restart_attempts` only logs a `crash looping` warning. A healthy run resets the delay. Useful for a container's main service |
 | `healthy_after` | `30` | worker | Seconds a failed worker must have run to reset the crash counter. Successful exits always reset it, even before this threshold; `restart = "always"` still applies its restart delay |
 
 Pending retry timers are in memory and are canceled on daemon shutdown; retries do not resume after a daemon crash. A retry uses the current enabled definition and retry budget. If it overlaps a running job under `on_overlap = "skip"`, it is recorded as skipped.

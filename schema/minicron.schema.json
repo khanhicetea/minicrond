@@ -765,6 +765,12 @@
         "max_restart_attempts": {
           "type": "integer",
           "minimum": 0
+        },
+        "restart_backoff_max": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "description": "Workers: when positive, never retire after max_restart_attempts; double restart_delay per consecutive unhealthy exit up to this many seconds"
         }
       },
       "required": [

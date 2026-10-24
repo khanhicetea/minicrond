@@ -395,9 +395,12 @@ minicrond as a container's process manager:
   check `diagnostics.run_history` in `minicrond status`. If the log archive
   database cannot be opened at boot, the daemon runs on file log buffers alone.
 - **Exhausted workers.** A worker that crash-loops past `max_restart_attempts`
-  stays down (with an alert). Config-owned workers are view-only in the API, so
-  revive them with `docker exec <container> minicrond reload` (or `docker kill
-  -s HUP <container>`); a reload leaves healthy workers running.
+  stays down (with an alert). Revive it with `minicrond start <name>`
+  (config-owned workers accept start/stop/restart; only edits are refused) or a
+  reload (`docker kill -s HUP <container>`), which leaves healthy workers
+  running. To never give up on a container's main service, set
+  `restart_backoff_max` (for example `300`): the worker then keeps restarting
+  with exponential backoff instead of retiring.
 - **Time zones.** The binary embeds the IANA time zone database, so
   definitions may name any zone on minimal images. Child processes still need
   zoneinfo in the image for their own `TZ` handling.

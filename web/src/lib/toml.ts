@@ -39,6 +39,7 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
     if (def.restart) emit('restart', 'restart', literal(def.restart));
     if (def.restart_delay !== undefined) emit('restart_delay', 'restart_delay', String(def.restart_delay));
     if (def.max_restart_attempts) emit('max_restart_attempts', 'max_restart_attempts', String(def.max_restart_attempts));
+    if (def.restart_backoff_max) emit('restart_backoff_max', 'restart_backoff_max', String(def.restart_backoff_max));
     if (def.healthy_after !== undefined) emit('healthy_after', 'healthy_after', String(def.healthy_after));
     if (def.priority) emit('priority', 'priority', String(def.priority));
   } else {

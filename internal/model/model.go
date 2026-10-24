@@ -54,10 +54,14 @@ type Definition struct {
 	Alerts    []string          `json:"alerts,omitempty" toml:"alerts"`
 	Autostart *bool             `json:"autostart,omitempty" toml:"autostart"`
 	Restart   string            `json:"restart,omitempty" toml:"restart"`
-	// RestartDelay and HealthyAfter are measured in seconds.
+	// RestartDelay, RestartBackoffMax and HealthyAfter are measured in seconds.
 	RestartDelay       int `json:"restart_delay,omitzero" toml:"restart_delay"`
 	MaxRestartAttempts int `json:"max_restart_attempts,omitzero" toml:"max_restart_attempts"`
-	HealthyAfter       int `json:"healthy_after,omitzero" toml:"healthy_after"`
+	// RestartBackoffMax, when positive, replaces retirement after
+	// max_restart_attempts: consecutive unhealthy exits double restart_delay
+	// up to this cap and the worker keeps restarting.
+	RestartBackoffMax int `json:"restart_backoff_max,omitzero" toml:"restart_backoff_max"`
+	HealthyAfter      int `json:"healthy_after,omitzero" toml:"healthy_after"`
 	Priority           int `json:"priority,omitzero" toml:"priority"`
 	// NextFireAt is populated by the scheduler for API responses only.
 	NextFireAt *time.Time `json:"next_fire_at,omitzero" toml:"-"`

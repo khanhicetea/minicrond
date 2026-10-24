@@ -34,3 +34,25 @@ func TestExhaustionVisibleInListDetailStatesAndStatus(t *testing.T) {
 		t.Fatalf("start did not clear: %v %v", saved, err)
 	}
 }
+
+// Config-owned workers accept lifecycle actions (they are runtime control,
+// not edits); editing them stays refused.
+func TestConfigOwnedWorkerAcceptsLifecycleActions(t *testing.T) {
+	s, token, st := setup(t)
+	enabled := true
+	def := model.Definition{Name: "svc", Kind: model.KindWorker, Command: "sleep 30", Shell: "/bin/sh", Enabled: &enabled, Source: "config",
+		Restart: "always", RestartDelay: 1, HealthyAfter: 30, MaxRestartAttempts: 5, Grace: 1, SuccessCodes: []int{0}, Timezone: "UTC"}
+	if err := st.SyncConfigDefinitions(t.Context(), []model.Definition{def}); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"start", "restart", "stop"} {
+		rec := call(s, false, "POST", "/api/v1/workers/svc/"+action, token, "", nil)
+		if rec.Code != 202 {
+			t.Fatalf("%s: %d %s", action, rec.Code, rec.Body.String())
+		}
+	}
+	rec := call(s, false, "DELETE", "/api/v1/jobs/svc", token, "", nil)
+	if rec.Code != 403 {
+		t.Fatalf("delete of a config-owned worker: %d %s", rec.Code, rec.Body.String())
+	}
+}

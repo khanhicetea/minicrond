@@ -25,6 +25,7 @@ func sameDefinition(a, b *model.Definition) bool {
 		a.LogMax == b.LogMax && a.LogOnFull == b.LogOnFull &&
 		sameBool(a.Autostart, b.Autostart) && a.Restart == b.Restart &&
 		a.RestartDelay == b.RestartDelay && a.MaxRestartAttempts == b.MaxRestartAttempts &&
+		a.RestartBackoffMax == b.RestartBackoffMax &&
 		a.HealthyAfter == b.HealthyAfter && a.Priority == b.Priority &&
 		(a.Argv == nil) == (b.Argv == nil) && slices.Equal(a.Argv, b.Argv) &&
 		(a.SuccessCodes == nil) == (b.SuccessCodes == nil) && slices.Equal(a.SuccessCodes, b.SuccessCodes) &&

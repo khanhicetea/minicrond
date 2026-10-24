@@ -341,7 +341,13 @@ func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healt
 	failures := s.failures[d.Name]
 	epoch := s.epochLocked(d.Name)
 	s.mu.Unlock()
-	if failures >= d.MaxRestartAttempts {
+	if d.RestartBackoffMax > 0 {
+		// Backoff mode never retires: a container's only service keeps being
+		// retried. The budget only marks when the crash loop is reported.
+		if failures == d.MaxRestartAttempts {
+			slog.Warn("supervisor: worker is crash looping; restarting with backoff", "worker", d.Name, "failures", failures, "max_delay_s", d.RestartBackoffMax, "reason", reason)
+		}
+	} else if failures >= d.MaxRestartAttempts {
 		if s.persistExhaustion(ctx, d, epoch, failures, lastRunID, reason) {
 			s.mu.Lock()
 			retire := s.epochLocked(d.Name) == epoch
@@ -355,7 +361,7 @@ func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healt
 		}
 		// An operator reset won the race with the exhaustion write.
 	}
-	timer := time.NewTimer(time.Duration(d.RestartDelay) * time.Second)
+	timer := time.NewTimer(restartDelay(d, failures))
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -363,6 +369,20 @@ func (s *Supervisor) restartAfter(ctx context.Context, d model.Definition, healt
 	case <-timer.C:
 		return !s.held(d.Name)
 	}
+}
+
+// restartDelay is restart_delay, doubled per consecutive unhealthy exit up to
+// restart_backoff_max when that is set.
+func restartDelay(d model.Definition, failures int) time.Duration {
+	delay := time.Duration(d.RestartDelay) * time.Second
+	limit := time.Duration(d.RestartBackoffMax) * time.Second
+	if limit <= 0 {
+		return delay
+	}
+	for i := 1; i < failures && delay < limit; i++ {
+		delay *= 2
+	}
+	return min(delay, limit)
 }
 
 func (s *Supervisor) stopRun(id string) {
