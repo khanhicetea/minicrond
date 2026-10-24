@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
@@ -88,11 +87,10 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	}
 	s := &Store{db: db}
 	if err := s.migrate(ctx); err != nil {
-		err = errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close())
-		if syscall.Access(dataDir, 2 /* W_OK */) == nil {
-			return nil, err
-		}
-		return openReadOnly(ctx, path, err)
+		// A read-only or full volume cannot open a WAL database for writing
+		// (no -shm). Boot needs a readable database (ADR-16): fall back to a
+		// read-only open when the schema is current, else report both errors.
+		return openReadOnly(ctx, path, errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close()))
 	}
 	if s.rdb, err = sqlite.OpenReader(path); err != nil {
 		return nil, errors.Join(fmt.Errorf("open metadata read pool: %w", err), db.Close())
@@ -105,8 +103,8 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	return s, nil
 }
 
-// openReadOnly opens the metadata database of a data directory this process
-// cannot write (ADR-16: boot needs a readable metadata database, not a
+// openReadOnly opens the metadata database when it cannot be opened for
+// writing: a read-only or full volume (ADR-16: boot needs a readable metadata database, not a
 // writable one). Definitions and history can be read; every write fails as
 // unavailable storage, which execution already tolerates. The schema must be
 // current: a read-only database cannot be migrated.
@@ -123,9 +121,9 @@ func openReadOnly(ctx context.Context, path string, cause error) (*Store, error)
 		return nil, errors.Join(cause, fmt.Errorf("read-only metadata database: %w", err), db.Close())
 	}
 	if version != SchemaVersion {
-		return nil, errors.Join(fmt.Errorf("read-only metadata database has schema %d, this daemon needs %d and cannot migrate it", version, SchemaVersion), db.Close())
+		return nil, errors.Join(cause, fmt.Errorf("read-only fallback: metadata database has schema %d, this daemon needs %d and cannot migrate it", version, SchemaVersion), db.Close())
 	}
-	slog.Warn("metadata database opened read-only: the data directory is not writable; jobs and workers run, history is not stored", "path", path)
+	slog.Warn("metadata database opened read-only: it cannot be opened for writing (read-only or full volume); jobs and workers run, history is not stored until a restart", "path", path, "cause", cause)
 	return &Store{db: db, rdb: db, readOnly: true}, nil
 }
 

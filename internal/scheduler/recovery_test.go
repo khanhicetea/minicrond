@@ -159,3 +159,75 @@ func TestJobKeepsFiringWhileMetadataIsUnwritable(t *testing.T) {
 		return len(runs) >= during+4
 	})
 }
+
+// A write lock held by another process makes every write wait SQLite's 5 s
+// busy handler, which ignores the 2 s write deadline. Once the executor knows
+// storage is failing, schedule-state writes are skipped so firing keeps its
+// cadence (fault re-test 2026-10-24: 2 of 15 expected runs before this).
+func TestJobKeepsCadenceWhileDatabaseIsWriteLocked(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	logs, err := logstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4})
+	t.Cleanup(func() { ex.Shutdown(t.Context()) })
+	sched := New(st, ex)
+	t.Cleanup(sched.Stop)
+	marks := filepath.Join(t.TempDir(), "fired")
+	def := worker("cadence", "none")
+	def.Argv = nil
+	def.Shell = "/bin/sh"
+	def.Command = "echo x >> " + marks
+	def.Schedule = "@every 1s"
+	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
+		t.Fatal(err)
+	}
+	defs, err := st.Definitions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := func() int {
+		b, _ := os.ReadFile(marks)
+		return strings.Count(string(b), "x")
+	}
+	if err := sched.Reload(t.Context(), defs); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); fired() == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("job never fired")
+		}
+	}
+	locker, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { locker.Close() })
+	conn, err := locker.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(t.Context(), "BEGIN EXCLUSIVE"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.ExecContext(t.Context(), "COMMIT"); conn.Close() })
+	// The first writes of the episode each wait the busy handler; after that
+	// the cadence must be close to one fire per second.
+	for deadline := time.Now().Add(15 * time.Second); !ex.StorageDegraded(); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("executor never noticed the locked database")
+		}
+	}
+	time.Sleep(6 * time.Second) // let in-flight busy waits drain
+	before := fired()
+	time.Sleep(8 * time.Second)
+	if got := fired() - before; got < 6 {
+		t.Fatalf("fired %d times in 8 s while the database was write-locked", got)
+	}
+}

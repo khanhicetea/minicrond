@@ -151,6 +151,23 @@ type scheduleMemory struct {
 	persistFailing bool
 }
 
+// errStateSkipped: a schedule-state write was not attempted because run
+// history storage is known to be failing.
+var errStateSkipped = errors.New("metadata storage is degraded; schedule state is kept in memory")
+
+// writeState performs one schedule-state write. While the executor knows
+// metadata storage is failing it is skipped: SQLite's busy handler (5 s) does
+// not observe the write deadline, so a locked or stalled database would
+// otherwise delay every fire (ADR-16). Firing continues from memory either way.
+func (s *Scheduler) writeState(write func(context.Context) error) error {
+	if s.exec != nil && s.exec.StorageDegraded() {
+		return errStateSkipped
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
+	defer cancel()
+	return write(ctx)
+}
+
 func (m *scheduleMemory) persistResult(job string, err error) {
 	switch {
 	case err != nil && !m.persistFailing:
@@ -226,9 +243,9 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition, mem *schedu
 		if hasPersisted && persistedLast.Equal(last) && persistedNext.Equal(next) {
 			return
 		}
-		writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
-		err := s.store.SetScheduleStateWithNext(writeCtx, d.ID, hash, anchor, last, next)
-		cancel()
+		err := s.writeState(func(ctx context.Context) error {
+			return s.store.SetScheduleStateWithNext(ctx, d.ID, hash, anchor, last, next)
+		})
 		mem.persistResult(d.Name, err)
 		if err == nil {
 			persistedLast, persistedNext, hasPersisted = last, next, true
@@ -273,9 +290,9 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition, mem *schedu
 				return fmt.Errorf("catch up: %w", err)
 			}
 			advance(overdue.latest)
-			writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
-			stateErr := s.store.SetScheduleState(writeCtx, d.ID, hash, anchor, last)
-			cancel()
+			stateErr := s.writeState(func(ctx context.Context) error {
+				return s.store.SetScheduleState(ctx, d.ID, hash, anchor, last)
+			})
 			mem.persistResult(d.Name, stateErr)
 			if stateErr == nil {
 				persistedLast, persistedNext, hasPersisted = last, time.Time{}, true
@@ -335,9 +352,9 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition, mem *schedu
 		following, err := schedule.nextFireDistinct(maxTime(last, time.Now().UTC()), anchor, last)
 		if err != nil {
 			slog.Error("scheduler: calculating following fire failed", "job", d.Name, "error", err)
-			writeCtx, cancel := context.WithTimeout(context.Background(), stateWriteTimeout)
-			mem.persistResult(d.Name, s.store.SetScheduleState(writeCtx, d.ID, hash, anchor, last))
-			cancel()
+			mem.persistResult(d.Name, s.writeState(func(ctx context.Context) error {
+				return s.store.SetScheduleState(ctx, d.ID, hash, anchor, last)
+			}))
 			return nil
 		}
 		persistNext(following)
