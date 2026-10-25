@@ -1,0 +1,315 @@
+{
+ "scenario": "tier-normal",
+ "rep": 1,
+ "window_s": 180.0,
+ "cpu_ms_s": 24.667,
+ "utime_ms_s": 15.278,
+ "stime_ms_s": 9.389,
+ "sched_cpu_ms_s": 24.662,
+ "cpu_ms_per_1s": {
+  "n": 180,
+  "p50": 12.42,
+  "p95": 75.55,
+  "max": 174.17,
+  "min": 5.07
+ },
+ "ctxsw_s": 749.5,
+ "nonvol_ctxsw_s": 19.56,
+ "timeslices_s": 749.5,
+ "sched_wait_ms_s": 28.952,
+ "rss_mib": {
+  "start": 66.91,
+  "median": 111.05,
+  "max": 163.43,
+  "end": 123.25
+ },
+ "hwm_mib": 163.35,
+ "threads_max": 82,
+ "io": {
+  "write_bytes_s": 508996.3,
+  "wchar_s": 382120.5,
+  "syscw_s": 926.52,
+  "syscr_s": 310.12,
+  "read_bytes_s": 0.0,
+  "rchar_s": 166551.9
+ },
+ "host": {
+  "busy_pct_4cpu": 2.7,
+  "steal_pct": 0.02,
+  "iowait_pct": 2.24,
+  "load1_max": 0.52,
+  "load1_median": 0.29
+ },
+ "disk": {
+  "du_growth_bytes": 8007680,
+  "du_end_bytes": 12701696,
+  "du_growth_kib_per_min": 2606.7,
+  "apparent_growth_bytes": 7865605,
+  "du_after_shutdown": 4091904,
+  "files_end_bytes": {
+   "log-buffers/other": 2527998,
+   "minicron-logs.db": 851968,
+   "minicron-logs.db-shm": 32768,
+   "minicron-logs.db-wal": 4165352,
+   "minicron.db": 626688,
+   "minicron.db-shm": 32768,
+   "minicron.db-wal": 4161232
+  },
+  "files_growth_bytes": {
+   "log-buffers/other": 2279268,
+   "minicron-logs.db": 847872,
+   "minicron-logs.db-shm": 0,
+   "minicron-logs.db-wal": 3370160,
+   "minicron.db": 622592,
+   "minicron.db-shm": 0,
+   "minicron.db-wal": 791040
+  },
+  "durable_growth_kib_per_min": 1220.6,
+  "metadata_db_growth_kib_per_min": 202.7,
+  "archive_db_growth_kib_per_min": 276.0,
+  "log_buffer_growth_kib_per_min": 741.9
+ },
+ "goroutines_start": 206,
+ "heap_objects_mib_start": 37.99,
+ "goroutines_end": 213,
+ "heap_objects_mib_end": 43.09,
+ "shutdown_s": 0.215,
+ "ready_s": 0.065,
+ "runs_in_window": 577,
+ "runs_by_job_status": {
+  "j-10s-12": {
+   "succeeded": 18
+  },
+  "j-10s-14": {
+   "succeeded": 18
+  },
+  "j-10s-15": {
+   "succeeded": 19
+  },
+  "j-10s-17": {
+   "succeeded": 18
+  },
+  "j-10s-18": {
+   "succeeded": 18
+  },
+  "j-10s-20": {
+   "succeeded": 18
+  },
+  "j-10s-19": {
+   "succeeded": 18
+  },
+  "j-10s-3": {
+   "succeeded": 18
+  },
+  "j-10s-2": {
+   "succeeded": 18
+  },
+  "j-10s-10": {
+   "succeeded": 19
+  },
+  "j-10s-11": {
+   "succeeded": 18
+  },
+  "j-10s-13": {
+   "succeeded": 18
+  },
+  "j-10s-16": {
+   "succeeded": 18
+  },
+  "j-10s-6": {
+   "succeeded": 18
+  },
+  "j-10s-5": {
+   "succeeded": 18
+  },
+  "j-10s-7": {
+   "succeeded": 18
+  },
+  "j-10s-8": {
+   "succeeded": 18,
+   "stopped": 1
+  },
+  "crash-1": {
+   "failed": 18
+  },
+  "crash-2": {
+   "failed": 18
+  },
+  "j-10s-9": {
+   "succeeded": 17,
+   "stopped": 1
+  },
+  "j-10s-1": {
+   "succeeded": 17
+  },
+  "j-10s-4": {
+   "succeeded": 17
+  },
+  "j-30s-3": {
+   "succeeded": 6
+  },
+  "j-30s-4": {
+   "succeeded": 6
+  },
+  "j-30s-1": {
+   "succeeded": 6
+  },
+  "j-30s-10": {
+   "succeeded": 6
+  },
+  "j-30s-11": {
+   "succeeded": 6
+  },
+  "j-30s-5": {
+   "succeeded": 6
+  },
+  "j-30s-6": {
+   "succeeded": 6
+  },
+  "j-30s-7": {
+   "succeeded": 6
+  },
+  "j-30s-9": {
+   "succeeded": 6
+  },
+  "j-30s-12": {
+   "succeeded": 6
+  },
+  "j-30s-14": {
+   "succeeded": 6
+  },
+  "j-30s-16": {
+   "succeeded": 6
+  },
+  "j-30s-2": {
+   "succeeded": 6
+  },
+  "j-30s-20": {
+   "succeeded": 6
+  },
+  "j-30s-8": {
+   "succeeded": 6
+  },
+  "j-30s-13": {
+   "succeeded": 6
+  },
+  "j-30s-15": {
+   "succeeded": 6
+  },
+  "j-30s-17": {
+   "succeeded": 6
+  },
+  "j-30s-18": {
+   "succeeded": 6
+  },
+  "j-30s-19": {
+   "succeeded": 6
+  },
+  "j-1m-11": {
+   "succeeded": 3
+  },
+  "j-1m-1": {
+   "succeeded": 3
+  },
+  "j-1m-12": {
+   "succeeded": 3
+  },
+  "j-1m-15": {
+   "succeeded": 3
+  },
+  "j-1m-16": {
+   "succeeded": 3
+  },
+  "j-1m-17": {
+   "succeeded": 3
+  },
+  "j-1m-4": {
+   "succeeded": 3
+  },
+  "j-1m-6": {
+   "succeeded": 3
+  },
+  "j-1m-13": {
+   "succeeded": 3
+  },
+  "j-1m-14": {
+   "succeeded": 3
+  },
+  "j-1m-18": {
+   "succeeded": 3
+  },
+  "j-1m-19": {
+   "succeeded": 3
+  },
+  "j-1m-2": {
+   "succeeded": 3
+  },
+  "j-1m-20": {
+   "succeeded": 3
+  },
+  "j-1m-3": {
+   "succeeded": 3
+  },
+  "j-1m-5": {
+   "succeeded": 3
+  },
+  "j-1m-7": {
+   "succeeded": 3
+  },
+  "j-1m-8": {
+   "succeeded": 3
+  },
+  "j-1m-9": {
+   "succeeded": 3
+  },
+  "j-1m-10": {
+   "succeeded": 3
+  }
+ },
+ "fire_queue_lag_ms": {
+  "n": 541,
+  "p50": 175.47,
+  "p95": 539.75,
+  "max": 685.85,
+  "min": 0.07
+ },
+ "fire_start_lag_ms": {
+  "n": 541,
+  "p50": 186.11,
+  "p95": 551.67,
+  "max": 692.22,
+  "min": 5.9
+ },
+ "fire_start_lag_1s_jobs_ms": null,
+ "fire_start_lag_5s_jobs_ms": null,
+ "fire_child_lag_ms": {
+  "n": 541,
+  "p50": 188.22,
+  "p95": 553.6,
+  "max": 694.66,
+  "min": 7.87
+ },
+ "restart_gap_daemon_ms": {
+  "n": 17,
+  "p50": 3015.35,
+  "p95": 3019.79,
+  "max": 3021.83,
+  "min": 3012.03
+ },
+ "restart_gap_child_ms": {
+  "n": 17,
+  "p50": 3047.15,
+  "p95": 3064.61,
+  "max": 3072.26,
+  "min": 3033.97
+ },
+ "exit_to_ended_ms": {
+  "n": 18,
+  "p50": 29.48,
+  "p95": 42.58,
+  "max": 48.43,
+  "min": 17.02
+ },
+ "daemon_log_lines": 2,
+ "daemon_log_warn_error": 0
+}

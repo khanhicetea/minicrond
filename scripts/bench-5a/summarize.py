@@ -76,7 +76,7 @@ def cell(vals):
 
 roots = sys.argv[1:]
 data = [load(r) for r in roots]
-order = ["idle-empty", "idle-sleepers", "active", "active-flush1"]
+order = ["idle-empty", "idle-sleepers", "tier-tiny", "active", "tier-normal", "tier-large", "active-flush1"]
 scens = [s for s in order if any(s in d for d in data)] + sorted({s for d in data for s in d} - set(order))
 hdr = ["metric"]
 for s in scens:

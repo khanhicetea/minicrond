@@ -54,6 +54,23 @@ job() { # name schedule kind
     "$1" "$2" "$CHILD_CPUS" "$WL" "$3" "$EV"
 }
 
+# tier_defs <sleepers> <periodic> <bursty> <chatty> <crash> <crash-delay> <jobgroup>...
+# jobgroup = "<count> <every>"; job kinds rotate lines/burst/silent/mixed/tick.
+tier_defs() {
+  local sl=$1 pe=$2 bu=$3 ch=$4 cr=$5 cd=$6; shift 6
+  local i
+  for i in $(seq 1 "$sl"); do worker "sleep-$i" sleeper; done
+  for i in $(seq 1 "$pe"); do worker "periodic-$i" periodic; done
+  for i in $(seq 1 "$bu"); do worker "bursty-$i" bursty; done
+  for i in $(seq 1 "$ch"); do worker "chatty-$i" chatty; done
+  for i in $(seq 1 "$cr"); do worker "crash-$i" crashloop "restart_delay = $cd" 'max_restart_attempts = 1000'; done
+  local kinds=(job-lines job-burst job-silent job-mixed job-tick) g n every k=0
+  for g in "$@"; do
+    n=${g% *}; every=${g#* }
+    for i in $(seq 1 "$n"); do job "j-$every-$i" "@every $every" "${kinds[$((k % 5))]}"; k=$((k+1)); done
+  done
+}
+
 write_config() { # scenario config-path
   local scen=$1 cfg=$2
   MINICRON_CONFIG="$cfg" "$BIN" init >/dev/null
@@ -63,6 +80,19 @@ write_config() { # scenario config-path
   fi
   case "$scen" in
   idle-empty) ;;
+  tier-tiny)    # hobby VPS: 1 worker, 3 once-a-minute jobs
+    {
+      worker w-1 periodic
+      job t-lines "@every 1m" job-lines
+      job t-burst "@every 1m" job-burst
+      job t-tick "@every 1m" job-tick
+    } >>"$cfg" ;;
+  tier-normal)  # 25 workers, 60 jobs at 10 s / 30 s / 1 min cadence
+    sed -i 's/^max_concurrent_runs = .*/max_concurrent_runs = 64/' "$cfg"
+    tier_defs 10 8 3 2 2 5 "20 10s" "20 30s" "20 1m" >>"$cfg" ;;
+  tier-large)   # 100 workers, 300 jobs at 5 s / 15 s / 1 min cadence
+    sed -i 's/^max_concurrent_runs = .*/max_concurrent_runs = 256/' "$cfg"
+    tier_defs 40 30 10 10 10 5 "100 5s" "100 15s" "100 1m" >>"$cfg" ;;
   idle-sleepers)
     for i in $(seq 1 10); do worker "sleep-$i" sleeper; done >>"$cfg" ;;
   active|active-flush1)
@@ -96,8 +126,10 @@ run_one() { # scenario rep
   echo "== $scen rep $rep -> $dir"
   local extra=()
   if [ -n "$PPROF_ADDR" ]; then extra=(MINICRON_BENCH_PPROF="$PPROF_ADDR" GODEBUG=gctrace=1); fi
-  env MINICRON_CONFIG="$cfg" MINICRON_DATA="$DATA" GOMAXPROCS=1 "${extra[@]}" \
-    taskset -c "$DAEMON_CPU" "$BIN" daemon >"$dir/daemon.log" 2>&1 &
+  local dcpu=$DAEMON_CPU procs=1
+  case "$scen" in tier-normal|tier-large) dcpu=${TIER_DAEMON_CPU:-0-1}; procs=2 ;; esac
+  env MINICRON_CONFIG="$cfg" MINICRON_DATA="$DATA" GOMAXPROCS=$procs "${extra[@]}" \
+    taskset -c "$dcpu" "$BIN" daemon >"$dir/daemon.log" 2>&1 &
   local pid=$!
   echo "$pid" >"$dir/pid"
   local t_start; t_start=$(date +%s.%N)
@@ -111,7 +143,7 @@ run_one() { # scenario rep
   api /api/v1/monitor >"$dir/monitor-start.json" || true
   local w0; w0=$(date +%s.%N)
   du -sB1 "$DATA" | cut -f1 >"$dir/du-start"
-  ( cd "$DATA" && find . -type f -printf '%P %s\n' | sort ) >"$dir/files-start"
+  ( cd "$DATA" && find . -type f -printf '%P %s\n' 2>/dev/null | sort || true ) >"$dir/files-start"
   local prof=""
   if [ -n "$PPROF_ADDR" ]; then
     ( sleep 5; taskset -c "$SAMPLER_CPU" "$HERE/profile-collect.sh" "$PPROF_ADDR" "$dir/pprof" $((DURATION - 15)) ) &
@@ -121,7 +153,7 @@ run_one() { # scenario rep
   [ -n "$prof" ] && wait "$prof"
   local w1; w1=$(date +%s.%N)
   du -sB1 "$DATA" | cut -f1 >"$dir/du-end"
-  ( cd "$DATA" && find . -type f -printf '%P %s\n' | sort ) >"$dir/files-end"
+  ( cd "$DATA" && find . -type f -printf '%P %s\n' 2>/dev/null | sort || true ) >"$dir/files-end"
   api /api/v1/monitor >"$dir/monitor-end.json" || true
   if [ "$STRACE" -gt 0 ]; then
     # Attach to the daemon's existing threads only (no -f), so forked

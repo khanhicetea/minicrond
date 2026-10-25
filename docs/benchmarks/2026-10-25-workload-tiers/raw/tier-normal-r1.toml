@@ -1,0 +1,503 @@
+[server]
+bind = "127.0.0.1:7423"
+tcp_enabled = false
+unix_socket = true
+
+[scheduler]
+timezone = "UTC"
+max_concurrent_runs = 64
+
+[logs]
+backend = "file"
+worker_flush_interval = 15 # minutes
+db_prune_at = "03:30"
+db_keep_for = 30 # days
+
+[[worker]]
+name = "sleep-1"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-2"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-3"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-4"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-5"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-6"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-7"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-8"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-9"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "sleep-10"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh sleeper /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-1"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-2"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-3"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-4"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-5"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-6"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-7"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "periodic-8"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh periodic /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "bursty-1"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh bursty /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "bursty-2"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh bursty /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "bursty-3"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh bursty /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "chatty-1"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh chatty /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "chatty-2"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh chatty /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+
+[[worker]]
+name = "crash-1"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh crashloop /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+restart_delay = 5
+max_restart_attempts = 1000
+
+[[worker]]
+name = "crash-2"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh crashloop /home/kit/mcb/tiers/tier-normal-r1/ev"
+restart = "always"
+restart_delay = 5
+max_restart_attempts = 1000
+
+[[job]]
+name = "j-10s-1"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-2"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-3"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-4"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-5"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-6"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-7"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-8"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-9"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-10"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-11"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-12"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-13"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-14"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-15"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-16"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-17"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-18"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-19"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-10s-20"
+schedule = "@every 10s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-1"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-2"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-3"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-4"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-5"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-6"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-7"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-8"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-9"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-10"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-11"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-12"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-13"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-14"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-15"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-16"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-17"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-18"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-19"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-30s-20"
+schedule = "@every 30s"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-1"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-2"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-3"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-4"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-5"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-6"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-7"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-8"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-9"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-10"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-11"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-12"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-13"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-14"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-15"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-16"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-lines /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-17"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-burst /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-18"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-silent /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-19"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-mixed /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"
+
+[[job]]
+name = "j-1m-20"
+schedule = "@every 1m"
+command = "exec /usr/bin/taskset -c 2-3 /bin/sh /home/kit/code/minicrond/scripts/bench-5a/wl.sh job-tick /home/kit/mcb/tiers/tier-normal-r1/ev"
+on_overlap = "skip"

@@ -1,0 +1,163 @@
+{
+ "scenario": "active",
+ "rep": 1,
+ "window_s": 180.0,
+ "cpu_ms_s": 14.889,
+ "utime_ms_s": 8.722,
+ "stime_ms_s": 6.167,
+ "sched_cpu_ms_s": 14.942,
+ "cpu_ms_per_1s": {
+  "n": 180,
+  "p50": 14.24,
+  "p95": 21.97,
+  "max": 26.52,
+  "min": 8.43
+ },
+ "ctxsw_s": 364.3,
+ "nonvol_ctxsw_s": 56.08,
+ "timeslices_s": 364.3,
+ "sched_wait_ms_s": 22.665,
+ "rss_mib": {
+  "start": 45.37,
+  "median": 48.73,
+  "max": 52.55,
+  "end": 51.1
+ },
+ "hwm_mib": 52.47,
+ "threads_max": 24,
+ "io": {
+  "write_bytes_s": 448603.0,
+  "wchar_s": 339934.2,
+  "syscw_s": 537.01,
+  "syscr_s": 197.28,
+  "read_bytes_s": 0.0,
+  "rchar_s": 102657.8
+ },
+ "host": {
+  "busy_pct_4cpu": 2.1,
+  "steal_pct": 0.02,
+  "iowait_pct": 2.21,
+  "load1_max": 0.6,
+  "load1_median": 0.08
+ },
+ "disk": {
+  "du_growth_bytes": 4603904,
+  "du_end_bytes": 10858496,
+  "du_growth_kib_per_min": 1498.7,
+  "apparent_growth_bytes": 4528617,
+  "du_after_shutdown": 2420736,
+  "files_end_bytes": {
+   "log-buffers/other": 1377066,
+   "minicron-logs.db": 446464,
+   "minicron-logs.db-shm": 32768,
+   "minicron-logs.db-wal": 4157112,
+   "minicron.db": 499712,
+   "minicron.db-shm": 32768,
+   "minicron.db-wal": 4152992
+  },
+  "files_growth_bytes": {
+   "log-buffers/other": 1230932,
+   "minicron-logs.db": 442368,
+   "minicron-logs.db-shm": 0,
+   "minicron-logs.db-wal": 2513200,
+   "minicron.db": 311296,
+   "minicron.db-shm": 0,
+   "minicron.db-wal": 32960
+  },
+  "durable_growth_kib_per_min": 646.0,
+  "metadata_db_growth_kib_per_min": 101.3,
+  "archive_db_growth_kib_per_min": 144.0,
+  "log_buffer_growth_kib_per_min": 400.7
+ },
+ "goroutines_start": 75,
+ "heap_objects_mib_start": 21.0,
+ "goroutines_end": 85,
+ "heap_objects_mib_end": 18.71,
+ "shutdown_s": 0.128,
+ "ready_s": 0.065,
+ "runs_in_window": 532,
+ "runs_by_job_status": {
+  "job-burst": {
+   "succeeded": 36,
+   "stopped": 1
+  },
+  "job-lines": {
+   "succeeded": 36,
+   "pending": 1
+  },
+  "job-mixed": {
+   "succeeded": 36
+  },
+  "job-silent": {
+   "succeeded": 36
+  },
+  "tick-echo": {
+   "succeeded": 180
+  },
+  "tick-true": {
+   "succeeded": 180
+  },
+  "crash-1": {
+   "failed": 25,
+   "stopped": 1
+  }
+ },
+ "fire_queue_lag_ms": {
+  "n": 505,
+  "p50": 8.47,
+  "p95": 67.88,
+  "max": 80.94,
+  "min": 0.04
+ },
+ "fire_start_lag_ms": {
+  "n": 505,
+  "p50": 22.98,
+  "p95": 76.49,
+  "max": 89.37,
+  "min": 4.83
+ },
+ "fire_start_lag_1s_jobs_ms": {
+  "n": 360,
+  "p50": 15.86,
+  "p95": 77.76,
+  "max": 89.37,
+  "min": 4.83
+ },
+ "fire_start_lag_5s_jobs_ms": {
+  "n": 145,
+  "p50": 50.14,
+  "p95": 74.73,
+  "max": 82.23,
+  "min": 6.64
+ },
+ "fire_child_lag_ms": {
+  "n": 325,
+  "p50": 32.64,
+  "p95": 81.24,
+  "max": 90.65,
+  "min": 7.65
+ },
+ "restart_gap_daemon_ms": {
+  "n": 25,
+  "p50": 15.62,
+  "p95": 19.25,
+  "max": 22.19,
+  "min": 9.58
+ },
+ "restart_gap_child_ms": {
+  "n": 25,
+  "p50": 37.3,
+  "p95": 42.64,
+  "max": 48.63,
+  "min": 25.48
+ },
+ "exit_to_ended_ms": {
+  "n": 25,
+  "p50": 20.1,
+  "p95": 24.87,
+  "max": 27.53,
+  "min": 11.77
+ },
+ "daemon_log_lines": 2,
+ "daemon_log_warn_error": 0
+}

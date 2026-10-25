@@ -1,0 +1,116 @@
+{
+ "scenario": "tier-tiny",
+ "rep": 2,
+ "window_s": 180.0,
+ "cpu_ms_s": 0.611,
+ "utime_ms_s": 0.333,
+ "stime_ms_s": 0.278,
+ "sched_cpu_ms_s": 0.579,
+ "cpu_ms_per_1s": {
+  "n": 180,
+  "p50": 0.35,
+  "p95": 2.4,
+  "max": 9.42,
+  "min": 0.1
+ },
+ "ctxsw_s": 14.9,
+ "nonvol_ctxsw_s": 1.41,
+ "timeslices_s": 14.9,
+ "sched_wait_ms_s": 0.538,
+ "rss_mib": {
+  "start": 20.71,
+  "median": 23.61,
+  "max": 26.13,
+  "end": 26.13
+ },
+ "hwm_mib": 26.13,
+ "threads_max": 11,
+ "io": {
+  "write_bytes_s": 9875.9,
+  "wchar_s": 5129.2,
+  "syscw_s": 7.24,
+  "syscr_s": 5.36,
+  "read_bytes_s": 0.0,
+  "rchar_s": 1611.6
+ },
+ "host": {
+  "busy_pct_4cpu": 1.0,
+  "steal_pct": 0.01,
+  "iowait_pct": 0.12,
+  "load1_max": 1.63,
+  "load1_median": 0.36
+ },
+ "disk": {
+  "du_growth_bytes": 884736,
+  "du_end_bytes": 1241088,
+  "du_growth_kib_per_min": 288.0,
+  "apparent_growth_bytes": 886678,
+  "du_after_shutdown": 204800,
+  "files_end_bytes": {
+   "log-buffers/other": 5709,
+   "minicron-logs.db": 4096,
+   "minicron-logs.db-shm": 32768,
+   "minicron-logs.db-wal": 325512,
+   "minicron.db": 4096,
+   "minicron.db-shm": 32768,
+   "minicron.db-wal": 811672
+  },
+  "files_growth_bytes": {
+   "log-buffers/other": 4998,
+   "minicron-logs.db": 0,
+   "minicron-logs.db-shm": 0,
+   "minicron-logs.db-wal": 288400,
+   "minicron.db": 0,
+   "minicron.db-shm": 0,
+   "minicron.db-wal": 593280
+  },
+  "durable_growth_kib_per_min": 1.6,
+  "metadata_db_growth_kib_per_min": 0.0,
+  "archive_db_growth_kib_per_min": 0.0,
+  "log_buffer_growth_kib_per_min": 1.6
+ },
+ "goroutines_start": 30,
+ "heap_objects_mib_start": 1.56,
+ "goroutines_end": 30,
+ "heap_objects_mib_end": 4.0,
+ "shutdown_s": 0.04,
+ "ready_s": 0.065,
+ "runs_in_window": 9,
+ "runs_by_job_status": {
+  "t-tick": {
+   "succeeded": 3
+  },
+  "t-burst": {
+   "succeeded": 3
+  },
+  "t-lines": {
+   "succeeded": 3
+  }
+ },
+ "fire_queue_lag_ms": {
+  "n": 9,
+  "p50": 9.32,
+  "p95": 20.84,
+  "max": 22.46,
+  "min": 0.32
+ },
+ "fire_start_lag_ms": {
+  "n": 9,
+  "p50": 19.7,
+  "p95": 43.25,
+  "max": 43.37,
+  "min": 8.72
+ },
+ "fire_start_lag_1s_jobs_ms": null,
+ "fire_start_lag_5s_jobs_ms": null,
+ "fire_child_lag_ms": {
+  "n": 9,
+  "p50": 22.88,
+  "p95": 44.58,
+  "max": 44.91,
+  "min": 10.28
+ },
+ "restart_gap_daemon_ms": null,
+ "daemon_log_lines": 2,
+ "daemon_log_warn_error": 0
+}
