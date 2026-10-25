@@ -85,6 +85,9 @@ func OpenImmutable(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// SyncFull reports whether opt selects synchronous=FULL (the default).
+func SyncFull(opt ...Options) bool { return options(opt).Synchronous == "FULL" }
+
 func options(opt []Options) Options {
 	var o Options
 	if len(opt) > 0 {

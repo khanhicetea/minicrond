@@ -217,6 +217,19 @@ func (s *Scheduler) runPass(ctx context.Context, d model.Definition, mem *schedu
 		case err == nil && storedHash == hash:
 			anchor, last = storedAnchor, storedLast
 			persistedLast, persistedNext, hasPersisted = storedLast, storedNext, true
+			// schedule_state is committed relaxed (ADR-18) and can trail the
+			// run rows after a power loss; every fire stores a durable row,
+			// so the newest one is a floor for the last fire.
+			fired, err := s.store.LastScheduledFire(ctx, d.ID)
+			switch {
+			case ctx.Err() != nil:
+				return nil
+			case err != nil:
+				slog.Warn("scheduler: reading the last scheduled run failed; using the stored schedule state", "job", d.Name, "error", err)
+			case fired.After(last):
+				last = fired
+				hasPersisted = false
+			}
 		case err != nil && !errors.Is(err, sql.ErrNoRows):
 			// The database cannot be read: start a fresh schedule from now
 			// instead of not firing at all. Missed occurrences before this

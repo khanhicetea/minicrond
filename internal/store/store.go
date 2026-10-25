@@ -40,6 +40,9 @@ type Store struct {
 	// readOnly: the data directory is not writable and both pools are the
 	// same immutable connection pool (openReadOnly).
 	readOnly bool
+	// syncFull: the writer commits with synchronous=FULL, so writes that only
+	// need to survive a daemon crash can be relaxed (relaxed.go).
+	syncFull bool
 }
 
 type RunMetrics struct {
@@ -85,7 +88,7 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, syncFull: sqlite.SyncFull(opt...)}
 	if err := s.migrate(ctx); err != nil {
 		// A read-only or full volume cannot open a WAL database for writing
 		// (no -shm). Boot needs a readable database (ADR-16): fall back to a
@@ -811,7 +814,10 @@ func reserveIdempotency(ctx context.Context, tx *sql.Tx, principal, operation, k
 	return "", nil
 }
 func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID string, at time.Time) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
+	// Relaxed (ADR-18): the process identity is only used to stop orphans
+	// after a daemon crash in the same boot, and recovery treats a pending run
+	// like a running one.
+	res, err := s.execRelaxed(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
 	if err != nil {
 		return fmt.Errorf("start run %s: %w", id, err)
 	}
@@ -1325,6 +1331,20 @@ func (s *Store) ScheduleState(ctx context.Context, definitionID int64) (anchor, 
 	}
 	return anchor, last, next, hash, nil
 }
+
+// LastScheduledFire returns the newest scheduled occurrence that has a run
+// row (run, skipped, missed or caught up), or the zero time when there is none.
+// Every scheduled fire stores such a row, so this bounds the last fire even
+// when a relaxed schedule_state write was lost.
+func (s *Store) LastScheduledFire(ctx context.Context, definitionID int64) (time.Time, error) {
+	var us sql.NullInt64
+	err := s.db.QueryRowContext(ctx, "SELECT MAX(scheduled_for_us) FROM runs WHERE definition_id=? AND trigger='schedule' AND scheduled_for_us IS NOT NULL", definitionID).Scan(&us)
+	if err != nil || !us.Valid {
+		return time.Time{}, err
+	}
+	return time.UnixMicro(us.Int64), nil
+}
+
 func (s *Store) ScheduleNextBatch(ctx context.Context) (map[int64]time.Time, error) {
 	rows, err := s.rdb.QueryContext(ctx, "SELECT definition_id,next_fire_us FROM schedule_state WHERE next_fire_us IS NOT NULL")
 	if err != nil {
@@ -1369,7 +1389,10 @@ func (s *Store) setScheduleState(ctx context.Context, definitionID int64, hash s
 	if !next.IsZero() {
 		nextUS = next.UnixMicro()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO schedule_state(definition_id,schedule_hash,anchor_us,last_fire_us,next_fire_us) VALUES(?,?,?,?,?) ON CONFLICT(definition_id) DO UPDATE SET schedule_hash=excluded.schedule_hash,anchor_us=excluded.anchor_us,last_fire_us=excluded.last_fire_us,next_fire_us=excluded.next_fire_us`, definitionID, hash, anchor.UnixMicro(), lastUS, nextUS)
+	// Relaxed (ADR-18): after a power loss the scheduler takes the last fire
+	// from the newest scheduled run row (LastScheduledFire), which is
+	// committed with the configured durability, and next_fire is display only.
+	_, err := s.execRelaxed(ctx, `INSERT INTO schedule_state(definition_id,schedule_hash,anchor_us,last_fire_us,next_fire_us) VALUES(?,?,?,?,?) ON CONFLICT(definition_id) DO UPDATE SET schedule_hash=excluded.schedule_hash,anchor_us=excluded.anchor_us,last_fire_us=excluded.last_fire_us,next_fire_us=excluded.next_fire_us`, definitionID, hash, anchor.UnixMicro(), lastUS, nextUS)
 	return err
 }
 

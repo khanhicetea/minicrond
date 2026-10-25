@@ -228,7 +228,12 @@ and `max_concurrent_runs` are unitless.
 - `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
-  the most recent commits on power loss. Requires a daemon restart.
+  the most recent commits on power loss. Requires a daemon restart. With
+  `"full"`, two metadata writes per run are still committed without their own
+  fsync (ADR-18): the `running` transition and the schedule's last/next fire.
+  Both survive a daemon crash and become durable with the next full commit;
+  after a power loss the scheduler takes the last fire from the run rows, which
+  are always fully synced.
 - `[defaults]` fills omitted common fields when a job or worker is created/updated through the API
   or imported. Explicit definition values take precedence; bundle `[defaults]` takes
   precedence over bootstrap `[defaults]`. Values are persisted in the registry;

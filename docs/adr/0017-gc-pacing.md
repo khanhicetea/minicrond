@@ -77,6 +77,8 @@ in AGENTS.md, so they need the owner:
    acknowledged write durable: group commit (batch concurrent writes into one
    transaction), merging the schedule-state update into the run-row insert, or
    putting the three close-time log fsyncs on the existing grouped sync timer.
+   [ADR-18](0018-relaxed-commits.md) (proposed) relaxes two of the four
+   per-run commits; flushes 254 → 190/s, median start latency 793 → 478 ms.
 2. **Overload in a quiet-cron stress variant** (300 jobs, 80% silent at
    5 s) exhausted the concurrency slots with ~100 expected concurrent jobs.
    The cause is not isolated; it needs a per-slot hold-time measurement.
