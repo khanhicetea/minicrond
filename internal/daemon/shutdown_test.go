@@ -83,11 +83,22 @@ func TestStuckMaintenanceLoopKeepsDatabasesOpen(t *testing.T) {
 	oldBudget := maintenanceJoinBudget
 	maintenanceJoinBudget = 300 * time.Millisecond
 	release := make(chan struct{})
-	extraMaintenanceLoop = func(context.Context) { <-release } // ignores cancellation
+	started := make(chan struct{})
+	extraMaintenanceLoop = func(context.Context) { // ignores cancellation
+		close(started)
+		<-release
+	}
 	t.Cleanup(func() { maintenanceJoinBudget, extraMaintenanceLoop = oldBudget, nil })
 
 	d, cancel, done := startTestDaemon(t)
 	st := d.store
+	// The daemon reports running just before it starts the maintenance loops;
+	// canceling in that gap would skip the stuck loop entirely.
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("maintenance loop did not start")
+	}
 	cancel()
 	select {
 	case err := <-done:
