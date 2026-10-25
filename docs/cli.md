@@ -20,6 +20,7 @@ With no arguments the binary starts the daemon (same as `daemon`).
 |---|---|---|
 | `MINICRON_CONFIG` | `minicron.toml` | Bootstrap config path (`daemon`, `init`, `validate`) |
 | `MINICRON_DATA` | `~/.local/share/minicron` | Data directory (`daemon`, `logs`, local CLI socket) |
+| `GOGC` | unset (daemon uses `50`) | Go garbage-collector target. The daemon collects at +50% heap growth when this is unset; set `GOGC=100` for the Go default, or see [ADR-17](adr/0017-gc-pacing.md) |
 | `MINICRON_URL` | unset | Switch CLI to TCP/HTTP mode |
 | `MINICRON_TOKEN` | unset | Bearer token for `MINICRON_URL` and `export` |
 | `MINICRON_BIN` | — | Sandbox only: binary override used by `examples/local-test` |

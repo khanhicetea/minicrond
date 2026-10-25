@@ -69,6 +69,13 @@ real 3 s remainder.
 Full per-metric table, including all runs' min/max: [`summary.md`](summary.md).
 Per-run JSON and configs: [`raw/`](raw/).
 
+> **Update, same day:** the memory figures below were measured with the Go default
+> `GOGC=100`. [ADR-17](../../adr/0017-gc-pacing.md) proposes a daemon default of 50, which
+> measured about 281 MiB median / 370 MiB peak for the large tier (down from 414 / 571) and
+> 84 MiB for normal (down from 107), CPU unchanged. See
+> [memory and commit costs](../2026-10-25-memory-and-commits/README.md). The tables below are
+> left as measured.
+
 ## What this says about how minicrond handles load
 
 **CPU is proportional to run starts and output, not to definitions.** A

@@ -22,6 +22,8 @@ METRICS = [
     ("write_bytes KiB/s", lambda s: round(s["io"]["write_bytes_s"] / 1024, 2)),
     ("write syscalls/s (syscw)", lambda s: s["io"]["syscw_s"]),
     ("read syscalls/s (syscr)", lambda s: s["io"]["syscr_s"]),
+    ("block flush requests/s (system-wide, fsync proxy)", lambda s: s["blk"]["flush_s"]),
+    ("block write IOs/s (system-wide)", lambda s: s["blk"]["write_ios_s"]),
     ("data dir du growth KiB/min", lambda s: s["disk"]["du_growth_kib_per_min"]),
     ("  durable growth KiB/min (db files + log buffers, excl. WAL)", lambda s: s["disk"]["durable_growth_kib_per_min"]),
     ("    metadata db KiB/min", lambda s: s["disk"]["metadata_db_growth_kib_per_min"]),

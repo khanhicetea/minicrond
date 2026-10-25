@@ -1,0 +1,1471 @@
+{
+ "scenario": "tier-large-quiet",
+ "rep": 1,
+ "window_s": 120.0,
+ "cpu_ms_s": 115.587,
+ "utime_ms_s": 71.669,
+ "stime_ms_s": 43.918,
+ "sched_cpu_ms_s": 115.573,
+ "cpu_ms_per_1s": {
+  "n": 120,
+  "p50": 85.04,
+  "p95": 269.47,
+  "max": 385.62,
+  "min": 28.62
+ },
+ "ctxsw_s": 3358.8,
+ "nonvol_ctxsw_s": 120.76,
+ "timeslices_s": 3358.7,
+ "sched_wait_ms_s": 78.7,
+ "rss_mib": {
+  "start": 313.04,
+  "median": 227.13,
+  "max": 389.63,
+  "end": 227.13
+ },
+ "hwm_mib": 389.5,
+ "threads_max": 361,
+ "io": {
+  "write_bytes_s": 3392420.3,
+  "wchar_s": 2689257.4,
+  "syscw_s": 3869.74,
+  "syscr_s": 1349.0,
+  "read_bytes_s": 0.0,
+  "rchar_s": 797171.3
+ },
+ "host": {
+  "busy_pct_4cpu": 8.5,
+  "steal_pct": 0.07,
+  "iowait_pct": 8.46,
+  "load1_max": 2.82,
+  "load1_median": 2.08
+ },
+ "blk": {
+  "flush_s": 161.7,
+  "write_ios_s": 479.1
+ },
+ "disk": {
+  "du_growth_bytes": 9760768,
+  "du_end_bytes": 21450752,
+  "du_growth_kib_per_min": 4766.2,
+  "apparent_growth_bytes": 9597189,
+  "du_after_shutdown": 12177408,
+  "files_end_bytes": {
+   "log-buffers/other": 7926335,
+   "minicron-logs.db": 897024,
+   "minicron-logs.db-shm": 32768,
+   "minicron-logs.db-wal": 4177712,
+   "minicron.db": 3137536,
+   "minicron.db-shm": 32768,
+   "minicron.db-wal": 4194192
+  },
+  "files_growth_bytes": {
+   "log-buffers/other": 6854585,
+   "minicron-logs.db": 741376,
+   "minicron-logs.db-shm": 0,
+   "minicron-logs.db-wal": 41200,
+   "minicron.db": 1921024,
+   "minicron.db-shm": 0,
+   "minicron.db-wal": 45320
+  },
+  "durable_growth_kib_per_min": 4647.1,
+  "metadata_db_growth_kib_per_min": 938.0,
+  "archive_db_growth_kib_per_min": 362.0,
+  "log_buffer_growth_kib_per_min": 3347.1
+ },
+ "goroutines_start": 854,
+ "heap_objects_mib_start": 261.67,
+ "goroutines_end": 845,
+ "heap_objects_mib_end": 105.7,
+ "shutdown_s": 0.657,
+ "ready_s": 0.358,
+ "runs_in_window": 3584,
+ "runs_by_job_status": {
+  "j-5s-41": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-52": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-53": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-55": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-58": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-6": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-60": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-63": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-10": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-100": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-11": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-13": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-45": {
+   "skipped": 14,
+   "succeeded": 10,
+   "queued": 1
+  },
+  "j-5s-14": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-16": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-46": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-17": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-24": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-28": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-29": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-62": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-64": {
+   "succeeded": 11,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-99": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-51": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-54": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-56": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-57": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-65": {
+   "skipped": 14,
+   "succeeded": 10,
+   "queued": 1
+  },
+  "j-5s-59": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-61": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-19": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-1": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-12": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-15": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-18": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-20": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-2": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-21": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-22": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-69": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-25": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-26": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-27": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-30": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-31": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-32": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-33": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-34": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-35": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-36": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-37": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-38": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-39": {
+   "succeeded": 10,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-5s-4": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-42": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-43": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-74": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-44": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-75": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-47": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-48": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-49": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-66": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-67": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-68": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-77": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-7": {
+   "succeeded": 11,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-70": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-71": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-72": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-73": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-76": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-8": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-78": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-79": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-80": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-81": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-82": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-98": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-87": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-88": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-89": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-92": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-93": {
+   "succeeded": 10,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-94": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-95": {
+   "succeeded": 10,
+   "skipped": 14
+  },
+  "j-5s-97": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-83": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-84": {
+   "succeeded": 11,
+   "skipped": 12,
+   "queued": 1
+  },
+  "j-5s-85": {
+   "succeeded": 10,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-86": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-9": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-90": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-91": {
+   "succeeded": 11,
+   "skipped": 13
+  },
+  "j-5s-96": {
+   "succeeded": 10,
+   "skipped": 14
+  },
+  "crash-3": {
+   "failed": 12
+  },
+  "crash-5": {
+   "failed": 12
+  },
+  "crash-9": {
+   "failed": 12
+  },
+  "crash-8": {
+   "failed": 12
+  },
+  "crash-7": {
+   "failed": 12
+  },
+  "crash-6": {
+   "failed": 12
+  },
+  "crash-4": {
+   "failed": 12
+  },
+  "crash-2": {
+   "failed": 12
+  },
+  "crash-1": {
+   "failed": 12
+  },
+  "crash-10": {
+   "failed": 12
+  },
+  "j-5s-5": {
+   "succeeded": 10,
+   "skipped": 13,
+   "stopped": 1
+  },
+  "j-5s-50": {
+   "succeeded": 10,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-23": {
+   "succeeded": 10,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-3": {
+   "succeeded": 10,
+   "skipped": 13,
+   "queued": 1
+  },
+  "j-5s-40": {
+   "succeeded": 9,
+   "skipped": 14,
+   "stopped": 1
+  },
+  "j-15s-13": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-36": {
+   "succeeded": 5,
+   "skipped": 2,
+   "queued": 1
+  },
+  "j-15s-37": {
+   "succeeded": 5,
+   "skipped": 2,
+   "queued": 1
+  },
+  "j-15s-39": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-4": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-40": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-14": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-17": {
+   "succeeded": 5,
+   "skipped": 2,
+   "queued": 1
+  },
+  "j-15s-44": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-18": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-46": {
+   "succeeded": 5,
+   "skipped": 2,
+   "queued": 1
+  },
+  "j-15s-47": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-5": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-20": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-50": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-51": {
+   "succeeded": 3,
+   "skipped": 4,
+   "queued": 1
+  },
+  "j-15s-52": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-22": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-53": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-23": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-54": {
+   "succeeded": 3,
+   "skipped": 4,
+   "queued": 1
+  },
+  "j-15s-25": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-56": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-57": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-58": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-29": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-6": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-3": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-62": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-64": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-65": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-32": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-69": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-7": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-71": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-73": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-74": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-75": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-76": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-77": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-78": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-80": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-87": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-88": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-90": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-92": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-94": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-95": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-96": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-97": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-35": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-1": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-10": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-100": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-38": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-11": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-12": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-41": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-15": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-42": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-16": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-43": {
+   "succeeded": 4,
+   "skipped": 3,
+   "queued": 1
+  },
+  "j-15s-45": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-19": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-2": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-48": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-49": {
+   "succeeded": 5,
+   "skipped": 3
+  },
+  "j-15s-21": {
+   "succeeded": 3,
+   "skipped": 4,
+   "queued": 1
+  },
+  "j-15s-24": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-55": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-26": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-27": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-28": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-59": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-60": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-61": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-63": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-30": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-31": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-33": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-66": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-34": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-67": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-68": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-70": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-72": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-79": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-8": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-81": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-82": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-83": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-84": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-85": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-86": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-89": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-9": {
+   "succeeded": 4,
+   "skipped": 4
+  },
+  "j-15s-91": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-93": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-98": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-15s-99": {
+   "succeeded": 3,
+   "skipped": 5
+  },
+  "j-1m-83": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-89": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-9": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-90": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-93": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-95": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-96": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-97": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-98": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-100": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-16": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-17": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-18": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-20": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-21": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-23": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-24": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-25": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-26": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-27": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-28": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-3": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-32": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-33": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-36": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-40": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-41": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-42": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-43": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-45": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-47": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-49": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-54": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-55": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-57": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-72": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-84": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-73": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-6": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-74": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-76": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-62": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-64": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-78": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-65": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-8": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-66": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-67": {
+   "succeeded": 2
+  },
+  "j-1m-68": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-69": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-81": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-82": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-22": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-29": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-30": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-31": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-86": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-87": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-34": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-35": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-85": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-88": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-37": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-91": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-38": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-92": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-12": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-94": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-13": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-99": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-14": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-15": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-1": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-10": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-11": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-19": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-39": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-2": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-4": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-44": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-56": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-46": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-58": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-71": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-48": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-59": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-5": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-60": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-75": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-50": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-61": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-51": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-77": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-63": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-52": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-53": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-80": {
+   "succeeded": 2
+  },
+  "j-1m-79": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-7": {
+   "succeeded": 1,
+   "skipped": 1
+  },
+  "j-1m-70": {
+   "succeeded": 1,
+   "skipped": 1
+  }
+ },
+ "fire_queue_lag_ms": {
+  "n": 1573,
+  "p50": 506.14,
+  "p95": 1769.31,
+  "max": 2123.37,
+  "min": 0.04
+ },
+ "fire_start_lag_ms": {
+  "n": 1573,
+  "p50": 714.77,
+  "p95": 24806.67,
+  "max": 33409.07,
+  "min": 4.1
+ },
+ "fire_start_lag_1s_jobs_ms": null,
+ "fire_start_lag_5s_jobs_ms": null,
+ "fire_child_lag_ms": {
+  "n": 1573,
+  "p50": 716.72,
+  "p95": 24808.61,
+  "max": 33412.83,
+  "min": 6.56
+ },
+ "restart_gap_daemon_ms": {
+  "n": 11,
+  "p50": 3010.09,
+  "p95": 3019.65,
+  "max": 3026.6,
+  "min": 3009.04
+ },
+ "restart_gap_child_ms": {
+  "n": 11,
+  "p50": 3029.59,
+  "p95": 3044.81,
+  "max": 3051.2,
+  "min": 3026.75
+ },
+ "exit_to_ended_ms": {
+  "n": 12,
+  "p50": 17.7,
+  "p95": 23.34,
+  "max": 24.2,
+  "min": 13.13
+ },
+ "daemon_log_lines": 310,
+ "daemon_log_warn_error": 0
+}

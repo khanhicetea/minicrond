@@ -59,6 +59,15 @@ def host():
     total = sum(cpu[:8]); idle = cpu[3] + cpu[4]
     return [load1, total - idle, total, cpu[7], cpu[4]]
 
+def blk():
+    """Block-device flush requests and write IOs (system-wide; a proxy for
+    fsync rate on an otherwise quiet host). Device from BLKDEV, default sda."""
+    try:
+        f = read(f"/sys/block/{os.environ.get('BLKDEV', 'sda')}/stat").split()
+        return [f[15], f[4]]  # flush requests completed, write IOs completed
+    except (FileNotFoundError, IndexError):
+        return ["", ""]
+
 def dsize(root):
     total = 0
     for dp, dn, fn in os.walk(root):
@@ -74,7 +83,7 @@ def main():
     out = sys.argv[4]; data = sys.argv[5] if len(sys.argv) > 5 else None
     cols = ["t", "utime", "stime", "run_ns", "wait_ns", "slices", "vcsw", "ivcsw",
             "rss_kb", "hwm_kb", "threads", "rchar", "wchar", "syscr", "syscw",
-            "read_bytes", "write_bytes", "data_bytes", "load1", "host_busy", "host_total", "host_steal", "host_iowait"]
+            "read_bytes", "write_bytes", "data_bytes", "load1", "host_busy", "host_total", "host_steal", "host_iowait", "blk_flush", "blk_wr_ios"]
     t0 = time.monotonic()
     with open(out, "w") as f:
         f.write(",".join(cols) + "\n")
@@ -92,7 +101,7 @@ def main():
             row = [f"{now:.3f}", ut, st, run, wait, sl, vcs, ivcs,
                    s["VmRSS"].split()[0], s["VmHWM"].split()[0], s["Threads"],
                    i["rchar"], i["wchar"], i["syscr"], i["syscw"],
-                   i["read_bytes"], i["write_bytes"], ds] + host()
+                   i["read_bytes"], i["write_bytes"], ds] + host() + blk()
             f.write(",".join(map(str, row)) + "\n"); f.flush()
             n += 1
             if now >= dur:

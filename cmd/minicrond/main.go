@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,12 +98,24 @@ func run() error {
 		return errors.Join(fmt.Errorf("unknown command %q", args[0]), usage())
 	}
 }
+
+// defaultGCPercent is the GC target used when GOGC is not set.
+const defaultGCPercent = 50
+
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	configPath := fs.String("config", env("MINICRON_CONFIG", "minicron.toml"), "bootstrap TOML path")
 	dataDir := fs.String("data-dir", env("MINICRON_DATA", defaultDataDir()), "data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// The daemon's heap is dominated by per-run state that comes and goes, so
+	// the default GOGC=100 lets the heap roughly double between collections and
+	// holds resident memory well above live data. Collecting at +50% cut median
+	// RSS about 35% in the 100-worker/300-job benchmark with no measurable CPU
+	// change (docs/adr/0017-gc-pacing.md). An explicit GOGC wins.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(defaultGCPercent)
 	}
 	// SIGQUIT also stops cleanly: some images use it as STOPSIGNAL, and the Go
 	// default (stack dump, immediate exit) would skip shutdown entirely.

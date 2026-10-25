@@ -1,0 +1,1173 @@
+{
+ "scenario": "tier-large",
+ "rep": 1,
+ "window_s": 120.0,
+ "cpu_ms_s": 154.833,
+ "utime_ms_s": 89.0,
+ "stime_ms_s": 65.833,
+ "sched_cpu_ms_s": 154.844,
+ "cpu_ms_per_1s": {
+  "n": 120,
+  "p50": 130.98,
+  "p95": 298.19,
+  "max": 322.96,
+  "min": 35.31
+ },
+ "ctxsw_s": 5407.9,
+ "nonvol_ctxsw_s": 186.76,
+ "timeslices_s": 5407.4,
+ "sched_wait_ms_s": 101.857,
+ "rss_mib": {
+  "start": 242.3,
+  "median": 344.91,
+  "max": 367.5,
+  "end": 367.5
+ },
+ "hwm_mib": 367.5,
+ "threads_max": 348,
+ "io": {
+  "write_bytes_s": 4710980.3,
+  "wchar_s": 3720653.4,
+  "syscw_s": 6040.89,
+  "syscr_s": 2473.59,
+  "read_bytes_s": 0.0,
+  "rchar_s": 1371563.5
+ },
+ "host": {
+  "busy_pct_4cpu": 10.7,
+  "steal_pct": 0.07,
+  "iowait_pct": 14.3,
+  "load1_max": 4.78,
+  "load1_median": 2.49
+ },
+ "blk": {
+  "flush_s": 251.7,
+  "write_ios_s": 746.7
+ },
+ "disk": {
+  "du_growth_bytes": 13783040,
+  "du_end_bytes": 26140672,
+  "du_growth_kib_per_min": 6730.0,
+  "apparent_growth_bytes": 13573941,
+  "du_after_shutdown": 16707584,
+  "files_end_bytes": {
+   "log-buffers/other": 8033254,
+   "minicron-logs.db": 5173248,
+   "minicron-logs.db-shm": 32768,
+   "minicron-logs.db-wal": 4169472,
+   "minicron.db": 3248128,
+   "minicron.db-shm": 32768,
+   "minicron.db-wal": 4161232
+  },
+  "files_growth_bytes": {
+   "log-buffers/other": 6906531,
+   "minicron-logs.db": 4636672,
+   "minicron-logs.db-shm": 0,
+   "minicron-logs.db-wal": 12360,
+   "minicron.db": 2011136,
+   "minicron.db-shm": 0,
+   "minicron.db-wal": 12360
+  },
+  "durable_growth_kib_per_min": 6618.3,
+  "metadata_db_growth_kib_per_min": 982.0,
+  "archive_db_growth_kib_per_min": 2264.0,
+  "log_buffer_growth_kib_per_min": 3372.3
+ },
+ "goroutines_start": 965,
+ "heap_objects_mib_start": 191.33,
+ "goroutines_end": 989,
+ "heap_objects_mib_end": 296.09,
+ "shutdown_s": 0.852,
+ "ready_s": 0.815,
+ "runs_in_window": 3519,
+ "runs_by_job_status": {
+  "j-5s-2": {
+   "succeeded": 24,
+   "stopped": 1
+  },
+  "j-5s-21": {
+   "succeeded": 22,
+   "skipped": 2
+  },
+  "j-5s-25": {
+   "succeeded": 24
+  },
+  "j-5s-27": {
+   "succeeded": 23,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-29": {
+   "succeeded": 22,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-3": {
+   "succeeded": 22,
+   "skipped": 2
+  },
+  "j-5s-30": {
+   "succeeded": 25
+  },
+  "j-5s-31": {
+   "succeeded": 21,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-33": {
+   "succeeded": 23,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-34": {
+   "succeeded": 20,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-38": {
+   "succeeded": 23,
+   "skipped": 1
+  },
+  "j-5s-4": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-61": {
+   "succeeded": 22,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-41": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-42": {
+   "succeeded": 24
+  },
+  "j-5s-43": {
+   "succeeded": 23,
+   "skipped": 1
+  },
+  "j-5s-47": {
+   "succeeded": 24,
+   "stopped": 1
+  },
+  "j-5s-50": {
+   "succeeded": 25
+  },
+  "j-5s-58": {
+   "succeeded": 23,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-6": {
+   "succeeded": 22,
+   "skipped": 2
+  },
+  "j-5s-60": {
+   "succeeded": 25
+  },
+  "j-5s-7": {
+   "succeeded": 24,
+   "stopped": 1
+  },
+  "j-5s-63": {
+   "succeeded": 24,
+   "stopped": 1
+  },
+  "j-5s-65": {
+   "succeeded": 24
+  },
+  "j-5s-66": {
+   "succeeded": 21,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-67": {
+   "succeeded": 23,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-71": {
+   "succeeded": 23,
+   "skipped": 2
+  },
+  "j-5s-70": {
+   "succeeded": 24
+  },
+  "j-5s-73": {
+   "succeeded": 22,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-76": {
+   "succeeded": 21,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-93": {
+   "succeeded": 21,
+   "skipped": 4
+  },
+  "j-5s-78": {
+   "succeeded": 23,
+   "skipped": 1
+  },
+  "j-5s-8": {
+   "succeeded": 24,
+   "stopped": 1
+  },
+  "j-5s-80": {
+   "succeeded": 24
+  },
+  "j-5s-83": {
+   "succeeded": 23,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-84": {
+   "succeeded": 22,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-86": {
+   "succeeded": 23,
+   "skipped": 1
+  },
+  "j-5s-87": {
+   "succeeded": 24
+  },
+  "j-5s-89": {
+   "succeeded": 21,
+   "skipped": 3
+  },
+  "j-5s-9": {
+   "succeeded": 21,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-90": {
+   "succeeded": 24
+  },
+  "j-5s-91": {
+   "succeeded": 22,
+   "skipped": 2
+  },
+  "j-5s-97": {
+   "succeeded": 23,
+   "skipped": 1
+  },
+  "crash-1": {
+   "failed": 12
+  },
+  "crash-10": {
+   "failed": 12
+  },
+  "crash-3": {
+   "failed": 12
+  },
+  "crash-8": {
+   "failed": 12
+  },
+  "crash-4": {
+   "failed": 12
+  },
+  "crash-9": {
+   "failed": 12
+  },
+  "crash-6": {
+   "failed": 12
+  },
+  "crash-7": {
+   "failed": 12
+  },
+  "crash-2": {
+   "failed": 12
+  },
+  "crash-5": {
+   "failed": 12
+  },
+  "j-5s-99": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-100": {
+   "succeeded": 23
+  },
+  "j-5s-12": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-14": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-18": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-19": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-64": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-24": {
+   "succeeded": 20,
+   "skipped": 3
+  },
+  "j-5s-26": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-28": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-32": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-35": {
+   "succeeded": 23
+  },
+  "j-5s-37": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-39": {
+   "succeeded": 20,
+   "skipped": 3
+  },
+  "j-5s-40": {
+   "succeeded": 24
+  },
+  "j-5s-46": {
+   "succeeded": 21,
+   "skipped": 2
+  },
+  "j-5s-72": {
+   "succeeded": 23
+  },
+  "j-5s-49": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-5": {
+   "succeeded": 24
+  },
+  "j-5s-51": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-52": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-53": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-56": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-75": {
+   "succeeded": 24
+  },
+  "j-5s-81": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-82": {
+   "succeeded": 23
+  },
+  "j-5s-1": {
+   "succeeded": 21,
+   "skipped": 2
+  },
+  "j-5s-10": {
+   "succeeded": 24
+  },
+  "j-5s-11": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-13": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-85": {
+   "succeeded": 23
+  },
+  "j-5s-15": {
+   "succeeded": 23
+  },
+  "j-5s-16": {
+   "succeeded": 20,
+   "skipped": 3,
+   "stopped": 1
+  },
+  "j-5s-17": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-20": {
+   "succeeded": 24
+  },
+  "j-5s-22": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-88": {
+   "succeeded": 23
+  },
+  "j-5s-23": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-36": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-44": {
+   "succeeded": 20,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-45": {
+   "succeeded": 24
+  },
+  "j-5s-94": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-48": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-95": {
+   "succeeded": 23,
+   "pending": 1
+  },
+  "j-5s-54": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-55": {
+   "succeeded": 23
+  },
+  "j-5s-96": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-57": {
+   "succeeded": 23
+  },
+  "j-5s-59": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-5s-62": {
+   "succeeded": 23,
+   "stopped": 1
+  },
+  "j-5s-68": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-69": {
+   "succeeded": 21,
+   "skipped": 3
+  },
+  "j-5s-74": {
+   "succeeded": 21,
+   "skipped": 2
+  },
+  "j-5s-77": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-98": {
+   "succeeded": 22,
+   "skipped": 1
+  },
+  "j-5s-79": {
+   "succeeded": 21,
+   "skipped": 2,
+   "stopped": 1
+  },
+  "j-5s-92": {
+   "succeeded": 22,
+   "skipped": 1,
+   "stopped": 1
+  },
+  "j-15s-41": {
+   "succeeded": 8
+  },
+  "j-15s-1": {
+   "succeeded": 8
+  },
+  "j-15s-10": {
+   "succeeded": 8
+  },
+  "j-15s-100": {
+   "succeeded": 8
+  },
+  "j-15s-12": {
+   "succeeded": 8
+  },
+  "j-15s-11": {
+   "succeeded": 8
+  },
+  "j-15s-14": {
+   "succeeded": 8
+  },
+  "j-15s-13": {
+   "succeeded": 8
+  },
+  "j-15s-19": {
+   "succeeded": 8
+  },
+  "j-15s-2": {
+   "succeeded": 8
+  },
+  "j-15s-15": {
+   "succeeded": 8
+  },
+  "j-15s-22": {
+   "succeeded": 8
+  },
+  "j-15s-26": {
+   "succeeded": 8
+  },
+  "j-15s-23": {
+   "succeeded": 8
+  },
+  "j-15s-42": {
+   "succeeded": 8
+  },
+  "j-15s-30": {
+   "succeeded": 8
+  },
+  "j-15s-32": {
+   "succeeded": 8
+  },
+  "j-15s-34": {
+   "succeeded": 8
+  },
+  "j-15s-36": {
+   "succeeded": 8
+  },
+  "j-15s-40": {
+   "succeeded": 8
+  },
+  "j-15s-44": {
+   "succeeded": 8
+  },
+  "j-15s-47": {
+   "succeeded": 8
+  },
+  "j-15s-48": {
+   "succeeded": 8
+  },
+  "j-15s-50": {
+   "succeeded": 8
+  },
+  "j-15s-52": {
+   "succeeded": 8
+  },
+  "j-15s-55": {
+   "succeeded": 8
+  },
+  "j-15s-56": {
+   "succeeded": 8
+  },
+  "j-15s-57": {
+   "succeeded": 8
+  },
+  "j-15s-58": {
+   "succeeded": 8
+  },
+  "j-15s-59": {
+   "succeeded": 8
+  },
+  "j-15s-6": {
+   "succeeded": 8
+  },
+  "j-15s-20": {
+   "succeeded": 8
+  },
+  "j-15s-60": {
+   "succeeded": 8
+  },
+  "j-15s-24": {
+   "succeeded": 8
+  },
+  "j-15s-61": {
+   "succeeded": 7,
+   "stopped": 1
+  },
+  "j-15s-27": {
+   "succeeded": 8
+  },
+  "j-15s-63": {
+   "succeeded": 8
+  },
+  "j-15s-16": {
+   "succeeded": 8
+  },
+  "j-15s-17": {
+   "succeeded": 8
+  },
+  "j-15s-64": {
+   "succeeded": 8
+  },
+  "j-15s-21": {
+   "succeeded": 8
+  },
+  "j-15s-3": {
+   "succeeded": 8
+  },
+  "j-15s-31": {
+   "succeeded": 8
+  },
+  "j-15s-66": {
+   "succeeded": 7,
+   "stopped": 1
+  },
+  "j-15s-33": {
+   "succeeded": 8
+  },
+  "j-15s-35": {
+   "succeeded": 8
+  },
+  "j-15s-43": {
+   "succeeded": 8
+  },
+  "j-15s-68": {
+   "succeeded": 8
+  },
+  "j-15s-69": {
+   "succeeded": 7,
+   "stopped": 1
+  },
+  "j-15s-37": {
+   "succeeded": 8
+  },
+  "j-15s-38": {
+   "succeeded": 8
+  },
+  "j-15s-70": {
+   "succeeded": 8
+  },
+  "j-15s-39": {
+   "succeeded": 8
+  },
+  "j-15s-4": {
+   "succeeded": 8
+  },
+  "j-15s-45": {
+   "succeeded": 8
+  },
+  "j-15s-79": {
+   "succeeded": 8
+  },
+  "j-15s-8": {
+   "succeeded": 8
+  },
+  "j-15s-46": {
+   "succeeded": 8
+  },
+  "j-15s-80": {
+   "succeeded": 8
+  },
+  "j-15s-49": {
+   "succeeded": 8
+  },
+  "j-15s-5": {
+   "succeeded": 8
+  },
+  "j-15s-51": {
+   "succeeded": 8
+  },
+  "j-15s-53": {
+   "succeeded": 8
+  },
+  "j-15s-54": {
+   "succeeded": 8
+  },
+  "j-15s-81": {
+   "succeeded": 8
+  },
+  "j-15s-62": {
+   "succeeded": 8
+  },
+  "j-15s-65": {
+   "succeeded": 8
+  },
+  "j-15s-67": {
+   "succeeded": 8
+  },
+  "j-15s-87": {
+   "succeeded": 8
+  },
+  "j-15s-88": {
+   "succeeded": 8
+  },
+  "j-15s-7": {
+   "succeeded": 8
+  },
+  "j-15s-71": {
+   "succeeded": 7,
+   "stopped": 1
+  },
+  "j-15s-9": {
+   "succeeded": 8
+  },
+  "j-15s-72": {
+   "succeeded": 8
+  },
+  "j-15s-73": {
+   "succeeded": 8
+  },
+  "j-15s-90": {
+   "succeeded": 8
+  },
+  "j-15s-74": {
+   "succeeded": 8
+  },
+  "j-15s-91": {
+   "succeeded": 8
+  },
+  "j-15s-75": {
+   "succeeded": 8
+  },
+  "j-15s-95": {
+   "succeeded": 8
+  },
+  "j-15s-96": {
+   "succeeded": 8
+  },
+  "j-15s-98": {
+   "succeeded": 8
+  },
+  "j-15s-76": {
+   "succeeded": 8
+  },
+  "j-15s-77": {
+   "succeeded": 8
+  },
+  "j-15s-78": {
+   "succeeded": 8
+  },
+  "j-15s-18": {
+   "succeeded": 8
+  },
+  "j-15s-82": {
+   "succeeded": 8
+  },
+  "j-15s-83": {
+   "succeeded": 8
+  },
+  "j-15s-99": {
+   "succeeded": 8
+  },
+  "j-15s-84": {
+   "succeeded": 8
+  },
+  "j-15s-85": {
+   "succeeded": 8
+  },
+  "j-15s-86": {
+   "succeeded": 8
+  },
+  "j-15s-89": {
+   "succeeded": 8
+  },
+  "j-15s-92": {
+   "succeeded": 8
+  },
+  "j-15s-93": {
+   "succeeded": 8
+  },
+  "j-15s-94": {
+   "succeeded": 8
+  },
+  "j-15s-25": {
+   "succeeded": 8
+  },
+  "j-15s-28": {
+   "succeeded": 8
+  },
+  "j-15s-97": {
+   "succeeded": 8
+  },
+  "j-15s-29": {
+   "succeeded": 8
+  },
+  "j-1m-89": {
+   "succeeded": 2
+  },
+  "j-1m-7": {
+   "succeeded": 2
+  },
+  "j-1m-70": {
+   "succeeded": 2
+  },
+  "j-1m-71": {
+   "succeeded": 2
+  },
+  "j-1m-72": {
+   "succeeded": 2
+  },
+  "j-1m-74": {
+   "succeeded": 2
+  },
+  "j-1m-78": {
+   "succeeded": 2
+  },
+  "j-1m-90": {
+   "succeeded": 2
+  },
+  "j-1m-79": {
+   "succeeded": 2
+  },
+  "j-1m-8": {
+   "succeeded": 2
+  },
+  "j-1m-81": {
+   "succeeded": 2
+  },
+  "j-1m-85": {
+   "succeeded": 2
+  },
+  "j-1m-86": {
+   "succeeded": 2
+  },
+  "j-1m-73": {
+   "succeeded": 2
+  },
+  "j-1m-68": {
+   "succeeded": 2
+  },
+  "j-1m-69": {
+   "succeeded": 2
+  },
+  "j-1m-76": {
+   "succeeded": 2
+  },
+  "j-1m-75": {
+   "succeeded": 2
+  },
+  "j-1m-77": {
+   "succeeded": 2
+  },
+  "j-1m-80": {
+   "succeeded": 2
+  },
+  "j-1m-82": {
+   "succeeded": 2
+  },
+  "j-1m-83": {
+   "succeeded": 2
+  },
+  "j-1m-84": {
+   "succeeded": 2
+  },
+  "j-1m-87": {
+   "succeeded": 2
+  },
+  "j-1m-88": {
+   "succeeded": 2
+  },
+  "j-1m-9": {
+   "succeeded": 2
+  },
+  "j-1m-91": {
+   "succeeded": 2
+  },
+  "j-1m-57": {
+   "succeeded": 2
+  },
+  "j-1m-92": {
+   "succeeded": 2
+  },
+  "j-1m-94": {
+   "succeeded": 2
+  },
+  "j-1m-96": {
+   "succeeded": 2
+  },
+  "j-1m-98": {
+   "succeeded": 2
+  },
+  "j-1m-14": {
+   "succeeded": 2
+  },
+  "j-1m-58": {
+   "succeeded": 2
+  },
+  "j-1m-93": {
+   "succeeded": 2
+  },
+  "j-1m-95": {
+   "succeeded": 2
+  },
+  "j-1m-12": {
+   "succeeded": 2
+  },
+  "j-1m-15": {
+   "succeeded": 2
+  },
+  "j-1m-97": {
+   "succeeded": 2
+  },
+  "j-1m-17": {
+   "succeeded": 2
+  },
+  "j-1m-99": {
+   "succeeded": 2
+  },
+  "j-1m-20": {
+   "succeeded": 2
+  },
+  "j-1m-21": {
+   "succeeded": 2
+  },
+  "j-1m-3": {
+   "succeeded": 2
+  },
+  "j-1m-30": {
+   "succeeded": 2
+  },
+  "j-1m-33": {
+   "succeeded": 2
+  },
+  "j-1m-34": {
+   "succeeded": 2
+  },
+  "j-1m-36": {
+   "succeeded": 2
+  },
+  "j-1m-39": {
+   "succeeded": 2
+  },
+  "j-1m-44": {
+   "succeeded": 2
+  },
+  "j-1m-41": {
+   "succeeded": 2
+  },
+  "j-1m-45": {
+   "succeeded": 2
+  },
+  "j-1m-49": {
+   "succeeded": 2
+  },
+  "j-1m-5": {
+   "succeeded": 2
+  },
+  "j-1m-62": {
+   "succeeded": 2
+  },
+  "j-1m-66": {
+   "succeeded": 2
+  },
+  "j-1m-64": {
+   "succeeded": 2
+  },
+  "j-1m-52": {
+   "succeeded": 2
+  },
+  "j-1m-55": {
+   "succeeded": 2
+  },
+  "j-1m-56": {
+   "succeeded": 2
+  },
+  "j-1m-16": {
+   "succeeded": 2
+  },
+  "j-1m-18": {
+   "succeeded": 2
+  },
+  "j-1m-19": {
+   "succeeded": 2
+  },
+  "j-1m-2": {
+   "succeeded": 2
+  },
+  "j-1m-22": {
+   "succeeded": 2
+  },
+  "j-1m-23": {
+   "succeeded": 2
+  },
+  "j-1m-24": {
+   "succeeded": 2
+  },
+  "j-1m-25": {
+   "succeeded": 2
+  },
+  "j-1m-26": {
+   "succeeded": 2
+  },
+  "j-1m-27": {
+   "succeeded": 2
+  },
+  "j-1m-28": {
+   "succeeded": 2
+  },
+  "j-1m-29": {
+   "succeeded": 2
+  },
+  "j-1m-31": {
+   "succeeded": 2
+  },
+  "j-1m-13": {
+   "succeeded": 2
+  },
+  "j-1m-32": {
+   "succeeded": 2
+  },
+  "j-1m-35": {
+   "succeeded": 2
+  },
+  "j-1m-37": {
+   "succeeded": 2
+  },
+  "j-1m-38": {
+   "succeeded": 2
+  },
+  "j-1m-4": {
+   "succeeded": 2
+  },
+  "j-1m-1": {
+   "succeeded": 2
+  },
+  "j-1m-10": {
+   "succeeded": 2
+  },
+  "j-1m-40": {
+   "succeeded": 2
+  },
+  "j-1m-100": {
+   "succeeded": 2
+  },
+  "j-1m-46": {
+   "succeeded": 2
+  },
+  "j-1m-11": {
+   "succeeded": 2
+  },
+  "j-1m-43": {
+   "succeeded": 2
+  },
+  "j-1m-47": {
+   "succeeded": 2
+  },
+  "j-1m-59": {
+   "succeeded": 2
+  },
+  "j-1m-42": {
+   "succeeded": 2
+  },
+  "j-1m-48": {
+   "succeeded": 2
+  },
+  "j-1m-6": {
+   "succeeded": 2
+  },
+  "j-1m-65": {
+   "succeeded": 2
+  },
+  "j-1m-63": {
+   "succeeded": 2
+  },
+  "j-1m-53": {
+   "succeeded": 2
+  },
+  "j-1m-60": {
+   "succeeded": 2
+  },
+  "j-1m-67": {
+   "succeeded": 2
+  },
+  "j-1m-61": {
+   "succeeded": 2
+  },
+  "j-1m-54": {
+   "succeeded": 2
+  },
+  "j-1m-50": {
+   "succeeded": 2
+  },
+  "j-1m-51": {
+   "succeeded": 2
+  }
+ },
+ "fire_queue_lag_ms": {
+  "n": 3295,
+  "p50": 842.88,
+  "p95": 2571.15,
+  "max": 3111.15,
+  "min": 0.03
+ },
+ "fire_start_lag_ms": {
+  "n": 3295,
+  "p50": 854.62,
+  "p95": 2587.46,
+  "max": 3115.12,
+  "min": 2.74
+ },
+ "fire_start_lag_1s_jobs_ms": null,
+ "fire_start_lag_5s_jobs_ms": null,
+ "fire_child_lag_ms": {
+  "n": 3295,
+  "p50": 856.46,
+  "p95": 2589.84,
+  "max": 3118.24,
+  "min": 4.43
+ },
+ "restart_gap_daemon_ms": {
+  "n": 11,
+  "p50": 3015.19,
+  "p95": 3522.11,
+  "max": 3750.57,
+  "min": 3004.35
+ },
+ "restart_gap_child_ms": {
+  "n": 11,
+  "p50": 3055.2,
+  "p95": 3546.6,
+  "max": 3774.54,
+  "min": 3025.8
+ },
+ "exit_to_ended_ms": {
+  "n": 12,
+  "p50": 25.71,
+  "p95": 42.04,
+  "max": 44.72,
+  "min": 15.52
+ },
+ "daemon_log_lines": 374,
+ "daemon_log_warn_error": 0
+}

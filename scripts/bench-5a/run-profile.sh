@@ -40,6 +40,8 @@ SAMPLER_CPU=${SAMPLER_CPU:-3}
 PPROF_ADDR=${PPROF_ADDR:-}
 STRACE_DETAIL=${STRACE_DETAIL:-0}
 
+DPID=
+trap '[ -n "$DPID" ] && kill -TERM "$DPID" 2>/dev/null || true' EXIT
 [ -x "$BIN" ] || { echo "not executable: $BIN" >&2; exit 1; }
 chmod +x "$WL"
 
@@ -64,10 +66,10 @@ tier_defs() {
   for i in $(seq 1 "$bu"); do worker "bursty-$i" bursty; done
   for i in $(seq 1 "$ch"); do worker "chatty-$i" chatty; done
   for i in $(seq 1 "$cr"); do worker "crash-$i" crashloop "restart_delay = $cd" 'max_restart_attempts = 1000'; done
-  local kinds=(job-lines job-burst job-silent job-mixed job-tick) g n every k=0
+  local kinds=(${JOB_KINDS:-job-lines job-burst job-silent job-mixed job-tick}) g n every k=0
   for g in "$@"; do
     n=${g% *}; every=${g#* }
-    for i in $(seq 1 "$n"); do job "j-$every-$i" "@every $every" "${kinds[$((k % 5))]}"; k=$((k+1)); done
+    for i in $(seq 1 "$n"); do job "j-$every-$i" "@every $every" "${kinds[$((k % ${#kinds[@]}))]}"; k=$((k+1)); done
   done
 }
 
@@ -90,6 +92,10 @@ write_config() { # scenario config-path
   tier-normal)  # 25 workers, 60 jobs at 10 s / 30 s / 1 min cadence
     sed -i 's/^max_concurrent_runs = .*/max_concurrent_runs = 64/' "$cfg"
     tier_defs 10 8 3 2 2 5 "20 10s" "20 30s" "20 1m" >>"$cfg" ;;
+  tier-large-quiet) # tier-large where 80% of jobs print nothing, like most real cron
+    sed -i 's/^max_concurrent_runs = .*/max_concurrent_runs = 256/' "$cfg"
+    JOB_KINDS="job-silent job-silent job-silent job-silent job-lines" \
+      tier_defs 40 30 10 10 10 5 "100 5s" "100 15s" "100 1m" >>"$cfg" ;;
   tier-large)   # 100 workers, 300 jobs at 5 s / 15 s / 1 min cadence
     sed -i 's/^max_concurrent_runs = .*/max_concurrent_runs = 256/' "$cfg"
     tier_defs 40 30 10 10 10 5 "100 5s" "100 15s" "100 1m" >>"$cfg" ;;
@@ -113,6 +119,8 @@ write_config() { # scenario config-path
     } >>"$cfg" ;;
   *) echo "unknown scenario $scen" >&2; exit 1 ;;
   esac
+  # Optional extra TOML (e.g. a [storage] table) for A/B experiments.
+  if [ -n "${CFG_APPEND:-}" ]; then printf '\n%b\n' "$CFG_APPEND" >>"$cfg"; fi
   "$BIN" validate "$cfg" >/dev/null
 }
 
@@ -127,10 +135,11 @@ run_one() { # scenario rep
   local extra=()
   if [ -n "$PPROF_ADDR" ]; then extra=(MINICRON_BENCH_PPROF="$PPROF_ADDR" GODEBUG=gctrace=1); fi
   local dcpu=$DAEMON_CPU procs=1
-  case "$scen" in tier-normal|tier-large) dcpu=${TIER_DAEMON_CPU:-0-1}; procs=2 ;; esac
+  case "$scen" in tier-normal|tier-large|tier-large-quiet) dcpu=${TIER_DAEMON_CPU:-0-1}; procs=2 ;; esac
   env MINICRON_CONFIG="$cfg" MINICRON_DATA="$DATA" GOMAXPROCS=$procs "${extra[@]}" \
     taskset -c "$dcpu" "$BIN" daemon >"$dir/daemon.log" 2>&1 &
   local pid=$!
+  DPID=$pid
   echo "$pid" >"$dir/pid"
   local t_start; t_start=$(date +%s.%N)
   for _ in $(seq 1 200); do
@@ -142,7 +151,7 @@ run_one() { # scenario rep
   sleep "$WARMUP"
   api /api/v1/monitor >"$dir/monitor-start.json" || true
   local w0; w0=$(date +%s.%N)
-  du -sB1 "$DATA" | cut -f1 >"$dir/du-start"
+  { du -sB1 "$DATA" 2>/dev/null || true; } | cut -f1 >"$dir/du-start"
   ( cd "$DATA" && find . -type f -printf '%P %s\n' 2>/dev/null | sort || true ) >"$dir/files-start"
   local prof=""
   if [ -n "$PPROF_ADDR" ]; then
@@ -152,7 +161,7 @@ run_one() { # scenario rep
   taskset -c "$SAMPLER_CPU" python3 "$HERE/sampler.py" "$pid" "$DURATION" 1 "$dir/samples.csv" "$DATA"
   [ -n "$prof" ] && wait "$prof"
   local w1; w1=$(date +%s.%N)
-  du -sB1 "$DATA" | cut -f1 >"$dir/du-end"
+  { du -sB1 "$DATA" 2>/dev/null || true; } | cut -f1 >"$dir/du-end"
   ( cd "$DATA" && find . -type f -printf '%P %s\n' 2>/dev/null | sort || true ) >"$dir/files-end"
   api /api/v1/monitor >"$dir/monitor-end.json" || true
   if [ "$STRACE" -gt 0 ]; then
@@ -183,7 +192,7 @@ strace_detail_s=$STRACE_DETAIL
 pprof=$PPROF_ADDR
 shutdown_s=$(python3 -c "print(f'{$s1-$s0:.3f}')")
 EOF
-  du -sB1 "$DATA" | cut -f1 >"$dir/du-final"
+  { du -sB1 "$DATA" 2>/dev/null || true; } | cut -f1 >"$dir/du-final"
   python3 "$HERE/analyze.py" "$dir" >"$dir/summary.json"
 }
 

@@ -56,6 +56,9 @@ if "host_total" in a and a.get("host_total"):
                    "iowait_pct": round(100 * (num(b, "host_iowait") - num(a, "host_iowait")) / ht, 2),
                    "load1_max": max(float(r["load1"]) for r in rows),
                    "load1_median": statistics.median(float(r["load1"]) for r in rows)}
+if a.get("blk_flush"):
+    out["blk"] = {"flush_s": round((num(b, "blk_flush") - num(a, "blk_flush")) / win, 1),
+                  "write_ios_s": round((num(b, "blk_wr_ios") - num(a, "blk_wr_ios")) / win, 1)}
 ds = [(float(r["t"]), int(r["data_bytes"])) for r in rows if r["data_bytes"]]
 du0 = int(open(os.path.join(d, "du-start")).read()); du1 = int(open(os.path.join(d, "du-end")).read())
 out["disk"] = {"du_growth_bytes": du1 - du0, "du_end_bytes": du1,
