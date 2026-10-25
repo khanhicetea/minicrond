@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -101,8 +102,9 @@ func TestSparseWritersShareOneTimer(t *testing.T) {
 	}
 }
 
-// A burst below the dirty-byte limit costs one fsync at EOF, whatever the line
-// count; a smaller limit bounds the unsynced window by bytes.
+// A burst below the dirty-byte limit costs one fsync, by the group sync after
+// EOF, whatever the line count; a smaller limit bounds the unsynced window by
+// bytes.
 func TestBurstySyncCountFollowsDirtyByteLimit(t *testing.T) {
 	const lines = 20000 // about 700 KB of frames
 	input := manyLines(lines)
@@ -115,8 +117,12 @@ func TestBurstySyncCountFollowsDirtyByteLimit(t *testing.T) {
 	if err := w.Pipe(Stdout, bytes.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
+	if syncs := w.syncs.Load(); syncs != 0 {
+		t.Fatalf("burst under the dirty limit took %d fsyncs before the group sync", syncs)
+	}
+	s.SyncAll()
 	if syncs := w.syncs.Load(); syncs != 1 {
-		t.Fatalf("burst under the dirty limit took %d fsyncs, want only the EOF sync", syncs)
+		t.Fatalf("burst under the dirty limit took %d fsyncs, want one group sync", syncs)
 	}
 
 	const limit = 64 << 10
@@ -155,11 +161,12 @@ func TestStrictModeSyncsEveryFrameWithoutTimer(t *testing.T) {
 	}
 }
 
-// EOF, seal, and orderly shutdown always sync what is dirty.
+// EOF and seal join the group sync (ADR-20); orderly shutdown always syncs
+// what is dirty or sealed.
 func TestFinalSyncOnEOFSealAndShutdown(t *testing.T) {
 	var syncs int
 	s := newGroupSyncStore(t, time.Hour, 0)
-	s.syncFile = func(f *os.File) error { syncs++; return f.Sync() }
+	s.syncFile = func(f *os.File) error { hookMu.Lock(); syncs++; hookMu.Unlock(); return f.Sync() }
 
 	w, err := s.Open("eof", "job", model.KindJob, WriterOptions{})
 	if err != nil {
@@ -168,8 +175,15 @@ func TestFinalSyncOnEOFSealAndShutdown(t *testing.T) {
 	if err := w.Pipe(Stdout, bytes.NewReader([]byte("a\nb\n"))); err != nil {
 		t.Fatal(err)
 	}
+	if syncs != 0 {
+		t.Fatalf("pipe EOF: %d syncs, want them left to the group sync", syncs)
+	}
+	if armed, dirty := s.timerArmed(); !armed || dirty != 1 {
+		t.Fatalf("pipe EOF: armed=%v dirty=%d, want the writer queued", armed, dirty)
+	}
+	s.SyncAll()
 	if syncs != 1 {
-		t.Fatalf("pipe EOF: %d syncs, want 1", syncs)
+		t.Fatalf("group sync after pipe EOF: %d syncs, want 1", syncs)
 	}
 
 	w2, err := s.Open("shutdown", "job", model.KindJob, WriterOptions{})
@@ -185,8 +199,8 @@ func TestFinalSyncOnEOFSealAndShutdown(t *testing.T) {
 		t.Fatalf("shutdown did not sync the dirty writer (syncs %d -> %d)", before, syncs)
 	}
 
-	// Sealing syncs the chunk itself (finishChunk), so the group timer has
-	// nothing left to do for a closed writer.
+	// Sealing queues the chunk and its index for the group sync; the closed
+	// writer itself has nothing left to sync.
 	w3, err := s.Open("seal", "job", model.KindJob, WriterOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -194,12 +208,76 @@ func TestFinalSyncOnEOFSealAndShutdown(t *testing.T) {
 	if err := w3.Write(Stdout, []byte("x"), 0); err != nil {
 		t.Fatal(err)
 	}
+	before = syncs
 	if err := s.Close("seal"); err != nil {
 		t.Fatal(err)
+	}
+	if syncs != before {
+		t.Fatalf("seal synced inline (%d -> %d), want it deferred", before, syncs)
+	}
+	if armed, _ := s.timerArmed(); !armed {
+		t.Fatal("seal did not arm the group sync")
 	}
 	s.SyncAll()
 	if w3.syncs.Load() != 0 {
 		t.Fatal("closed writer was synced twice")
+	}
+	if syncs != before+2 {
+		t.Fatalf("group sync after seal: %d syncs, want chunk and index (2)", syncs-before)
+	}
+}
+
+// A sealed run the archiver removes before the group sync is never fsynced
+// in the buffer: the archive commit made it durable (ADR-20).
+func TestArchivedSealSkipsBufferSync(t *testing.T) {
+	s, _, _ := newArchiveStore(t)
+	s.SetGroupSync(time.Hour, 0)
+	var syncs int
+	s.syncFile = func(f *os.File) error { hookMu.Lock(); syncs++; hookMu.Unlock(); return f.Sync() }
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pipe(Stdout, bytes.NewReader([]byte("a\nb\n"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close("run"); err != nil { // archives inline
+		t.Fatal(err)
+	}
+	s.SyncAll()
+	if syncs != 0 {
+		t.Fatalf("%d buffer fsyncs for a run archived before the group sync", syncs)
+	}
+	frames, err := s.Read("run", 0, 10)
+	if err != nil || len(frames) != 2 {
+		t.Fatalf("got %d frames, error %v", len(frames), err)
+	}
+}
+
+// Strict per-frame durability keeps syncing at seal.
+func TestStrictModeSealSyncsInline(t *testing.T) {
+	var syncs int
+	s := newGroupSyncStore(t, time.Hour, 0)
+	s.SetFrameSync(true)
+	s.syncFile = func(f *os.File) error { hookMu.Lock(); syncs++; hookMu.Unlock(); return f.Sync() }
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(Stdout, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close("run"); err != nil {
+		t.Fatal(err)
+	}
+	if armed, _ := s.timerArmed(); armed {
+		t.Fatal("strict seal used the group sync")
+	}
+	s.syncMu.Lock()
+	pending := len(s.sealed)
+	s.syncMu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d strict seals deferred", pending)
 	}
 }
 
@@ -295,3 +373,78 @@ func TestStrictWriteWaitsForInFlightFsync(t *testing.T) {
 		}
 	}
 }
+
+// A timer that fires while a group sync pass is still running (a stalled
+// fsync) re-arms instead of starting a second, blocked pass, and the re-armed
+// timer really runs once the pass ends: dirty writers keep being synced.
+func TestGroupSyncTimerDoesNotStackPasses(t *testing.T) {
+	const interval = 50 * time.Millisecond
+	s := newGroupSyncStore(t, interval, 0)
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close("run") })
+	s.flushMu.Lock() // a pass in progress
+	if err := w.Write(Stdout, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	// The timer fires (several times) during the pass and must re-arm.
+	time.Sleep(4 * interval)
+	deadline := time.Now().Add(5 * time.Second)
+	if w.syncs.Load() != 0 {
+		t.Fatal("synced while a pass held the lock")
+	}
+	s.flushMu.Unlock()
+	for w.syncs.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(interval)
+	}
+	if w.syncs.Load() != 1 {
+		t.Fatal("dirty writer never synced after the blocked pass ended")
+	}
+	// Later writes still arm a working timer.
+	if err := w.Write(Stdout, []byte("y"), 0); err != nil {
+		t.Fatal(err)
+	}
+	for w.syncs.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(interval)
+	}
+	if w.syncs.Load() != 2 {
+		t.Fatal("group sync timer stopped working")
+	}
+}
+
+// A seal whose index cannot be written still queues its chunk for the group
+// sync, so the chunk is not left unsynced.
+func TestSealWithFailedIndexStillQueuesSync(t *testing.T) {
+	var synced []string
+	s := newGroupSyncStore(t, time.Hour, 0)
+	s.syncFile = func(f *os.File) error {
+		hookMu.Lock()
+		synced = append(synced, f.Name())
+		hookMu.Unlock()
+		return f.Sync()
+	}
+	w, err := s.Open("run", "job", model.KindJob, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(Stdout, []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the index's temporary file goes makes writeIndex fail.
+	if err := os.Mkdir(filepath.Join(w.dir, "index.json.tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close("run"); err == nil {
+		t.Fatal("expected the index failure")
+	}
+	s.SyncAll()
+	if want := filepath.Join(w.dir, "000001.zst"); !slices.Contains(synced, want) {
+		t.Fatalf("chunk not synced after a failed index: %v", synced)
+	}
+}
+
+// hookMu guards counters of test fsync hooks: a group sync pass calls the
+// hook from several goroutines. Tests read the counters after the pass.
+var hookMu sync.Mutex

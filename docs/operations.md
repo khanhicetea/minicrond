@@ -12,6 +12,7 @@ other non-private directory makes it refuse to start.
 data/
 ├── minicron.db          # definitions + run history + audit (SQLite, WAL)
 ├── minicron-logs.db     # log archive (SQLite, WAL) — separate database
+├── log-archive/<run_id>/ # archived large log chunks (files the log archive references)
 ├── logs/<run_id>/       # live run log buffers (compressed zstd chunks)
 ├── minicron.sock        # mode-0600 Unix socket (local CLI)
 ├── minicron.lock        # instance lock (flock + pid)
@@ -58,10 +59,13 @@ Log storage is two-tier (ADR-6):
    dirty buffers `logs.sync_interval` (default 2 s) after the first unsynced
    write, and a run syncs at once when it holds `logs.sync_max_dirty` (default
    1 MiB) of unsynced output. A sparse run is synced by the timer without
-   another line arriving; pipe EOF, run completion and orderly shutdown always
-   sync. An **OS crash or power loss can lose output newer than the last sync**
-   (nominally the sync interval, longer if the disk stalls); a daemon crash loses
-   nothing. `"frame"` is the strict mode: every line is fsynced before the next
+   another line arriving. Pipe EOF and run completion join the same group
+   ([ADR-20](adr/0020-log-archive-write-path.md)): the sealed chunk, its index
+   and directory are synced by the next group sync, or never if the archiver
+   has already committed the run and removed its buffer; orderly shutdown
+   always syncs. An **OS crash or power loss can lose output newer than the
+   last sync**, a finished run's last output included (nominally the sync
+   interval, longer if the disk stalls); a daemon crash loses nothing. `"frame"` is the strict mode: every line is fsynced before the next
    is read. `log_max` defaults to `100MiB` and bounds raw frame bytes
    in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
    archive. Successful archival frees buffer capacity for either policy.
@@ -70,7 +74,11 @@ Log storage is two-tier (ADR-6):
    their buffer files. Run completion never waits on the archive; the sealed
    buffer stays readable until it is moved. Still-running
    workers seal+archive their chunks every `logs.worker_flush_interval`
-   (default 15m).
+   (default 15m). Chunks of at least 64 KiB compressed are not copied into the
+   database: their row points to the file, which is renamed into
+   `data/log-archive/<run_id>/`. Under load the archiver commits up to 32
+   short runs in one transaction (ADR-20). Back up the whole data directory:
+   the archive is the database plus `log-archive/`.
 
 Crash-safety: buffers orphaned by a crash are salvaged into the archive at
 startup, up to the last intact frame. Failed final archival leaves its buffer
@@ -229,7 +237,7 @@ Retention:
 - **Log archive:** chunks older than `logs.db_keep_for` in days (default 30) are
   pruned daily at `logs.db_prune_at` (default 03:30 local), in small batches.
   With `logs.db_max_size` set, the same sweep then removes the oldest chunks
-  until the archive fits that many MiB. The log disk budget (below) applies
+  until the archive (database plus `log-archive/` files) fits that many MiB. The log disk budget (below) applies
   independently and earlier, whenever its watermarks are crossed. Afterwards freed pages are returned
   to the filesystem (incremental auto-vacuum) and the WAL is truncated.
 

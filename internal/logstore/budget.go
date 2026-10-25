@@ -64,7 +64,7 @@ type DiskPolicy struct {
 
 // DiskUsage is what the log tiers occupy on disk.
 type DiskUsage struct {
-	ArchiveBytes    int64 // minicron-logs.db plus its WAL
+	ArchiveBytes    int64 // minicron-logs.db plus its WAL and the archived file chunks
 	ArchiveWALBytes int64 // the WAL part of ArchiveBytes
 	SealedBytes     int64 // buffers of runs without a writer, awaiting archival
 	HotBytes        int64 // buffers of runs with a live writer
@@ -180,7 +180,7 @@ func (s *Store) setDiskStatus(st DiskStatus) {
 
 // MeasureDiskUsage walks the log tiers. The cost is one directory listing and a
 // stat per file of every run buffer still on disk (live and awaiting
-// archival), plus the quarantine; archived runs have no files.
+// archival), plus the quarantine and the archived file chunks (ADR-20).
 func (s *Store) MeasureDiskUsage(ctx context.Context) (DiskUsage, error) {
 	u := DiskUsage{MeasuredAt: time.Now()}
 	var errs []error
@@ -189,7 +189,7 @@ func (s *Store) MeasureDiskUsage(ctx context.Context) (DiskUsage, error) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("measure log archive: %w", err))
 		}
-		u.ArchiveBytes, u.ArchiveWALBytes = db+wal, wal
+		u.ArchiveBytes, u.ArchiveWALBytes = db+wal+s.db.ChunkFileBytes(), wal
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {

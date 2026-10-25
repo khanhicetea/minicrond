@@ -40,11 +40,9 @@ func TestPipeGroupsSyncsWhileInputIsBuffered(t *testing.T) {
 	if syncs := w.syncs.Load(); syncs > lines/100 {
 		t.Fatalf("%d fsyncs for %d buffered lines, want them grouped", syncs, lines)
 	}
-	w.mu.Lock()
-	unsynced := w.unsynced
-	w.mu.Unlock()
-	if unsynced != 0 {
-		t.Fatalf("%d bytes left unsynced after the pipe closed", unsynced)
+	// The end of the pipe joins the group sync instead of syncing (ADR-20).
+	if armed, dirty := s.timerArmed(); !armed || dirty != 1 {
+		t.Fatalf("after the pipe closed: armed=%v dirty=%d, want the writer queued", armed, dirty)
 	}
 	frames, err := s.Read("run", 0, 5000)
 	if err != nil || len(frames) != 5000 || frames[0].Sequence != 1 {

@@ -166,13 +166,16 @@ and `max_concurrent_runs` are unitless.
   (`keep_for`/`storage.keep_for_default`), so a job's logs are kept for the
   shorter of the two budgets.
 - `logs.db_max_size` — optional size budget for the log archive, in MiB. When
-  the archive's used space exceeds it after the age prune, the oldest chunks
-  are removed until it fits. `0` (the default) disables the budget; values
+  the archive's used space (database pages plus the chunk files in
+  `log-archive/`) exceeds it after the age prune, the oldest chunks are
+  removed until it fits. `0` (the default) disables the budget; values
   above 1073741824 MiB (1 PiB) are rejected so the byte conversion cannot wrap.
 - `logs.durability` — `"batch"` (the default) writes every log line to the
   buffer file before accepting the next one, so a daemon crash loses nothing,
-  but fsyncs as a group (see `logs.sync_interval` and `logs.sync_max_dirty`).
-  An OS crash or power loss can lose output newer than the last sync —
+  but fsyncs as a group (see `logs.sync_interval` and `logs.sync_max_dirty`),
+  the end of output and the run's final chunk included (ADR-20).
+  An OS crash or power loss can lose output newer than the last sync, a
+  finished run's last output included —
   nominally `sync_interval`, longer if the disk stalls. `"frame"` is the strict
   mode: it fsyncs every line; a child that prints faster than the disk can sync
   (a few hundred lines per second on many disks) is then slowed down, because

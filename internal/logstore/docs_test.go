@@ -86,3 +86,14 @@ func TestDocsSayZeroSyncWindowSelectsTheDefault(t *testing.T) {
 func TestDocsRecordTheFollowPollingDownside(t *testing.T) {
 	docContains(t, "operations.md", "re-decodes the active chunk from its start", "Accepted downside of following a run")
 }
+
+// ADR-20 contracts that operators rely on stay documented.
+func TestLogArchiveWritePathIsDocumented(t *testing.T) {
+	docContains(t, "operations.md", "log-archive/<run_id>/", "Back up the whole data directory")
+	docContains(t, "operations.md", "Pipe EOF and run completion join the same group", "a finished run's last output included")
+	docContains(t, "configuration.md", "database pages plus the chunk files in")
+	if fileChunkMin != 64<<10 || archiveRunBatch != 32 || maxDeferredSeals != 4096 {
+		t.Fatalf("ADR-20 constants changed (%d/%d/%d): update docs/adr/0020-log-archive-write-path.md, docs/operations.md and docs/releases/next.md",
+			fileChunkMin, archiveRunBatch, maxDeferredSeals)
+	}
+}

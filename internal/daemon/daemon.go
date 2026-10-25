@@ -270,6 +270,10 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err = logs.ArchiveOrphansContext(ctx); err != nil {
 		slog.Error("orphaned log sweep failed", "error", err)
 	}
+	// Archived log files whose rows a crash-interrupted deletion removed.
+	if err = logs.SweepArchiveFiles(ctx); err != nil {
+		slog.Error("archived log file sweep failed", "error", err)
+	}
 	sched := scheduler.New(st, execService)
 	super := supervisor.New(st, execService, func(definition model.Definition, outcome model.WorkerExhaustion) {
 		if dispatcher := d.alerts.Load(); dispatcher != nil {

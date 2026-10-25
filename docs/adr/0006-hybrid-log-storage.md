@@ -1,7 +1,8 @@
 # ADR-6: Hybrid log storage — file buffer plus separate SQLite archive
 
 - Date: 2026-08-28
-- Status: accepted
+- Status: accepted; amended by [ADR-20](0020-log-archive-write-path.md)
+  (large chunks archived as referenced files, batched archive commits)
 
 ## Decision
 

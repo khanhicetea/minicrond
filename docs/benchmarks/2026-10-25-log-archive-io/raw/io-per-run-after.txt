@@ -1,0 +1,25 @@
+    io_cost_bench_test.go:57: short (3 lines)          split rep 1  buffer   flushes/run   0.51  write KiB/run      8.0  writeIOs/run   3.23
+    io_cost_bench_test.go:57: short (3 lines)          split rep 1  archive  flushes/run   1.02  write KiB/run     34.4  writeIOs/run   2.91
+    io_cost_bench_test.go:57: short (3 lines)          split rep 1  total    flushes/run   1.53  write KiB/run     42.4  writeIOs/run   6.15
+    io_cost_bench_test.go:57: short (3 lines)          split rep 2  buffer   flushes/run   0.51  write KiB/run      8.0  writeIOs/run   3.24
+    io_cost_bench_test.go:57: short (3 lines)          split rep 2  archive  flushes/run   1.02  write KiB/run     34.4  writeIOs/run   3.00
+    io_cost_bench_test.go:57: short (3 lines)          split rep 2  total    flushes/run   1.53  write KiB/run     42.4  writeIOs/run   6.24
+    io_cost_bench_test.go:57: short (3 lines)          live  rep 1  total    flushes/run   0.08  write KiB/run     10.2  writeIOs/run   0.52
+    io_cost_bench_test.go:57: short (3 lines)          live  rep 2  total    flushes/run   0.09  write KiB/run     10.3  writeIOs/run   0.57
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 1  buffer   flushes/run   0.51  write KiB/run      8.0  writeIOs/run   3.23
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 1  archive  flushes/run   1.02  write KiB/run     33.5  writeIOs/run   2.87
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 1  total    flushes/run   1.53  write KiB/run     41.5  writeIOs/run   6.10
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 2  buffer   flushes/run   0.51  write KiB/run      8.0  writeIOs/run   3.23
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 2  archive  flushes/run   1.02  write KiB/run     33.5  writeIOs/run   2.96
+    io_cost_bench_test.go:57: silent (exit line only)  split rep 2  total    flushes/run   1.53  write KiB/run     41.5  writeIOs/run   6.19
+    io_cost_bench_test.go:57: silent (exit line only)  live  rep 1  total    flushes/run   0.09  write KiB/run      9.9  writeIOs/run   0.60
+    io_cost_bench_test.go:57: silent (exit line only)  live  rep 2  total    flushes/run   0.08  write KiB/run      9.9  writeIOs/run   0.55
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 1  buffer   flushes/run   2.67  write KiB/run   1044.0  writeIOs/run  16.83
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 1  archive  flushes/run   1.17  write KiB/run     38.0  writeIOs/run   6.67
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 1  total    flushes/run   3.83  write KiB/run   1082.0  writeIOs/run  23.50
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 2  buffer   flushes/run   2.50  write KiB/run   1043.3  writeIOs/run  16.67
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 2  archive  flushes/run   1.17  write KiB/run     38.0  writeIOs/run   7.33
+    io_cost_bench_test.go:57: large (~4 MiB raw)       split rep 2  total    flushes/run   3.67  write KiB/run   1081.3  writeIOs/run  24.00
+    io_cost_bench_test.go:57: large (~4 MiB raw)       live  rep 1  total    flushes/run   2.33  write KiB/run   1081.3  writeIOs/run  19.33
+    io_cost_bench_test.go:57: large (~4 MiB raw)       live  rep 2  total    flushes/run   2.67  write KiB/run   1080.7  writeIOs/run  20.17
+ok  	github.com/khanhicetea/minicrond/internal/logstore	38.600s

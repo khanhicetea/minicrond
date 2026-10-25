@@ -1,0 +1,8 @@
+binary: /home/kit/minicron-bench/minicrond-base
+minicrond 0.2.0-dev (unknown) linux/amd64
+date: 2026-10-25T14:52:56+00:00
+Linux devkit1 6.12.113+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15) x86_64 GNU/Linux
+4
+model name	: AMD Ryzen AI 9 HX 370 w/ Radeon 890M
+/dev/sda1      ext4  20431752 18571816    979860  95% /
+scenarios=active tier-normal tier-large reps=1 duration=120 warmup=20 strace=0

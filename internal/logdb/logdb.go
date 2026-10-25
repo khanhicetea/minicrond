@@ -19,17 +19,29 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Chunk is one sealed, compressed stream of log frames as produced by the
 // logstore file writer. Blobs are stored verbatim so archived chunks decode
 // with the exact same framing as the on-disk buffer.
+//
+// A large chunk is archived as a file instead (ADR-20): its row keeps the
+// sequence range and FileBytes > 0, Blob is empty, and the compressed stream
+// lives at ChunkPath(run, number). Small chunks stay blobs, where SQLite packs
+// them far tighter than one filesystem block per file.
 type Chunk struct {
-	Number   int    // chunk sequence within the run
-	First    uint64 // first frame sequence in the blob
-	Last     uint64 // last frame sequence in the blob
-	RawBytes int64  // uncompressed frame bytes (accounting only)
-	Blob     []byte // compressed frame stream
+	Number    int    // chunk sequence within the run
+	First     uint64 // first frame sequence in the blob
+	Last      uint64 // last frame sequence in the blob
+	RawBytes  int64  // uncompressed frame bytes (accounting only)
+	Blob      []byte // compressed frame stream; empty for a file chunk
+	FileBytes int64  // size of the archive file; 0 for a blob chunk
+}
+
+// RunChunks is one run's share of a multi-run archive transaction.
+type RunChunks struct {
+	RunID, Job, Kind string
+	Chunks           []Chunk
 }
 
 // LogDB is the archive. db is the single writer connection; rdb is a
@@ -38,7 +50,12 @@ type Chunk struct {
 type LogDB struct {
 	db, rdb *sql.DB
 	path    string // the database file, for on-disk size accounting
+	files   string // directory of file chunks: <files>/<run_id>/<number>.zst
 }
+
+// FilesDirName is the directory next to minicron-logs.db that holds archived
+// file chunks.
+const FilesDirName = "log-archive"
 
 // Open creates or opens <dataDir>/minicron-logs.db and applies migrations.
 func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
@@ -50,7 +67,7 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	l := &LogDB{db: db, path: path}
+	l := &LogDB{db: db, path: path, files: filepath.Join(dataDir, FilesDirName)}
 	if err := l.migrate(context.Background()); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate log database: %w", err), db.Close())
 	}
@@ -66,6 +83,57 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 }
 
 func (l *LogDB) Close() error { return errors.Join(l.rdb.Close(), l.db.Close()) }
+
+// FilesDir is the directory that holds archived file chunks.
+func (l *LogDB) FilesDir() string { return l.files }
+
+// RunFilesDir is the directory of one run's archived file chunks.
+func (l *LogDB) RunFilesDir(runID string) string { return filepath.Join(l.files, runID) }
+
+// ChunkPath is where an archived file chunk lives.
+func (l *LogDB) ChunkPath(runID string, number int) string {
+	return filepath.Join(l.files, runID, fmt.Sprintf("%06d.zst", number))
+}
+
+// removeFiles unlinks the archive files of deleted file-chunk rows after their
+// transaction committed, and then the run directories they leave empty. A
+// crash in between leaves unreferenced files; SweepFiles removes them.
+// Failures are logged: the rows are gone, so nothing can read the files.
+func (l *LogDB) removeFiles(gone []fileRef) {
+	dirs := make(map[string]bool)
+	for _, f := range gone {
+		if err := os.Remove(l.ChunkPath(f.run, f.number)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Error("removing an archived log file failed; the next start removes it", "run", f.run, "chunk", f.number, "error", err)
+		}
+		dirs[f.run] = true
+	}
+	for run := range dirs {
+		_ = os.Remove(l.RunFilesDir(run)) // fails harmlessly while chunks remain
+	}
+}
+
+type fileRef struct {
+	run    string
+	number int
+}
+
+// scanDeleted collects the file chunks among rows returned by a DELETE ...
+// RETURNING run_id, number, file_bytes.
+func scanDeleted(rows *sql.Rows) (n int64, files []fileRef, err error) {
+	for rows.Next() {
+		var f fileRef
+		var size int64
+		if err := rows.Scan(&f.run, &f.number, &size); err != nil {
+			rows.Close()
+			return n, files, err
+		}
+		n++
+		if size > 0 {
+			files = append(files, f)
+		}
+	}
+	return n, files, errors.Join(rows.Err(), rows.Close())
+}
 
 // PoolStats reports connection waits for the writer and the read pool.
 func (l *LogDB) PoolStats() (writer, reader sql.DBStats) { return l.db.Stats(), l.rdb.Stats() }
@@ -115,6 +183,12 @@ func (l *LogDB) migrate(ctx context.Context) error {
 		if _, err := l.db.ExecContext(ctx, "PRAGMA user_version=3"); err != nil {
 			return fmt.Errorf("log database migration 3: %w", err)
 		}
+		version = 3
+	}
+	if version == 3 {
+		if _, err := l.db.ExecContext(ctx, migration4); err != nil {
+			return fmt.Errorf("log database migration 4: %w", err)
+		}
 	}
 	return nil
 }
@@ -136,12 +210,23 @@ CREATE TABLE log_chunks (
  raw_bytes INTEGER NOT NULL,
  archived_us INTEGER NOT NULL,
  blob BLOB NOT NULL,
+ file_bytes INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(run_id, number)
 );
 CREATE INDEX idx_log_runs_time ON log_runs(created_us);
 CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
 CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
-PRAGMA user_version=3;
+CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;
+PRAGMA user_version=4;
+COMMIT;`
+
+// migration4 adds file chunks (ADR-20). The partial index keeps the file
+// byte total and the per-run file lookups proportional to file chunks only.
+const migration4 = `
+BEGIN;
+ALTER TABLE log_chunks ADD COLUMN file_bytes INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;
+PRAGMA user_version=4;
 COMMIT;`
 
 const migration2 = `
@@ -163,6 +248,22 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 	return l.writeTx(ctx, func(tx *sql.Tx) error { return putChunks(ctx, tx, runID, job, kind, at, chunks) })
 }
 
+// PutRuns archives several runs in one transaction, so a burst of short runs
+// costs one commit (and one WAL fsync) instead of one per run (ADR-20).
+func (l *LogDB) PutRuns(ctx context.Context, at time.Time, runs []RunChunks) error {
+	return l.writeTx(ctx, func(tx *sql.Tx) error {
+		for _, r := range runs {
+			if len(r.Chunks) == 0 {
+				continue
+			}
+			if err := putChunks(ctx, tx, r.RunID, r.Job, r.Kind, at, r.Chunks); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time.Time, chunks []Chunk) error {
 	now := at.UnixMicro()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
@@ -170,8 +271,8 @@ func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time
 		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
 		return err
 	}
-	const putChunk = `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob) VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob`
+	const putChunk = `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob,file_bytes) VALUES(?,?,?,?,?,?,?,?)
+		ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob,file_bytes=excluded.file_bytes`
 	// Preparing once per multi-chunk batch avoids repeated SQLite parsing while
 	// keeping statement lifetime and memory bounded by this transaction.
 	if len(chunks) > 1 {
@@ -181,7 +282,7 @@ func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time
 		}
 		defer stmt.Close()
 		for _, c := range chunks {
-			if _, err := stmt.ExecContext(ctx, runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
+			if _, err := stmt.ExecContext(ctx, runID, c.Number, c.First, c.Last, c.RawBytes, now, blobArg(c), c.FileBytes); err != nil {
 				return err
 			}
 		}
@@ -191,11 +292,19 @@ func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time
 	} else {
 		c := chunks[0]
 		if _, err := tx.ExecContext(ctx, putChunk,
-			runID, c.Number, c.First, c.Last, c.RawBytes, now, c.Blob); err != nil {
+			runID, c.Number, c.First, c.Last, c.RawBytes, now, blobArg(c), c.FileBytes); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// blobArg keeps the NOT NULL blob column satisfied for file chunks.
+func blobArg(c Chunk) []byte {
+	if c.Blob == nil {
+		return []byte{}
+	}
+	return c.Blob
 }
 
 // Archive and deletion transactions wait for the SQLite write lock in short
@@ -284,7 +393,7 @@ func isBusy(err error) bool {
 // revisited every consumed chunk on each call. Chunk numbers and last sequences
 // grow together within a run (sequences are assigned in write order and chunks
 // are numbered in write order), so sequence order is chunk-number order.
-const eachChunkQuery = "SELECT number,first_seq,last_seq,raw_bytes,blob FROM log_chunks WHERE run_id=? AND last_seq>? ORDER BY last_seq LIMIT 1"
+const eachChunkQuery = "SELECT number,first_seq,last_seq,raw_bytes,blob,file_bytes FROM log_chunks WHERE run_id=? AND last_seq>? ORDER BY last_seq LIMIT 1"
 
 // EachChunk iterates archived chunks of a run in order. Chunks whose last
 // frame is at or below after are skipped. Returning false from fn stops the
@@ -298,7 +407,7 @@ func (l *LogDB) EachChunk(ctx context.Context, runID string, after uint64, fn fu
 		// A row-count batch alone could prefetch hundreds of MiB for a tiny page.
 		var c Chunk
 		err := l.rdb.QueryRowContext(ctx, eachChunkQuery, runID, cursor).
-			Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob)
+			Scan(&c.Number, &c.First, &c.Last, &c.RawBytes, &c.Blob, &c.FileBytes)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -328,7 +437,7 @@ func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
 	if len(runIDs) == 0 {
 		return nil
 	}
-	return l.writeTx(ctx, func(tx *sql.Tx) error {
+	err := l.writeTx(ctx, func(tx *sql.Tx) error {
 		for start := 0; start < len(runIDs); start += 128 {
 			page := runIDs[start:min(start+128, len(runIDs))]
 			args := make([]any, len(page))
@@ -344,6 +453,15 @@ func (l *LogDB) DeleteRuns(ctx context.Context, runIDs []string) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, id := range runIDs {
+		if err := os.RemoveAll(l.RunFilesDir(id)); err != nil {
+			slog.Error("removing archived log files failed; the next start removes them", "run", id, "error", err)
+		}
+	}
+	return nil
 }
 
 // pruneBatch bounds each prune transaction. Chunks are up to about 1 MiB, so
@@ -361,13 +479,19 @@ func (l *LogDB) Prune(ctx context.Context, before time.Time) (int64, error) {
 }
 
 // PruneToSize removes the oldest archived chunks until the database's used
-// pages fit in maxBytes. It returns the number of runs removed entirely.
+// pages plus the archived files fit in maxBytes. It returns the number of runs
+// removed entirely.
 func (l *LogDB) PruneToSize(ctx context.Context, maxBytes int64) (int64, error) {
 	for {
 		used, err := l.usedBytes(ctx)
 		if err != nil {
 			return 0, err
 		}
+		files, err := l.fileBytes(ctx, l.db)
+		if err != nil {
+			return 0, err
+		}
+		used += files
 		if used <= maxBytes {
 			break
 		}
@@ -386,9 +510,10 @@ func (l *LogDB) PruneToSize(ctx context.Context, maxBytes int64) (int64, error) 
 // excess bytes, at most one batch per call, in one transaction.
 func (l *LogDB) deleteOldest(ctx context.Context, excess int64) (int64, error) {
 	var deleted int64
+	var gone []fileRef
 	err := l.writeTx(ctx, func(tx *sql.Tx) error {
-		deleted = 0
-		rows, err := tx.QueryContext(ctx, "SELECT rowid, LENGTH(blob) FROM log_chunks ORDER BY archived_us, rowid LIMIT ?", pruneBatch)
+		deleted, gone = 0, nil
+		rows, err := tx.QueryContext(ctx, "SELECT rowid, LENGTH(blob)+file_bytes FROM log_chunks ORDER BY archived_us, rowid LIMIT ?", pruneBatch)
 		if err != nil {
 			return err
 		}
@@ -406,13 +531,16 @@ func (l *LogDB) deleteOldest(ctx context.Context, excess int64) (int64, error) {
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil || len(ids) == 0 {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+")", ids...)
+		rows, err = tx.QueryContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+") RETURNING run_id, number, file_bytes", ids...)
 		if err != nil {
 			return err
 		}
-		deleted, err = res.RowsAffected()
+		deleted, gone, err = scanDeleted(rows)
 		return err
 	})
+	if err == nil {
+		l.removeFiles(gone)
+	}
 	return deleted, err
 }
 
@@ -462,14 +590,18 @@ func (l *LogDB) deleteChunkBatch(ctx context.Context, selectRows string, args ..
 		return 0, err
 	}
 	var n int64
+	var gone []fileRef
 	err := l.writeTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+selectRows+")", append(args, pruneBatch)...)
+		rows, err := tx.QueryContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+selectRows+") RETURNING run_id, number, file_bytes", append(args, pruneBatch)...)
 		if err != nil {
 			return err
 		}
-		n, err = res.RowsAffected()
+		n, gone, err = scanDeleted(rows)
 		return err
 	})
+	if err == nil {
+		l.removeFiles(gone)
+	}
 	return n, err
 }
 
@@ -493,10 +625,36 @@ func (l *LogDB) usedBytes(ctx context.Context) (int64, error) {
 	return (pages - free) * size, err
 }
 
-// Stats reports archive totals for logging and diagnostics.
+// fileBytes totals the archived file chunks through their partial index.
+func (l *LogDB) fileBytes(ctx context.Context, db *sql.DB) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COALESCE(SUM(file_bytes),0) FROM log_chunks WHERE file_bytes>0").Scan(&n)
+	return n, err
+}
+
+// FileChunks reports which chunk numbers of a run are archived as files.
+func (l *LogDB) FileChunks(ctx context.Context, runID string) (map[int]bool, error) {
+	rows, err := l.rdb.QueryContext(ctx, "SELECT number FROM log_chunks WHERE run_id=? AND file_bytes>0", runID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int]bool)
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[n] = true
+	}
+	return out, errors.Join(rows.Err(), rows.Close())
+}
+
+// Stats reports archive totals for logging and diagnostics. blobBytes counts
+// archived file chunks too.
 func (l *LogDB) Stats(ctx context.Context) (runs, chunks, blobBytes int64, err error) {
 	// One snapshot and one chunk-table scan keep counts consistent with sizes.
-	err = l.rdb.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM log_runs), COUNT(*), COALESCE(SUM(LENGTH(blob)),0)
+	err = l.rdb.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM log_runs), COUNT(*), COALESCE(SUM(LENGTH(blob)+file_bytes),0)
 		FROM log_chunks`).Scan(&runs, &chunks, &blobBytes)
 	return runs, chunks, blobBytes, err
 }

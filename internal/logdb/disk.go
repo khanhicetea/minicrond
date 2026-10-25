@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"path/filepath"
 )
 
 // FileBytes reports what the archive occupies on disk: the database file and
-// its write-ahead log. Both count against the filesystem; the WAL grows with
+// its write-ahead log (archived file chunks are reported by ChunkFileBytes). Both count against the filesystem; the WAL grows with
 // deletions until Compact truncates it, so size accounting that ignores it
 // under-reports exactly while pruning is under way. A missing WAL is zero.
 func (l *LogDB) FileBytes() (db, wal int64, err error) {
@@ -25,10 +26,35 @@ func (l *LogDB) FileBytes() (db, wal int64, err error) {
 	return db, wal, nil
 }
 
+// ChunkFileBytes sums the sizes of the archived file chunks on disk, by
+// listing the archive directory (on-demand and pressure-pass accounting).
+func (l *LogDB) ChunkFileBytes() int64 {
+	runs, err := os.ReadDir(l.files)
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, r := range runs {
+		if !r.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(l.files, r.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if info, err := f.Info(); err == nil && info.Mode().IsRegular() {
+				total += info.Size()
+			}
+		}
+	}
+	return total
+}
+
 // PruneResult describes a PruneOldest pass.
 type PruneResult struct {
 	Chunks int64 // chunk rows deleted
-	Bytes  int64 // compressed blob bytes those rows held
+	Bytes  int64 // compressed blob and file bytes those rows held
 	Runs   int64 // runs left without any chunk and removed
 }
 
@@ -55,11 +81,12 @@ func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(r
 		var batch PruneResult
 		scanned := 0
 		nextUS, nextRow := cursorUS, cursorRow
+		var gone []fileRef
 		err := l.writeTx(ctx, func(tx *sql.Tx) error {
 			// writeTx repeats the function after a busy database; start from the
 			// committed cursor each time.
-			batch, scanned, nextUS, nextRow = PruneResult{}, 0, cursorUS, cursorRow
-			rows, err := tx.QueryContext(ctx, `SELECT rowid, archived_us, run_id, LENGTH(blob) FROM log_chunks
+			batch, scanned, nextUS, nextRow, gone = PruneResult{}, 0, cursorUS, cursorRow, nil
+			rows, err := tx.QueryContext(ctx, `SELECT rowid, archived_us, run_id, LENGTH(blob)+file_bytes FROM log_chunks
 				WHERE (archived_us, rowid) > (?, ?) ORDER BY archived_us, rowid LIMIT ?`, cursorUS, cursorRow, pruneBatch)
 			if err != nil {
 				return err
@@ -89,16 +116,17 @@ func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(r
 			if len(ids) == 0 {
 				return nil
 			}
-			r, err := tx.ExecContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+placeholders(len(ids))+")", ids...)
+			rows, err = tx.QueryContext(ctx, "DELETE FROM log_chunks WHERE rowid IN ("+placeholders(len(ids))+") RETURNING run_id, number, file_bytes", ids...)
 			if err != nil {
 				return err
 			}
-			batch.Chunks, err = r.RowsAffected()
+			batch.Chunks, gone, err = scanDeleted(rows)
 			return err
 		})
 		if err != nil {
 			return res, err
 		}
+		l.removeFiles(gone)
 		cursorUS, cursorRow = nextUS, nextRow
 		res.Chunks += batch.Chunks
 		res.Bytes += batch.Bytes

@@ -345,6 +345,9 @@ func TestArchiveBatchBounds(t *testing.T) {
 		{"blob_bytes", 12, 1 << 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Blob batches only; file chunks are not loaded into memory.
+			defer func(old int64) { fileChunkMin = old }(fileChunkMin)
+			fileChunkMin = 1 << 40
 			s, db, dir := newArchiveStore(t)
 			buffer := filepath.Join(dir, "logs", "run")
 			if err := os.Mkdir(buffer, 0o700); err != nil {

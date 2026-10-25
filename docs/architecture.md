@@ -142,9 +142,12 @@ so they never queue behind run transitions or archival.
 Live logs take the fast path: every accepted frame is a tagged, zstd-
 compressed chunk file write before the next line is read (daemon-crash-safe);
 fsyncs are grouped on a shared timer (`logs.sync_interval` /
-`logs.sync_max_dirty`) unless `logs.durability = "frame"`. Finished runs are sealed and archived into the
+`logs.sync_max_dirty`) unless `logs.durability = "frame"`, seals and pipe EOF
+included. Finished runs are sealed and archived into the
 log DB in the background, off the completion path, and buffers are deleted; workers
-checkpoint every `logs.worker_flush_interval`. Crash-orphaned buffers are
+checkpoint every `logs.worker_flush_interval`. Small chunks become blobs, short
+runs are committed in batches, and chunks of 64 KiB or more are renamed into
+`log-archive/` with a row pointing to them instead of being copied (ADR-20). Crash-orphaned buffers are
 salvaged at startup up to the last intact frame. Reads merge the archive and
 the buffer files; no payload is kept in memory for viewers (ADR-6, ADR-8).
 Archive cursor reads seek by frame sequence. Log disk use is bounded by a
@@ -171,5 +174,6 @@ authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
 - [ADR-7: Unix-only and proxy UI](adr/0007-unix-only-and-proxy-ui.md) — optional local transport and browser authentication
 - [ADR-13: database alert channels](adr/0013-database-alert-channels.md) — channel ownership, credential storage and deletion semantics
 - [ADR-16: execution first](adr/0016-execution-first.md) — runs never wait for history storage; PID 1 init
+- [ADR-20: log archive write path](adr/0020-log-archive-write-path.md) — file chunks, batched archive commits, deferred seal syncs
 - [`releases/`](releases/) — release notes with the v0.1 acceptance tables
   and measurements

@@ -19,6 +19,8 @@
 
 6. **Execution first (ADR-16, 2026-10-22):** schedules and workers keep running when the metadata database or log storage fails (full, read-only, locked, stalled). Launches, running/terminal transitions, restarts, retries and alerts never wait for a history write; history is written synchronously while storage is healthy and by a bounded background writer (1024 runs) otherwise, then dropped with a counter. Constraint violations (e.g. an already-recorded scheduled occurrence) still refuse a launch; idempotent API triggers and the durable queue still require the database. minicrond runs as a container's PID 1 with a built-in init. Do not reintroduce a database dependency on the execution path. Exception: jobs may opt in with `on_history_unavailable = "skip"` (ADR-19, 2026-10-25) to not start when their run row cannot be stored; the default stays `run`.
 
+7. **Log archive write path (ADR-20, 2026-10-25):** in batch durability, seal and pipe EOF fsyncs join the group sync (a finished run's last ~2 s can be lost on OS crash, like a running run's). Chunks ≥ 64 KiB compressed are archived as files under `log-archive/` referenced by their row (commit before rename), not copied into SQLite. Short runs are archived in multi-run transactions.
+
 Chosen defaults are in ADR-8 and ADR-9/10/11/16; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
 
 ## System design defaults

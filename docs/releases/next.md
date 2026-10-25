@@ -63,6 +63,26 @@ its headroom rule is **on by default**.
 - `POST /api/v1/workers/{name}/start|stop|restart` (and `minicrond start|stop|
   restart`) now accept config-owned workers; edits stay refused.
 
+## Log archive writes ([ADR-20](../adr/0020-log-archive-write-path.md))
+
+- Log chunks of 64 KiB or more (compressed) are no longer copied into
+  `minicron-logs.db`: the database keeps a row that points to the file, which
+  moves to the new `data/log-archive/<run_id>/` directory. Small chunks are
+  still stored in the database. Log archive schema 4; the migration only adds
+  a column. Back up the whole data directory, `log-archive/` included.
+- Under load the archiver stores up to 32 finished short runs in one
+  transaction.
+- In `logs.durability = "batch"`, end of output and run completion no longer
+  fsync on their own; the next group sync (`logs.sync_interval`, 2 s) does, and
+  skips runs already archived by then. An OS crash or power loss can now lose
+  the last ~2 s of a finished run's output, as it already could for a running
+  one. `"frame"` and orderly shutdown still sync at once.
+- `logs.db_max_size`, the disk budget and the archive diagnostics count the
+  `log-archive/` files.
+- Measured per run on ext4: a short run writes about 10 KiB instead of 46 KiB
+  with 0.08 instead of 1.4 disk flushes; a 4 MiB run writes 1.1 MiB instead of
+  2.8 MiB.
+
 ## Memory
 
 - Each open run's log encoder uses a 128 KiB zstd window instead of 1 MiB (8
