@@ -17,6 +17,7 @@ func sameDefinition(a, b *model.Definition) bool {
 		sameBool(a.Enabled, b.Enabled) && a.Command == b.Command &&
 		a.Shell == b.Shell && a.Schedule == b.Schedule && a.Timezone == b.Timezone &&
 		a.CatchUp == b.CatchUp && a.OnOverlap == b.OnOverlap &&
+		a.OnHistoryUnavailable == b.OnHistoryUnavailable &&
 		a.Retries == b.Retries && a.RetryDelay == b.RetryDelay &&
 		a.RunOnStart == b.RunOnStart && a.RunAs == b.RunAs &&
 		a.WorkingDir == b.WorkingDir && a.EnvBase == b.EnvBase && a.EnvFile == b.EnvFile &&

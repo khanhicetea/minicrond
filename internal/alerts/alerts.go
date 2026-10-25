@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,7 @@ type Channel interface {
 	Send(context.Context, Alert) error
 }
 
-// Alert is the transport-neutral payload produced for an unsuccessful run.
+// Alert is the transport-neutral payload for a run whose status a channel delivers.
 type Alert struct {
 	Run  model.Run   // retained for single-run transports
 	Runs []model.Run // populated for batched delivery
@@ -63,6 +64,7 @@ type Dispatcher struct {
 	mu       sync.RWMutex
 	channels map[string]Channel
 	windows  map[string]time.Duration
+	notifyOn map[string]statusSet
 	queue    chan delivery
 	work     chan []delivery
 	record   RecordFunc
@@ -101,12 +103,36 @@ func New(channels []model.AlertChannel, record RecordFunc) (*Dispatcher, error) 
 type Registry struct {
 	channels map[string]Channel
 	windows  map[string]time.Duration
+	notifyOn map[string]statusSet
 }
+
+// statusSet is a bit set over model.AlertStatuses.
+type statusSet uint8
+
+func newStatusSet(statuses []string) statusSet {
+	var set statusSet
+	for i, status := range model.AlertStatuses {
+		if slices.Contains(statuses, status) {
+			set |= 1 << i
+		}
+	}
+	return set
+}
+
+func (s statusSet) has(status string) bool {
+	i := slices.Index(model.AlertStatuses, status)
+	return i >= 0 && s&(1<<i) != 0
+}
+
+// defaultNotifyOn applies to a referenced channel that is not loaded, so its
+// drop is recorded for the statuses that alerted before channels chose them.
+var defaultNotifyOn = newStatusSet(model.DefaultNotifyOn)
 
 // Prepare builds an immutable in-memory registry from stored channels.
 func Prepare(configs []model.AlertChannel) (*Registry, error) {
 	channels := make(map[string]Channel, len(configs))
 	windows := make(map[string]time.Duration, len(configs))
+	notifyOn := make(map[string]statusSet, len(configs))
 	for _, cfg := range configs {
 		if err := cfg.Normalize(); err != nil {
 			return nil, fmt.Errorf("alert channel %q: %w", cfg.Name, err)
@@ -115,6 +141,7 @@ func Prepare(configs []model.AlertChannel) (*Registry, error) {
 			return nil, fmt.Errorf("duplicate alert channel %q", cfg.Name)
 		}
 		windows[cfg.Name] = time.Duration(cfg.BatchWindow) * time.Second
+		notifyOn[cfg.Name] = newStatusSet(cfg.NotifyOn)
 		var channel Channel
 		switch cfg.Type {
 		case "telegram":
@@ -124,7 +151,7 @@ func Prepare(configs []model.AlertChannel) (*Registry, error) {
 		}
 		channels[cfg.Name] = channel
 	}
-	return &Registry{channels: channels, windows: windows}, nil
+	return &Registry{channels: channels, windows: windows, notifyOn: notifyOn}, nil
 }
 
 // Reload atomically replaces the available delivery channels.
@@ -146,15 +173,16 @@ func (d *Dispatcher) Apply(registry *Registry) error {
 	}
 	d.channels = registry.channels
 	d.windows = registry.windows
+	d.notifyOn = registry.notifyOn
 	return nil
 }
 
-// Notify queues alerts for failed and timed-out runs. Definitions opt in by
-// naming channels in their alerts field. It runs on the run-completion path,
+// Notify queues alerts for runs whose status a named channel delivers
+// (notify_on). Definitions opt in by naming channels in their alerts field. It runs on the run-completion path,
 // so it never touches the database: dropped alerts are noted in a bounded,
 // coalesced list that the batch goroutine records later.
 func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
-	if run.Status != "failed" && run.Status != "timeout" && run.Status != "exhausted" {
+	if len(definition.Alerts) == 0 {
 		return
 	}
 	d.mu.RLock()
@@ -164,6 +192,13 @@ func (d *Dispatcher) Notify(run model.Run, definition model.Definition) {
 	}
 	for _, name := range definition.Alerts {
 		channel := d.channels[name]
+		notifyOn, ok := d.notifyOn[name]
+		if !ok {
+			notifyOn = defaultNotifyOn
+		}
+		if !notifyOn.has(run.Status) {
+			continue
+		}
 		recordName := deliveryRecordName(name, run)
 		if channel == nil {
 			d.observeDrop(run.ID, recordName, "alert channel is unavailable")

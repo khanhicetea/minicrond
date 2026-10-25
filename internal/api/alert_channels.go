@@ -10,11 +10,12 @@ import (
 )
 
 type alertChannelInput struct {
-	Type                string `json:"type" enum:"telegram"`
-	BotToken            string `json:"bot_token,omitempty" writeOnly:"true" maxLength:"256" doc:"Literal Telegram credential, required when creating. Empty or omitted retains the saved credential on edit."`
-	ChatID              string `json:"chat_id" minLength:"1" maxLength:"256"`
-	DisableNotification bool   `json:"disable_notification,omitempty"`
-	BatchWindow         int    `json:"batch_window,omitempty" minimum:"0" maximum:"3600" default:"10" doc:"Batch window in seconds; zero or omitted selects 10."`
+	Type                string   `json:"type" enum:"telegram"`
+	BotToken            string   `json:"bot_token,omitempty" writeOnly:"true" maxLength:"256" doc:"Literal Telegram credential, required when creating. Empty or omitted retains the saved credential on edit."`
+	ChatID              string   `json:"chat_id" minLength:"1" maxLength:"256"`
+	DisableNotification bool     `json:"disable_notification,omitempty"`
+	BatchWindow         int      `json:"batch_window,omitempty" minimum:"0" maximum:"3600" default:"10" doc:"Batch window in seconds; zero or omitted selects 10."`
+	NotifyOn            []string `json:"notify_on,omitempty" enum:"succeeded,failed,timeout,skipped,missed,exhausted" doc:"Run statuses this channel delivers; empty or omitted selects failed, timeout and exhausted."`
 }
 
 func (s *Server) putAlertChannel(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +25,7 @@ func (s *Server) putAlertChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "validation_failed", "invalid alert channel JSON")
 		return
 	}
-	channel := model.AlertChannel{Name: r.PathValue("name"), Type: in.Type, BotToken: in.BotToken, ChatID: in.ChatID, DisableNotification: in.DisableNotification, BatchWindow: in.BatchWindow}
+	channel := model.AlertChannel{Name: r.PathValue("name"), Type: in.Type, BotToken: in.BotToken, ChatID: in.ChatID, DisableNotification: in.DisableNotification, BatchWindow: in.BatchWindow, NotifyOn: in.NotifyOn}
 	check := channel
 	if check.BotToken == "" && s.alertChannels != nil {
 		for _, existing := range s.alertChannels() {
@@ -38,7 +39,7 @@ func (s *Server) putAlertChannel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, "validation_failed", err.Error())
 		return
 	}
-	channel.BatchWindow = check.BatchWindow
+	channel.BatchWindow, channel.NotifyOn = check.BatchWindow, check.NotifyOn
 	if s.saveAlertChannel == nil {
 		writeError(w, 503, "unavailable", "alert registry is unavailable")
 		return

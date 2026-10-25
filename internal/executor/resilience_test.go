@@ -241,3 +241,58 @@ func TestRunExecutesWhenRowInsertFails(t *testing.T) {
 		t.Fatalf("run-stored callback = %v", stored)
 	}
 }
+
+func TestSkipJobDoesNotRunWithoutRow(t *testing.T) {
+	var notifiedMu sync.Mutex
+	var notified []model.Run
+	dir, st, s := resilienceService(t, Options{MaxConcurrentRuns: 1, OnFinished: func(r model.Run, _ model.Definition) {
+		notifiedMu.Lock()
+		defer notifiedMu.Unlock()
+		notified = append(notified, r)
+	}})
+	marker := filepath.Join(t.TempDir(), "ran")
+	d, hash := putJob(t, st, model.Definition{Name: "billing", Kind: model.KindJob, Command: "touch " + marker, Shell: "/bin/sh", OnOverlap: "skip", OnHistoryUnavailable: "skip", SuccessCodes: []int{0}})
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer saboteur.Close()
+	if _, err := saboteur.Exec(`BEGIN EXCLUSIVE`); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := time.Now().UTC().Truncate(time.Second)
+	run, err := s.Trigger(t.Context(), d, hash, "schedule", &scheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "skipped" || run.EndReason != "history_unavailable" {
+		t.Fatalf("run = %s/%s, want skipped/history_unavailable", run.Status, run.EndReason)
+	}
+	if s.Active(d.Name) != 0 {
+		t.Fatal("a skipped run is active")
+	}
+	notifiedMu.Lock()
+	if len(notified) != 1 || notified[0].ID != run.ID || notified[0].Status != "skipped" {
+		t.Fatalf("completion callback = %+v, want the skipped run", notified)
+	}
+	notifiedMu.Unlock()
+	if _, err := saboteur.Exec(`COMMIT`); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 15*time.Second, "skipped row never written", func() bool {
+		r, err := st.Run(t.Context(), run.ID)
+		return err == nil && r.Status == "skipped" && r.EndReason == "history_unavailable"
+	})
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("job ran without a stored row: %v", err)
+	}
+	// The capacity slot was released: the next trigger runs normally.
+	next, err := s.Trigger(t.Context(), d, hash, "manual", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, s, next.ID)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("run after recovery did not execute: %v", err)
+	}
+}

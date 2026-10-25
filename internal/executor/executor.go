@@ -342,6 +342,12 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		return r, false, err
 	}
 	if !recorded {
+		if d.Kind == model.KindJob && d.OnHistoryUnavailable == "skip" {
+			// The job opted out of running without a stored row: that row is
+			// what stops a scheduled occurrence from running twice.
+			releaseCapacity()
+			return s.skipUnrecorded(r, d), false, nil
+		}
 		// ADR-16: the database cannot take the row now. Execute anyway and let
 		// the background history writer insert it later.
 		s.health.deferred.Add(1)
@@ -461,6 +467,7 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 			existing, err := s.store.Run(ctx, existingID)
 			return existing, true, err
 		}
+		s.notifyFinished(r, d)
 		return r, false, nil
 	}
 	recorded, err := s.admitRow(ctx, r)
@@ -472,7 +479,30 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 	if err == nil && !recorded {
 		s.deferRecord(r, d)
 	}
+	if err == nil {
+		s.notifyFinished(r, d)
+	}
 	return r, false, err
+}
+
+// skipUnrecorded declines a run of an on_history_unavailable = "skip" job whose
+// pending row could not be stored. The row goes to the background history
+// writer as pending and then skipped, so it is recorded once the database
+// recovers, also when the failed insert did commit.
+func (s *Service) skipUnrecorded(r model.Run, d model.Definition) model.Run {
+	now := time.Now().UTC()
+	slog.Error("run skipped: metadata storage is unavailable and the job sets on_history_unavailable = skip", "run", r.ID, "job", d.Name)
+	s.health.deferred.Add(1)
+	if !s.spool(r, d, func(it *finalItem) {
+		it.create = true
+		it.done = true
+		it.t = terminal{status: "skipped", reason: "history_unavailable", ended: now}
+	}) {
+		s.historyLost(r, "skipped run row")
+	}
+	r.Status, r.EndReason, r.EndedAt = "skipped", "history_unavailable", &now
+	s.notifyFinished(r, d)
+	return r
 }
 
 // deferRecord hands an already terminal row (skipped, missed) to the
@@ -495,6 +525,9 @@ func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash str
 	}
 	if err == nil && !recorded {
 		s.deferRecord(r, d)
+	}
+	if err == nil {
+		s.notifyFinished(r, d)
 	}
 	return r, err
 }

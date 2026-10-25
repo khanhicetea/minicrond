@@ -99,8 +99,8 @@ func TestMigration10KeepsHistoricalUsageUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := strings.Replace(schema, resourceUsageDDL, "", 1)
-	old = strings.Replace(old, alertChannelsDDL, "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=11;", "PRAGMA user_version=9;", 1)
+	old = strings.Replace(old, alertChannelsDDL+alertNotifyDDL, "", 1)
+	old = strings.Replace(old, "PRAGMA user_version=12;", "PRAGMA user_version=9;", 1)
 	if _, err := db.Exec(old); err != nil {
 		t.Fatal(err)
 	}

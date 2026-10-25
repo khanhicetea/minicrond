@@ -338,6 +338,22 @@ export default function JobForm({ showKindTabs, nameLocked, draft, readOnly, run
                     onChange={event => onChange({ retry_delay: optionalNumber(event.target.value) })} />
                 </div>
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label htmlFor={`${formId}-history-unavailable`} className={label}>When the database is unavailable</label>
+                  <select
+                    id={`${formId}-history-unavailable`}
+                    className="mc-select"
+                    value={draft.on_history_unavailable || 'run'}
+                    disabled={disabled}
+                    onChange={event => onChange({ on_history_unavailable: event.target.value })}
+                  >
+                    <option value="run">Run anyway</option>
+                    <option value="skip">Skip the run</option>
+                  </select>
+                  <p className="field-help">Skip for jobs that must never run twice, such as billing or email. Run anyway may repeat a run after a daemon crash.</p>
+                </div>
+              </div>
             </>
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

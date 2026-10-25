@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/khanhicetea/minicrond/internal/config"
@@ -23,6 +24,14 @@ const migration11 = `BEGIN;
 ` + alertChannelsDDL + `PRAGMA user_version=11;
 COMMIT;`
 
+// alertNotifyDDL adds the statuses a channel delivers; existing channels keep
+// the statuses that alerted before the column existed.
+const alertNotifyDDL = `ALTER TABLE alert_channels ADD COLUMN notify_on TEXT NOT NULL DEFAULT 'failed,timeout,exhausted';
+`
+const migration12 = `BEGIN;
+` + alertNotifyDDL + `PRAGMA user_version=12;
+COMMIT;`
+
 var ErrUnknownAlertChannel = errors.New("unknown or duplicate alert channel")
 var ErrAlertChannelReferenced = errors.New("alert channel is referenced by definitions")
 var ErrAlertChannelLimit = errors.New("alert channel limit reached")
@@ -30,7 +39,7 @@ var ErrAlertChannelLimit = errors.New("alert channel limit reached")
 // AlertChannels is used at startup and on explicit mutations, never per alert.
 // It includes credentials and must not be used directly in public responses.
 func (s *Store) AlertChannels(ctx context.Context) ([]model.AlertChannel, error) {
-	rows, err := s.rdb.QueryContext(ctx, "SELECT name,type,bot_token,chat_id,disable_notification,batch_window FROM alert_channels ORDER BY name")
+	rows, err := s.rdb.QueryContext(ctx, "SELECT name,type,bot_token,chat_id,disable_notification,batch_window,notify_on FROM alert_channels ORDER BY name")
 	if err != nil {
 		return nil, fmt.Errorf("list alert channels: %w", err)
 	}
@@ -38,8 +47,12 @@ func (s *Store) AlertChannels(ctx context.Context) ([]model.AlertChannel, error)
 	out := make([]model.AlertChannel, 0)
 	for rows.Next() {
 		var c model.AlertChannel
-		if err := rows.Scan(&c.Name, &c.Type, &c.BotToken, &c.ChatID, &c.DisableNotification, &c.BatchWindow); err != nil {
+		var notify string
+		if err := rows.Scan(&c.Name, &c.Type, &c.BotToken, &c.ChatID, &c.DisableNotification, &c.BatchWindow, &notify); err != nil {
 			return nil, err
+		}
+		if notify != "" {
+			c.NotifyOn = strings.Split(notify, ",")
 		}
 		out = append(out, c)
 	}
@@ -72,8 +85,8 @@ func (s *Store) PutAlertChannel(ctx context.Context, c model.AlertChannel, actor
 	if err := c.Normalize(); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO alert_channels(name,type,bot_token,chat_id,disable_notification,batch_window) VALUES(?,?,?,?,?,?)
- ON CONFLICT(name) DO UPDATE SET type=excluded.type,bot_token=excluded.bot_token,chat_id=excluded.chat_id,disable_notification=excluded.disable_notification,batch_window=excluded.batch_window`, c.Name, c.Type, c.BotToken, c.ChatID, c.DisableNotification, c.BatchWindow); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO alert_channels(name,type,bot_token,chat_id,disable_notification,batch_window,notify_on) VALUES(?,?,?,?,?,?,?)
+ ON CONFLICT(name) DO UPDATE SET type=excluded.type,bot_token=excluded.bot_token,chat_id=excluded.chat_id,disable_notification=excluded.disable_notification,batch_window=excluded.batch_window,notify_on=excluded.notify_on`, c.Name, c.Type, c.BotToken, c.ChatID, c.DisableNotification, c.BatchWindow, strings.Join(c.NotifyOn, ",")); err != nil {
 		return err
 	}
 	safe, err := json.Marshal(c.Redacted())

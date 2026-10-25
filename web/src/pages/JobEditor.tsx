@@ -351,6 +351,7 @@ function DefinitionSummary({ draft }: { draft: Definition }) {
     ['Grace', draft.grace === undefined ? '—' : `${draft.grace} seconds`],
     ['Overlap', draft.on_overlap ?? '—'],
     ['Catch up', draft.catch_up ?? '—'],
+    ['Database unavailable', draft.kind === 'worker' ? '—' : (draft.on_history_unavailable || 'run')],
     ['Run on start', draft.run_on_start ? 'yes' : 'no'],
     ['Env base', draft.env_base ?? 'clean'],
     ['Env file', draft.env_file ?? '—'],

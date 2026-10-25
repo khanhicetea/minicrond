@@ -99,8 +99,12 @@ export interface AlertChannel {
   chat_id: string;
   disable_notification: boolean;
   batch_window: number;
+  notify_on: AlertStatus[];
   has_bot_token?: boolean;
 }
+
+export const alertStatuses = ['succeeded', 'failed', 'timeout', 'skipped', 'missed', 'exhausted'] as const;
+export type AlertStatus = typeof alertStatuses[number];
 
 export type AlertChannelInput = Omit<AlertChannel, 'name' | 'has_bot_token'> & { bot_token?: string };
 

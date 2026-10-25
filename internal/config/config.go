@@ -488,6 +488,7 @@ func mergeDefinitionDefaults(d *model.Definition, defaults model.Definition, ex 
 			d.Retries = cmp.Or(d.Retries, defaults.Retries)
 		}
 		d.RetryDelay = cmp.Or(d.RetryDelay, defaults.RetryDelay)
+		d.OnHistoryUnavailable = cmp.Or(d.OnHistoryUnavailable, defaults.OnHistoryUnavailable)
 	}
 	d.RunAs = cmp.Or(d.RunAs, defaults.RunAs)
 	d.WorkingDir = cmp.Or(d.WorkingDir, defaults.WorkingDir)
@@ -745,6 +746,12 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 		}
 		if d.OnOverlap != "skip" && d.OnOverlap != "parallel" {
 			return fmt.Errorf("%s.on_overlap must be skip or parallel", d.Name)
+		}
+		switch {
+		case d.Kind == model.KindWorker && d.OnHistoryUnavailable != "":
+			return fmt.Errorf("worker %s cannot have on_history_unavailable", d.Name)
+		case d.OnHistoryUnavailable != "" && d.OnHistoryUnavailable != "run" && d.OnHistoryUnavailable != "skip":
+			return fmt.Errorf("%s.on_history_unavailable must be run or skip", d.Name)
 		}
 		if d.LogOnFull != "drop_old" && d.LogOnFull != "drop_new" {
 			return fmt.Errorf("%s.log_on_full must be drop_old or drop_new", d.Name)

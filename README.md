@@ -44,7 +44,7 @@ database or log storage fails ([ADR-16](docs/adr/0016-execution-first.md)).
 | Storage | `minicron.db` (definitions, runs, audit) + `minicron-logs.db` (archive) with WAL; rolling age budget pruned daily; per-definition `keep_runs`/`keep_for` |
 | API | REST `/api/v1/*` + SSE log stream, OpenAPI 3.1 contract served at `/openapi.json`, `/healthz` + `/readyz` |
 | Web UI | Jobs & Workers, definition editor (schema-validated) with cloning, run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
-| Alerts | DB-backed Telegram channels managed in the UI/API; jobs/workers opt in with `alerts`; failed/timeout runs notified asynchronously with retries |
+| Alerts | DB-backed Telegram channels managed in the UI/API; jobs/workers opt in with `alerts`; each channel picks the run statuses it delivers (`notify_on`: failed, timeout, skipped, missed, succeeded, worker exhausted), asynchronously with retries |
 | CLI | `list`, `run --wait`, `logs -f`, `status`, `reload`, `import`, `crontab` (interactive migration), `export`, `token --rotate`, `schema`, `service install/uninstall` (systemd) |
 
 ## Usage

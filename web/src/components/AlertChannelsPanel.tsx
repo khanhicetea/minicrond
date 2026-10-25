@@ -2,9 +2,20 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, errorText } from '../api';
 import { alertChannelsQuery, keys } from '../queries';
-import type { AlertChannel } from '../types';
+import { alertStatuses, type AlertChannel, type AlertStatus } from '../types';
 
-const emptyChannel = (): AlertChannel => ({ name: '', type: 'telegram', chat_id: '', disable_notification: false, batch_window: 10 });
+const defaultNotifyOn: AlertStatus[] = ['failed', 'timeout', 'exhausted'];
+
+const statusLabels: Record<AlertStatus, string> = {
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  timeout: 'Timed out',
+  skipped: 'Skipped',
+  missed: 'Missed',
+  exhausted: 'Worker exhausted',
+};
+
+const emptyChannel = (): AlertChannel => ({ name: '', type: 'telegram', chat_id: '', disable_notification: false, batch_window: 10, notify_on: [...defaultNotifyOn] });
 
 export function AlertChannelsPanel() {
   const channels = useQuery(alertChannelsQuery());
@@ -27,7 +38,7 @@ export function AlertChannelsPanel() {
     ]);
   };
   const edit = (channel?: AlertChannel) => {
-    setDraft(channel ? { ...channel } : emptyChannel());
+    setDraft(channel ? { ...channel, notify_on: channel.notify_on?.length ? [...channel.notify_on] : [...defaultNotifyOn] } : emptyChannel());
     setEditing(!!channel);
     setToken('');
     setDeleting(null);
@@ -36,11 +47,12 @@ export function AlertChannelsPanel() {
   };
   const save = async () => {
     if (!draft || busy) return;
+    if (draft.notify_on.length === 0) { setError('Choose at least one status to notify on.'); return; }
     setBusy(true); setError(''); setNotice('');
     try {
       await api.saveAlertChannel(draft.name, {
         type: draft.type, chat_id: draft.chat_id, disable_notification: draft.disable_notification,
-        batch_window: draft.batch_window, bot_token: token || undefined,
+        batch_window: draft.batch_window, notify_on: draft.notify_on, bot_token: token || undefined,
       });
       setToken(''); setDraft(null);
       await refresh();
@@ -79,7 +91,7 @@ export function AlertChannelsPanel() {
       <div className="space-y-2">
         {channels.data?.map(channel => (
           <div key={channel.name} className="flex flex-wrap items-center justify-between gap-2 border-b border-base-300 py-2">
-            <div><strong className="text-sm">{channel.name}</strong><span className="ml-3 text-xs muted">Telegram · {channel.chat_id} · {channel.batch_window}s batches</span></div>
+            <div><strong className="text-sm">{channel.name}</strong><span className="ml-3 text-xs muted">Telegram · {channel.chat_id} · {channel.batch_window}s batches · {(channel.notify_on ?? defaultNotifyOn).map(status => statusLabels[status] ?? status).join(', ')}</span></div>
             <div className="flex gap-2">
               <button type="button" className="btn-sub" disabled={busy} onClick={() => void test(channel.name)}>Test</button>
               <button type="button" className="btn-sub" disabled={busy} onClick={() => edit(channel)}>Edit</button>
@@ -103,6 +115,28 @@ export function AlertChannelsPanel() {
           <label className="block field-label">Batch window (seconds)
             <input className="mc-input mt-1" type="number" min={1} max={3600} required value={draft.batch_window} disabled={busy} onChange={event => setDraft({ ...draft, batch_window: Number(event.target.value) })} />
           </label>
+          <fieldset className="space-y-1">
+            <legend className="field-label">Notify when a run is</legend>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {alertStatuses.map(status => (
+                <label key={status} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={draft.notify_on.includes(status)}
+                    disabled={busy}
+                    onChange={event => setDraft({
+                      ...draft,
+                      notify_on: event.target.checked
+                        ? alertStatuses.filter(s => s === status || draft.notify_on.includes(s))
+                        : draft.notify_on.filter(s => s !== status),
+                    })}
+                  />
+                  {statusLabels[status]}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs muted">Jobs and workers choose channels in their Alerts setting. A channel for successes (for example, backups) can sit next to one for failures.</p>
+          </fieldset>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={draft.disable_notification} disabled={busy} onChange={event => setDraft({ ...draft, disable_notification: event.target.checked })} />Silent Telegram notifications</label>
           <div className="flex gap-2">
             <button className="btn-primary-x" type="submit" disabled={busy}>Save channel</button>

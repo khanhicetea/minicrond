@@ -46,6 +46,7 @@ export function definitionToToml(def: Definition): { text: string; lineOf: Recor
     if (def.schedule) emit('schedule', 'schedule', literal(def.schedule));
     if (def.catch_up) emit('catch_up', 'catch_up', literal(def.catch_up));
     if (def.on_overlap) emit('on_overlap', 'on_overlap', literal(def.on_overlap));
+    if (def.on_history_unavailable) emit('on_history_unavailable', 'on_history_unavailable', literal(def.on_history_unavailable));
     if (def.retries !== undefined) emit('retries', 'retries', String(def.retries));
     if (def.retry_delay !== undefined) emit('retry_delay', 'retry_delay', String(def.retry_delay));
     if (def.run_on_start && !isInit) emit('run_on_start', 'run_on_start', 'true');

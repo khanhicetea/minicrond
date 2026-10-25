@@ -308,6 +308,12 @@
             "parallel"
           ]
         },
+        "on_history_unavailable": {
+          "enum": [
+            "run",
+            "skip"
+          ]
+        },
         "retries": {
           "type": "integer",
           "minimum": 0,
@@ -627,6 +633,12 @@
           "enum": [
             "skip",
             "parallel"
+          ]
+        },
+        "on_history_unavailable": {
+          "enum": [
+            "run",
+            "skip"
           ]
         },
         "retries": {

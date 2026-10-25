@@ -29,7 +29,10 @@ type Definition struct {
 	Timezone  string   `json:"timezone,omitempty" toml:"timezone"`
 	CatchUp   string   `json:"catch_up,omitempty" toml:"catch_up"`
 	OnOverlap string   `json:"on_overlap,omitempty" toml:"on_overlap"`
-	Retries   int      `json:"retries,omitzero" toml:"retries"`
+	// OnHistoryUnavailable decides whether a job starts when its run row
+	// cannot be stored: "run" (empty means run) or "skip". Jobs only.
+	OnHistoryUnavailable string `json:"on_history_unavailable,omitempty" toml:"on_history_unavailable"`
+	Retries              int    `json:"retries,omitzero" toml:"retries"`
 	// RetryDelay is measured in seconds.
 	RetryDelay int               `json:"retry_delay,omitzero" toml:"retry_delay"`
 	RunOnStart bool              `json:"run_on_start,omitzero" toml:"run_on_start"`

@@ -296,6 +296,7 @@ schema below.
 | `timezone` | scheduler's | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions) |
 | `catch_up` | `none` | job | `none`: skip missed fires; `latest`: fire only the most recent miss and mark intermediate ones `missed` |
 | `on_overlap` | `skip` | job | `skip`: a new fire is recorded `skipped` while one runs; `parallel`: allow concurrent runs |
+| `on_history_unavailable` | `run` | job | When the run row cannot be stored (database full, read-only, locked): `run`: start anyway and store history later ([ADR-16](adr/0016-execution-first.md)); `skip`: do not start, record `skipped` / `history_unavailable` once the database recovers. Use `skip` for jobs that must never run twice for one occurrence ([ADR-19](adr/0019-history-unavailable-policy.md)) |
 | `retries` | `0` | job | Number of additional attempts after a failed run (0..1000); each attempt is a new run. An explicit `retries = 0` overrides a nonzero `[defaults]` value; omitting the key inherits it |
 | `retry_delay` | `5` | job | Seconds before each retry (1..86400; 0 uses default 5); constant delay; timeouts and stopped runs are not retried |
 | `run_as` | daemon user | both | `user`, `uid`, or `user:group`. **Root daemon only** |
@@ -313,7 +314,7 @@ schema below.
 | `log_max` | `100` | both | Per-run file-buffer budget in MiB (0 = default, 1..1048576); successful archival frees capacity; not an archive quota |
 | `log_on_full` | `drop_old` | both | Hot buffer full: `drop_old` or `drop_new` frames |
 | `labels` | `{}` | both | Free-form metadata map |
-| `alerts` | `[]` | both | Alert channel names to notify on `failed`/`timeout` |
+| `alerts` | `[]` | both | Alert channel names; each channel's `notify_on` decides which run statuses it delivers |
 | `autostart` | `true` | worker | Start on daemon boot |
 | `restart` | `always` | worker | `always`, `on-failure` (non-zero exit), or `never` |
 | `restart_delay` | `5` | worker | Delay between restart attempts, in seconds |
@@ -391,8 +392,16 @@ Existing definitions referencing missing channels must be fixed before startup.
 Example PUT body (name comes from the URL):
 
 ```json
-{"type":"telegram","bot_token":"123456:actual-token","chat_id":"-1001234567890","disable_notification":false,"batch_window":10}
+{"type":"telegram","bot_token":"123456:actual-token","chat_id":"-1001234567890","disable_notification":false,"batch_window":10,"notify_on":["failed","timeout","exhausted"]}
 ```
+
+`notify_on` lists the run statuses the channel delivers: `succeeded`, `failed`,
+`timeout`, `skipped`, `missed` and `exhausted` (a worker that stopped
+restarting). Empty or omitted selects `failed`, `timeout` and `exhausted`, which
+is also what channels created before this setting keep. Saving a channel
+without `notify_on` resets it to that default. To be told when a backup
+succeeds, add a channel with `"notify_on":["succeeded"]` and list it in the
+backup job's `alerts` next to the failure channel.
 
 `batch_window` defaults to 10 seconds (1–3600); at most 100 channels are allowed.
 Names use the same 100-character lowercase name rules as definitions. Chat IDs
@@ -413,8 +422,16 @@ restart affected workers. Deletion does not cancel already queued alert batches.
 Channels and credentials are not included in job/worker bundle import/export.
 Protect the metadata database and its backups as secret-bearing files (ADR-13).
 
-Failed and timed-out runs are delivered asynchronously to the named
-channels; successful, skipped, and manually stopped runs never alert.
+Runs are delivered asynchronously to the named channels whose `notify_on`
+includes the run's status; manually stopped and interrupted runs never alert.
+`skipped` covers runs declined when triggered (`overlap_skip`, `queue_full`,
+`history_unavailable`) or dropped from the execution queue while their job is
+still enabled (`queue_expired`, `overlap_skip`, `retry_budget`); dropped retries
+(`retry_dropped`) do not alert. `missed` is the crash-recovery record of fires
+missed while the daemon was down. A worker run that exits successfully is
+`succeeded` too, so a `succeeded` channel on a restarting worker alerts on every
+clean exit. Each delivery writes its status to the database, so a `succeeded`
+channel on a frequent job adds those writes to every run.
 Delivery is best-effort: each channel groups failures arriving within its
 `batch_window` (measured from the first alert) into one Telegram message.
 Long batches are split to fit the provider limit. An in-memory bounded queue

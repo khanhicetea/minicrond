@@ -15,6 +15,11 @@ export interface AlertChannel {
   chat_id: string;
   disable_notification: boolean;
   batch_window: number /* int */;
+  /**
+   * NotifyOn lists the run statuses this channel delivers, in AlertStatuses
+   * order. Empty selects DefaultNotifyOn.
+   */
+  notify_on: string[];
 }
 export const MaxAlertChannels = 100;
 
@@ -38,6 +43,11 @@ export interface Definition {
   timezone?: string;
   catch_up?: string;
   on_overlap?: string;
+  /**
+   * OnHistoryUnavailable decides whether a job starts when its run row
+   * cannot be stored: "run" (empty means run) or "skip". Jobs only.
+   */
+  on_history_unavailable?: string;
   retries?: number /* int */;
   /**
    * RetryDelay is measured in seconds.

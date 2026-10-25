@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -17,7 +18,17 @@ type AlertChannel struct {
 	ChatID              string `json:"chat_id"`
 	DisableNotification bool   `json:"disable_notification"`
 	BatchWindow         int    `json:"batch_window"`
+	// NotifyOn lists the run statuses this channel delivers, in AlertStatuses
+	// order. Empty selects DefaultNotifyOn.
+	NotifyOn []string `json:"notify_on"`
 }
+
+// AlertStatuses are the run statuses a channel can deliver, in display order.
+// exhausted is a worker that stopped restarting.
+var AlertStatuses = []string{"succeeded", "failed", "timeout", "skipped", "missed", "exhausted"}
+
+// DefaultNotifyOn is the status set of a channel that does not choose one.
+var DefaultNotifyOn = []string{"failed", "timeout", "exhausted"}
 
 const MaxAlertChannels = 100
 
@@ -42,6 +53,21 @@ func (c *AlertChannel) Normalize() error {
 	if c.BatchWindow == 0 {
 		c.BatchWindow = 10
 	}
+	if len(c.NotifyOn) == 0 {
+		c.NotifyOn = slices.Clone(DefaultNotifyOn)
+	}
+	notify := make([]string, 0, len(c.NotifyOn))
+	for _, status := range AlertStatuses {
+		if slices.Contains(c.NotifyOn, status) {
+			notify = append(notify, status)
+		}
+	}
+	for _, status := range c.NotifyOn {
+		if !slices.Contains(AlertStatuses, status) {
+			return fmt.Errorf("%w: notify_on values must be %s", ErrInvalidAlertChannel, strings.Join(AlertStatuses, ", "))
+		}
+	}
+	c.NotifyOn = notify
 	if c.BatchWindow < 1 || c.BatchWindow > 3600 {
 		return fmt.Errorf("%w: batch_window must be between 1 and 3600 seconds", ErrInvalidAlertChannel)
 	}

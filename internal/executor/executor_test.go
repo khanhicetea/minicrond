@@ -209,7 +209,8 @@ func TestOverlapSkipDeclinesWhileActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(st, logs, Options{MaxConcurrentRuns: 4})
+	notified := make(chan model.Run, 4)
+	service := New(st, logs, Options{MaxConcurrentRuns: 4, OnFinished: func(r model.Run, _ model.Definition) { notified <- r }})
 	d := model.Definition{Name: "solo", Kind: model.KindJob, Command: "sleep 2", Shell: "/bin/sh", Timeout: 0, Grace: 0, OnOverlap: "skip",
 		Timezone: "UTC", EnvBase: "clean", SuccessCodes: []int{0}}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
@@ -232,6 +233,16 @@ func TestOverlapSkipDeclinesWhileActive(t *testing.T) {
 	}
 	if second.Status != "skipped" || second.EndReason != "overlap_skip" {
 		t.Fatalf("declined run = %s/%s, want skipped/overlap_skip", second.Status, second.EndReason)
+	}
+	// Skipped runs reach the completion callback, so alert channels that
+	// listen for skipped hear about them.
+	select {
+	case got := <-notified:
+		if got.ID != second.ID || got.Status != "skipped" {
+			t.Fatalf("completion callback = %s/%s, want the skipped run", got.ID, got.Status)
+		}
+	default:
+		t.Fatal("skipped run did not reach the completion callback")
 	}
 	if err := service.Stop(first.ID); err != nil {
 		t.Fatal(err)

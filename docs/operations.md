@@ -281,6 +281,9 @@ Workers and `[[init]]` jobs are never queued.
   concurrency slot is ever held for history, so `diagnostics.finalizers.inline`
   is always 0. History still waiting at shutdown is lost; a stored nonterminal
   row is marked `interrupted` by recovery.
+  Exception: a job with `on_history_unavailable = "skip"` does not start when
+  its row cannot be stored; it is recorded `skipped` / `history_unavailable`
+  once the database recovers ([ADR-19](adr/0019-history-unavailable-policy.md)).
 - **Archive discovery.** The archiver keeps at most 4096 sealed run ids in memory;
   beyond that buffers stay on disk and the idle archiver sweeps the directory to
   find them (the periodic worker-flush sweep does too).

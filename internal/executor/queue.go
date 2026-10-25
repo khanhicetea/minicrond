@@ -347,35 +347,51 @@ func (s *Service) startQueued(ctx context.Context, item *store.QueueItem) (start
 	if err != nil {
 		return false, def, nil, fmt.Errorf("read queued run %s: %w", item.RunID, err)
 	}
-	drop := func(reason string) (bool, model.Definition, *model.Run, error) {
-		if err := s.store.DropQueued(ctx, run.ID, reason, time.Now()); err != nil && !errors.Is(err, store.ErrInvalidTransition) {
-			return false, def, nil, fmt.Errorf("end queued run %s: %w", run.ID, err)
+	// notify is the definition whose alert channels hear about the drop; nil
+	// when the definition is gone or disabled.
+	drop := func(reason string, notify *model.Definition) (bool, model.Definition, *model.Run, error) {
+		now := time.Now()
+		if err := s.store.DropQueued(ctx, run.ID, reason, now); err != nil {
+			if !errors.Is(err, store.ErrInvalidTransition) {
+				return false, def, nil, fmt.Errorf("end queued run %s: %w", run.ID, err)
+			}
+			notify = nil // ended elsewhere
 		}
 		s.queue.dropped.Add(1)
 		slog.Warn("queued run dropped", "run", run.ID, "job", run.Job, "reason", reason)
+		if notify != nil {
+			ended := now.UTC()
+			dropped := run.Clone()
+			dropped.Status, dropped.EndReason, dropped.EndedAt = "skipped", reason, &ended
+			s.notifyFinished(dropped, *notify)
+		}
 		return false, def, nil, nil
 	}
 	if run.Status != "queued" {
-		return drop("queue_inconsistent")
-	}
-	if time.Now().UnixMicro() >= item.ExpiresUS {
-		s.queue.expired.Add(1)
-		return drop("queue_expired")
+		return drop("queue_inconsistent", nil)
 	}
 	current, hash, err := s.store.Definition(ctx, run.Job)
+	if time.Now().UnixMicro() >= item.ExpiresUS {
+		s.queue.expired.Add(1)
+		var notify *model.Definition
+		if err == nil && current.ID == item.DefinitionID && current.IsEnabled() {
+			notify = &current
+		}
+		return drop("queue_expired", notify)
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows) || errors.Is(err, os.ErrNotExist):
-		return drop("definition_removed")
+		return drop("definition_removed", nil)
 	case err != nil:
 		return false, def, nil, fmt.Errorf("read queued definition %s: %w", run.Job, err)
 	case current.ID != item.DefinitionID || current.Kind != model.KindJob:
-		return drop("definition_removed")
+		return drop("definition_removed", nil)
 	case !current.IsEnabled():
-		return drop("definition_disabled")
+		return drop("definition_disabled", nil)
 	case run.Trigger == "retry" && run.Attempt-1 > current.Retries:
-		return drop("retry_budget")
+		return drop("retry_budget", &current)
 	case current.OnOverlap == "skip" && s.Active(current.Name) > 0:
-		return drop("overlap_skip")
+		return drop("overlap_skip", &current)
 	}
 	// Last check before the point of no return: once dequeued, a refusal at
 	// launch would spend the item as failed/start_error instead of leaving it

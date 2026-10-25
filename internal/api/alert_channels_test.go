@@ -78,6 +78,13 @@ func TestAlertChannelCRUD(t *testing.T) {
 	if err != nil || entries[0].BotToken != "123:private_token" || entries[0].ChatID != "-456" {
 		t.Fatal("edit did not retain credential")
 	}
+	got = call(s, false, "PUT", "/api/v1/alert-channels/ops", token, `{"type":"telegram","chat_id":"-456","notify_on":["succeeded","failed"]}`, nil)
+	if got.Code != 200 || !strings.Contains(got.Body.String(), `"notify_on":["succeeded","failed"]`) {
+		t.Fatalf("notify_on save = %d %s", got.Code, got.Body.String())
+	}
+	if got := call(s, false, "PUT", "/api/v1/alert-channels/ops", token, `{"type":"telegram","chat_id":"-456","notify_on":["stopped"]}`, nil); got.Code != 422 {
+		t.Fatalf("unknown notify_on status = %d %s", got.Code, got.Body.String())
+	}
 	if got := call(s, false, "POST", "/api/v1/jobs", token, `{"name":"job","command":"true","alerts":["ops"]}`, nil); got.Code != 200 {
 		t.Fatalf("job = %d %s", got.Code, got.Body.String())
 	}
