@@ -24,9 +24,12 @@ import (
 //   - headroom: the filesystem holding the data directory keeps a minimum of
 //     free space.
 //
-// Reclamation deletes only completed runs' logs, oldest first: archived
-// chunks, then sealed buffers awaiting archival. It never touches live
-// buffers or archived chunks of runs that still have a writer, the quarantine,
+// Reclamation deletes the oldest archived chunks first, then sealed buffers of
+// completed runs awaiting archival. For a run that still has a writer (a
+// long-running worker) only archived chunks older than its newest
+// activeTailBytes are eligible, so the worker's recent output stays readable
+// while weeks-old output no longer forces every other run's logs out. It never
+// touches live buffers, runs owned by another operation, the quarantine,
 // SQLite metadata or anything outside the log tiers. If that is not enough the
 // pressure stays visible (DiskStatus.Insufficient): running children keep
 // following the capture-failure policy (2A) and new work follows the queue
@@ -49,6 +52,12 @@ const (
 	// small disk cannot make every pass delete all history.
 	freeMaxShare = 4
 )
+
+// activeTailBytes is how much of a running run's newest archived output
+// (compressed) disk pressure keeps; at least its newest chunk is kept. With the
+// 5A profile of 10 workers this bounds protected archive data to about 80 MiB.
+// It is a variable only so tests can shrink it.
+var activeTailBytes int64 = 8 << 20
 
 // DiskPolicy configures the budget. A zero value for a limit disables it.
 type DiskPolicy struct {
@@ -274,15 +283,46 @@ func quarantineUsage(dir string) (bytes int64, entries int, oldest time.Time) {
 	return bytes, entries, oldest
 }
 
-// reclaimProtected reports whether a run's archived chunks must not be
-// reclaimed now: it has a live writer, or another operation owns it (a
-// checkpoint, an archive in progress that commits in several batches, or a
-// deletion). Stage 2 skips owned runs the same way, so both stages treat them alike.
-func (s *Store) reclaimProtected(runID string) bool {
+// reclaimGuard returns the protect function for one pressure pass. Runs owned
+// by another operation (a checkpoint, an archive in progress that commits in
+// several batches, or a deletion) are skipped entirely; stage 2 skips owned
+// runs the same way. For a run with a live writer only chunks older than its
+// newest activeTailBytes are eligible. A run that gained a writer after the
+// snapshot, or whose tail could not be measured, is skipped entirely.
+func (s *Store) reclaimGuard(ctx context.Context) func(runID string, number int) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, active := s.writers[runID]
-	return active || s.owners[runID]
+	active := make([]string, 0, len(s.writers))
+	for id := range s.writers {
+		active = append(active, id)
+	}
+	s.mu.Unlock()
+	tails := make(map[string]int, len(active))
+	for _, id := range active {
+		start, ok, err := s.db.TailStart(ctx, id, activeTailBytes)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("log disk pressure: cannot measure a running run's archived tail; keeping all of its logs this pass", "run", id, "error", err)
+			}
+			continue
+		}
+		if ok {
+			tails[id] = start
+		}
+	}
+	return func(runID string, number int) bool {
+		s.mu.Lock()
+		_, live := s.writers[runID]
+		owned := s.owners[runID]
+		s.mu.Unlock()
+		if owned {
+			return true
+		}
+		if !live {
+			return false
+		}
+		start, ok := tails[runID]
+		return !ok || number >= start
+	}
 }
 
 // pressure evaluates the watermarks. trigger is true when one is exceeded; want
@@ -406,9 +446,9 @@ func (s *Store) EnforceDiskBudget(ctx context.Context) (DiskStatus, error) {
 	st.Pressure = true
 	st.PressurePasses++
 
-	// Stage 1: archived chunks of completed runs, oldest first.
+	// Stage 1: archived chunks, oldest first, keeping running runs' recent tail.
 	if s.db != nil {
-		res, err := s.db.PruneOldest(ctx, want, s.reclaimProtected)
+		res, err := s.db.PruneOldest(ctx, want, s.reclaimGuard(ctx))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("prune archived logs under disk pressure: %w", err))
 		}

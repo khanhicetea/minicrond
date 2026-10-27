@@ -231,6 +231,106 @@ func TestDiskPressureProtectsActiveRunsAndQuarantine(t *testing.T) {
 	_ = f.s.Close("worker")
 }
 
+// ADR-10: a long-running worker keeps only its recent archived tail under
+// pressure. Its older chunks are reclaimed oldest first like any other log, so
+// weeks of worker output cannot force every completed run's logs out first.
+func TestDiskPressureReclaimsOldOutputOfARunningWorker(t *testing.T) {
+	old := activeTailBytes
+	activeTailBytes = 150 << 10 // the newest two 100 KiB chunks
+	t.Cleanup(func() { activeTailBytes = old })
+	f := newBudgetFixture(t)
+	w, err := f.s.Open("worker", "w", model.KindWorker, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent [][]byte
+	for range 3 {
+		p := payload(100 << 10)
+		sent = append(sent, p)
+		if err := w.Write(Stdout, p, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Flush(f.s); err != nil { // one archived chunk per flush
+			t.Fatal(err)
+		}
+	}
+	if err := w.Write(Stdout, []byte("hot tail"), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.completedRun("done", 10<<10) // newer than all of the worker's chunks
+	f.compact()
+	f.disk.capacity = f.used()
+	f.policy(0, 10<<20)
+
+	st := f.enforce()
+	if st.PrunedChunks < 2 {
+		t.Fatalf("pruned %d chunks, want the worker's oldest chunk and the completed run", st.PrunedChunks)
+	}
+	if f.readable("done") {
+		t.Fatal("the completed run should have been reclaimed")
+	}
+	frames, err := f.s.Read("worker", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 3 || string(frames[0].Payload) != string(sent[1]) || string(frames[1].Payload) != string(sent[2]) || string(frames[2].Payload) != "hot tail" {
+		t.Fatalf("worker kept %d frames; want its newest two archived chunks and the live tail", len(frames))
+	}
+	if err := w.Write(Stdout, []byte("still writing"), 0); err != nil {
+		t.Fatalf("active writer disturbed: %v", err)
+	}
+	if err := w.Flush(f.s); err != nil {
+		t.Fatalf("archiving after the run's old chunks were reclaimed: %v", err)
+	}
+	frames, err = f.s.Read("worker", 0, 10)
+	if err != nil || len(frames) != 4 || string(frames[3].Payload) != "still writing" {
+		t.Fatalf("after another flush: %d frames, %v", len(frames), err)
+	}
+	_ = f.s.Close("worker")
+}
+
+// A worker whose whole archive fits in its tail loses nothing, and its old
+// chunks are reclaimed in age order relative to completed runs: a completed
+// run older than the worker's old chunks goes first.
+func TestDiskPressurePrefersOlderCompletedRunsOverAWorkersOldChunks(t *testing.T) {
+	old := activeTailBytes
+	activeTailBytes = 50 << 10 // only the newest chunk
+	t.Cleanup(func() { activeTailBytes = old })
+	f := newBudgetFixture(t)
+	f.completedRun("older-done", 100<<10)
+	w, err := f.s.Open("worker", "w", model.KindWorker, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := w.Write(Stdout, payload(100<<10), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Flush(f.s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.compact()
+	// A byte budget that needs about 50 KiB back: the oldest chunk is the
+	// completed run's, so it goes and the worker keeps everything.
+	u, err := f.s.MeasureDiskUsage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.policy((u.LogBytes()-50<<10)*100/budgetLowPercent, 0)
+	if st := f.enforce(); st.PrunedChunks != 1 {
+		t.Fatalf("pruned %d chunks, want only the completed run's", st.PrunedChunks)
+	}
+	if f.readable("older-done") {
+		t.Fatal("the oldest data (a completed run) should have gone first")
+	}
+	frames, err := f.s.Read("worker", 0, 10)
+	if err != nil || len(frames) != 2 {
+		t.Fatalf("worker lost newer chunks before older data: %d frames, %v", len(frames), err)
+	}
+	_ = f.s.Close("worker")
+}
+
 // If nothing eligible is left the outcome is explicit, logged once per episode
 // rather than per pass, and clears when space returns.
 func TestInsufficientReclamationIsReportedOncePerEpisode(t *testing.T) {

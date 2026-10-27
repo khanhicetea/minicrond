@@ -158,7 +158,7 @@ pressure never touches the quarantine.
 `log_max` bounds one run's hot buffer, not the disk; `logs.db_max_size` is a
 once-a-day archive-only limit. The log **disk budget** (ADR-8 3A,
 [ADR-10](adr/0010-log-disk-budget.md)) is the real bound and outranks retention
-age: when it is exceeded, the oldest completed runs' logs are deleted early,
+age: when it is exceeded, the oldest logs are deleted early,
 even if `keep_for` / `logs.db_keep_for` have not elapsed.
 
 Two rules, both reloadable:
@@ -168,10 +168,12 @@ Two rules, both reloadable:
 | `logs.disk_min_free` (MiB) | `512` | Keep this much free on the filesystem of the data directory. Below it, reclaim up to 125% of it. The value is clamped to a quarter of the filesystem. `0` disables the rule. |
 | `logs.disk_budget` (MiB) | `0` (off) | Cap on the log tiers: archive database **plus WAL**, sealed buffers and live buffers (not the quarantine). Reclaim starts at 90% of it and stops at 80%. |
 
-What is deleted, oldest first: archived chunks of completed runs, then sealed
-buffers of completed runs still waiting for archival. What is **never**
-deleted by this mechanism: live buffers, archived chunks of runs that still have
-a writer (workers), `.quarantine/`, `minicron.db` metadata (definitions, run
+What is deleted, oldest first: archived chunks, then sealed buffers of
+completed runs still waiting for archival. For a running worker, only archived
+chunks older than its newest 8 MiB (compressed) are eligible, so weeks of worker
+output cannot force every other run's logs out while its recent output stays
+readable. What is **never** deleted by this mechanism: live buffers, the newest
+8 MiB of archived chunks of runs that still have a writer (workers), `.quarantine/`, `minicron.db` metadata (definitions, run
 records, audit, pending execution records) and anything outside the log tiers.
 A run whose logs were reclaimed keeps its run record; its log reads empty.
 
@@ -574,8 +576,9 @@ binary, start. Never downgrade a live newer-schema database.
 **Upgrading to the log disk budget.** `logs.disk_min_free` is **on by default**
 (512 MiB, clamped to a quarter of the filesystem). After upgrading, a host with
 less than that free on the data directory's filesystem deletes the oldest
-completed runs' archived logs (and, if that is not enough, sealed buffers) on the
-first pass at startup; deleted logs are not recoverable. Before upgrading a small
+archived logs (completed runs' and running workers' chunks beyond their newest
+8 MiB) and, if that is not enough, sealed buffers on the first pass at startup;
+deleted logs are not recoverable. Before upgrading a small
 or nearly full disk, check `df` for the data directory, and either free space,
 size `logs.disk_budget` deliberately, or set `logs.disk_min_free = 0` to keep the
 previous behavior. The daemon logs one `log disk budget:` INFO line at every

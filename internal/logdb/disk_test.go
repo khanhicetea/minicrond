@@ -93,7 +93,7 @@ func TestPruneOldestNeverTouchesProtectedRuns(t *testing.T) {
 	putRun(t, l, "done-1", base.Add(-2*time.Hour), 1, 1000)
 	putRun(t, l, "done-2", base.Add(-time.Hour), 1, 1000)
 
-	res, err := l.PruneOldest(t.Context(), 1<<30, func(id string) bool { return id == "active" })
+	res, err := l.PruneOldest(t.Context(), 1<<30, func(id string, _ int) bool { return id == "active" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestPruneOldestScansPastManyProtectedChunks(t *testing.T) {
 	base := time.Now().Add(-100 * time.Hour)
 	putRun(t, l, "protected", base, 3*pruneBatch, 10)
 	putRun(t, l, "eligible", base.Add(time.Hour), 4, 10)
-	res, err := l.PruneOldest(t.Context(), 1<<20, func(id string) bool { return id == "protected" })
+	res, err := l.PruneOldest(t.Context(), 1<<20, func(id string, _ int) bool { return id == "protected" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +169,24 @@ func TestFileBytesCountsDatabaseAndWAL(t *testing.T) {
 	}
 	if !strings.HasSuffix(l.path, "minicron-logs.db") {
 		t.Fatalf("path = %s", l.path)
+	}
+}
+
+// TailStart finds where a run's newest keepBytes of archived chunks begin,
+// always keeping the newest chunk.
+func TestTailStart(t *testing.T) {
+	l := openTest(t)
+	putRun(t, l, "run", time.Now(), 5, 1000)
+	for _, c := range []struct {
+		keep int64
+		want int
+	}{{1, 5}, {1000, 5}, {1001, 4}, {2500, 3}, {1 << 30, 1}} {
+		got, ok, err := l.TailStart(t.Context(), "run", c.keep)
+		if err != nil || !ok || got != c.want {
+			t.Errorf("TailStart(keep=%d) = %d, %v, %v; want %d", c.keep, got, ok, err, c.want)
+		}
+	}
+	if _, ok, err := l.TailStart(t.Context(), "missing", 1000); ok || err != nil {
+		t.Fatalf("missing run: ok=%v err=%v", ok, err)
 	}
 }

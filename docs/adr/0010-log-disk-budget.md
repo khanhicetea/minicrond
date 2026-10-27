@@ -1,6 +1,6 @@
 # ADR-10: Log disk budget outranks retention age (ADR-8 3A), quarantine policy, archive cursor
 
-- Status: accepted; implemented (merge of `feat/disk`, `e815a97`)
+- Status: accepted; implemented (merge of `feat/disk`, `e815a97`); amended 2026-10-26 (running workers' old chunks are eligible, see the amendment below)
 - Decision source: owner choice **3A** in [ADR-8](0008-background-first-trade-offs.md), audit "additional capacity observations" 1 and 3, finding A06
 - Related: [ADR-6](0006-hybrid-log-storage.md), [operations](../operations.md), [configuration](../configuration.md)
 
@@ -27,19 +27,21 @@ explicit policy, never reclaim metadata or pending execution records, and let
 
 ### Eligible data
 
-Reclamation deletes only **completed runs' logs**, oldest first, in two stages:
+Reclamation deletes logs oldest first, in two stages:
 
-1. archived chunks in `minicron-logs.db` (oldest by archive time), skipping every
-   run that still has a live writer (a worker's earlier checkpoints stay) or is owned
-   by another operation (an archive in progress commits in several batches; a
-   checkpoint or deletion), exactly as stage 2 skips owned runs;
+1. archived chunks in `minicron-logs.db` (oldest by archive time). For a run that
+   still has a live writer (a long-running worker) only chunks older than its newest
+   8 MiB of compressed archived output are eligible; its newest chunk is always kept
+   (amendment 2026-10-26). Runs owned by another operation (an archive in progress
+   commits in several batches; a checkpoint or deletion) are skipped entirely,
+   exactly as stage 2 skips owned runs;
 2. sealed buffers under `logs/<run>/` of runs with no writer that are waiting
    for archival or retrying it (oldest by modification time).
 
 Archive data is older than sealed buffers by construction, so this is
 "oldest first" across tiers without a merged index.
 
-**Never reclaimed:** live buffers; archived chunks of runs with a writer;
+**Never reclaimed:** live buffers; the newest 8 MiB of archived chunks of runs with a writer;
 `.quarantine/`; SQLite metadata (`minicron.db`: definitions, runs, audit,
 queue/pending-execution records, idempotency keys); anything outside the log
 tiers. A deleted run keeps its run record; reads of its log return nothing
@@ -105,7 +107,7 @@ disk, plus the quarantine; archived runs have no files).
 ### A pass under pressure
 
 1. Measure; compute the bytes needed to reach the low watermarks.
-2. Delete the oldest archived chunks of completed runs (batches of at most 256 in
+2. Delete the oldest eligible archived chunks (batches of at most 256 in
    ctx-aware transactions, so archival and readers interleave), drop runs left empty,
    then `Compact`: incremental vacuum and WAL truncate, because freed pages return
    to the filesystem only then.
@@ -199,6 +201,45 @@ was added.
 - Diagnostics are computed on demand (`GET /api/v1/daemon`, tier walk cached for 5 s and
   shared by concurrent callers); nothing is precomputed or retained per viewer.
 
+## Amendment 2026-10-26: running workers keep only a recent tail
+
+**Workload.** A worker is one run for its whole lifetime, often weeks. Before this
+amendment every archived chunk of a run with a writer was protected. A chatty worker's
+archive then grew without a disk-pressure bound (only the daily `logs.db_keep_for` age
+prune touched it). Under pressure, stage 1 deleted every completed run's logs, jobs
+included, then reported `insufficient`, and 2A discarded **new** output from every run,
+the worker's own included. That keeps weeks-old worker output and drops current output,
+which is the opposite of what diagnosis needs.
+
+**Alternatives.**
+- Keep protecting whole running runs (rejected: the failure above).
+- Protect a time window (chunks archived in the last N flush intervals). Rejected: a quiet
+  worker's last output, the most useful evidence, would become eligible after a while.
+- Reclaim completed runs first and a running worker's old chunks only after them. Rejected:
+  it still deletes yesterday's job logs before a worker's three-week-old output.
+- **Chosen:** protect each running run's newest `activeTailBytes` (8 MiB compressed, at
+  least the newest chunk) and treat its older chunks like any other archived chunk, in
+  the one global oldest-first order.
+
+**Bounds and lifecycle.** Protected archive data is at most about 8 MiB per running run
+(about 80 MiB for the 5A profile of 10 workers), plus each run's newest chunk when that
+alone is larger. The tail cutoff is computed once per pressure pass: one indexed read per
+running run, on the read pool, before stage 1. A run that gains a writer during the pass,
+or whose tail cannot be read, is protected entirely for that pass. Chunks archived by a
+flush during the pass have higher numbers and stay protected. Owned runs are skipped as
+before. If all of a running run's chunks are deleted its `log_runs` row goes too; the next
+flush recreates it (upsert). Reads report the gap as for `db_keep_for` pruning, which
+already removed running runs' old chunks.
+
+**Accepted downside.** Under disk pressure a long-running worker can lose all but its
+recent output before `logs.db_keep_for`. The constant is not configurable; raise it or add
+a setting only if operators need a longer protected tail.
+
+**Tests.** `TestDiskPressureReclaimsOldOutputOfARunningWorker` (oldest chunk reclaimed,
+newest tail and live buffer kept, writer and later flush unaffected),
+`TestDiskPressurePrefersOlderCompletedRunsOverAWorkersOldChunks` (global age order),
+`TestTailStart`. Not measured: pass latency with many running runs on a large archive.
+
 ## Accepted downsides
 
 - Shorter history during noisy periods; logs of recent completed runs can be deleted
@@ -215,7 +256,7 @@ was added.
 ## Measurements and tests
 
 Tests: oldest-first pressure pruning before retention age; only eligible data (active
-runs' archive, live buffers, quarantine, metadata) protected; insufficient reclamation
+runs' recent archived tail, live buffers, quarantine, metadata) protected; insufficient reclamation
 reported once per episode and cleared; byte budget watermarks over all tiers; sealed
 stage ordering; statfs failure and recovery; headroom clamp; hint on rotate, seal and
 capture failure; loop runs only on hints and respects the cooldown; quarantine age and

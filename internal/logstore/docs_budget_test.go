@@ -43,6 +43,16 @@ func TestDocumentedWatermarksMatchTheCode(t *testing.T) {
 	}
 }
 
+// The running-worker tail in the docs is the one in the code.
+func TestDocumentedActiveTailMatchesTheCode(t *testing.T) {
+	if activeTailBytes != 8<<20 {
+		t.Fatalf("activeTailBytes = %d: update the 8 MiB in docs/adr/0010-log-disk-budget.md, docs/operations.md and docs/configuration.md", activeTailBytes)
+	}
+	docContains(t, "operations.md", "the newest\n8 MiB of archived chunks of runs that still have a writer")
+	docContains(t, "configuration.md", "the newest 8 MiB of a running worker's archived chunks")
+	docContains(t, "adr/0010-log-disk-budget.md", "## Amendment 2026-10-26: running workers keep only a recent tail")
+}
+
 // Review SF2: the docs must not promise admission control that does not exist.
 func TestDocsStateAdmissionIsNotWiredToDiskPressure(t *testing.T) {
 	docContains(t, "operations.md", "Admission is not wired to disk pressure in this build", "their log output is dropped")

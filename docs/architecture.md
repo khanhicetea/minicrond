@@ -152,7 +152,7 @@ salvaged at startup up to the last intact frame. Reads merge the archive and
 the buffer files; no payload is kept in memory for viewers (ADR-6, ADR-8).
 Archive cursor reads seek by frame sequence. Log disk use is bounded by a
 disk budget and a free-space headroom that outrank retention age, reclaiming
-only completed runs' logs oldest first (ADR-10).
+the oldest logs first while keeping each running worker's recent tail (ADR-10).
 
 ## Web UI
 

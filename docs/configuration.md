@@ -191,18 +191,18 @@ and `max_concurrent_runs` are unitless.
   run's buffer is fsynced immediately (default 1024, range 1–65536). Reloadable.
   `0` selects the default and does not mean "no limit".
 - `logs.disk_min_free` — MiB of free space to keep on the filesystem holding the
-  data directory (default 512). Below it the oldest completed runs' logs are
+  data directory (default 512). Below it the oldest logs are
   deleted early, ahead of retention age, until free space reaches 125% of it; the
   value is clamped to a quarter of the filesystem. Omitted selects the default;
   an explicit `0` disables the rule (unlike `sync_interval`, where `0` means the
   default). Reloadable. See [operations](operations.md#log-disk-budget).
 - `logs.disk_budget` — optional cap, in MiB, on everything the log tiers occupy:
   the archive database and its WAL, sealed buffers and live buffers (not the
-  quarantine). Reclamation of the oldest completed runs' logs starts at 90% and
+  quarantine). Reclamation of the oldest logs starts at 90% and
   stops at 80% of it. `0` (the default) sets no byte budget; values above
   1073741824 MiB are rejected. Unlike `logs.db_max_size` it is enforced whenever
   pressure may have changed, not once a day, and it never deletes live buffers,
-  active workers' archived chunks, quarantine or metadata. Reloadable.
+  the newest 8 MiB of a running worker's archived chunks, quarantine or metadata. Reloadable.
 - `logs.quarantine_keep_for` / `logs.quarantine_max_size` — opt-in purge of the
   quarantine of corrupt log chunks, applied by the daily log prune: entries older
   than that many days, then the oldest entries until the rest fits that many MiB.

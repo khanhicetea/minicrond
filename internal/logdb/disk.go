@@ -60,8 +60,8 @@ type PruneResult struct {
 
 // PruneOldest deletes the oldest archived chunks (by archive time) until at
 // least wantBytes of compressed blob data are gone or no eligible chunk is
-// left. Chunks of runs for which protect returns true are never touched and
-// are not counted; protect may be nil. Runs that end up with no chunks are
+// left. Chunks for which protect(runID, number) returns true are never touched
+// and are not counted; protect may be nil. Runs that end up with no chunks are
 // removed. Unlike Prune and PruneToSize this is the disk-pressure path (3A):
 // it ignores retention age on purpose.
 //
@@ -69,7 +69,7 @@ type PruneResult struct {
 // ctx-aware write path, so a large reclamation never holds the writer for long
 // and stops promptly when ctx ends. The rows' space returns to the filesystem
 // only after Compact.
-func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(runID string) bool) (PruneResult, error) {
+func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(runID string, number int) bool) (PruneResult, error) {
 	var res PruneResult
 	// A keyset cursor over (archived_us, rowid) visits each protected row once
 	// per pass instead of once per batch.
@@ -86,7 +86,7 @@ func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(r
 			// writeTx repeats the function after a busy database; start from the
 			// committed cursor each time.
 			batch, scanned, nextUS, nextRow, gone = PruneResult{}, 0, cursorUS, cursorRow, nil
-			rows, err := tx.QueryContext(ctx, `SELECT rowid, archived_us, run_id, LENGTH(blob)+file_bytes FROM log_chunks
+			rows, err := tx.QueryContext(ctx, `SELECT rowid, archived_us, run_id, number, LENGTH(blob)+file_bytes FROM log_chunks
 				WHERE (archived_us, rowid) > (?, ?) ORDER BY archived_us, rowid LIMIT ?`, cursorUS, cursorRow, pruneBatch)
 			if err != nil {
 				return err
@@ -95,13 +95,14 @@ func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(r
 			for rows.Next() {
 				var id, us, size int64
 				var runID string
-				if err := rows.Scan(&id, &us, &runID, &size); err != nil {
+				var number int
+				if err := rows.Scan(&id, &us, &runID, &number, &size); err != nil {
 					rows.Close()
 					return err
 				}
 				scanned++
 				nextUS, nextRow = us, id
-				if protect != nil && protect(runID) {
+				if protect != nil && protect(runID, number) {
 					continue
 				}
 				if res.Bytes+batch.Bytes >= wantBytes {
@@ -142,6 +143,31 @@ func (l *LogDB) PruneOldest(ctx context.Context, wantBytes int64, protect func(r
 		}
 	}
 	return res, nil
+}
+
+// TailStart returns the lowest chunk number of runID's newest archived chunks
+// that together hold at least keepBytes of compressed data. The newest chunk is
+// always part of the tail. ok is false when the run has no archived chunk.
+// Disk pressure uses it to keep a running worker's recent output (ADR-10).
+func (l *LogDB) TailStart(ctx context.Context, runID string, keepBytes int64) (number int, ok bool, err error) {
+	rows, err := l.rdb.QueryContext(ctx, "SELECT number, LENGTH(blob)+file_bytes FROM log_chunks WHERE run_id=? ORDER BY number DESC", runID)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	var kept int64
+	for rows.Next() {
+		var size int64
+		if err := rows.Scan(&number, &size); err != nil {
+			return 0, false, err
+		}
+		ok = true
+		kept += size
+		if kept >= keepBytes {
+			break
+		}
+	}
+	return number, ok, rows.Err()
 }
 
 func placeholders(n int) string {
