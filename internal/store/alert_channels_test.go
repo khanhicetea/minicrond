@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -191,65 +190,5 @@ func TestAlertChannelBoundsAndValidation(t *testing.T) {
 	}
 	if err := s.PutAlertChannel(t.Context(), model.AlertChannel{Name: "ops", Type: "telegram", ChatID: "456"}, "test"); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestMigration11CreatesEmptyChannelRegistry(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := strings.Replace(schema, alertChannelsDDL+alertNotifyDDL, "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=12;", "PRAGMA user_version=10;", 1)
-	if _, err := db.Exec(old); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	channels, err := s.AlertChannels(t.Context())
-	if err != nil || len(channels) != 0 {
-		t.Fatalf("initial registry = %+v, %v", channels, err)
-	}
-}
-
-func TestMigration12KeepsChannelStatusesAndStoresNotifyOn(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := strings.Replace(schema, alertNotifyDDL, "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=12;", "PRAGMA user_version=11;", 1)
-	if _, err := db.Exec(old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO alert_channels(name,type,bot_token,chat_id,disable_notification,batch_window) VALUES('ops','telegram','123:token','1',0,10)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	channels, err := s.AlertChannels(t.Context())
-	if err != nil || len(channels) != 1 || !slices.Equal(channels[0].NotifyOn, model.DefaultNotifyOn) {
-		t.Fatalf("migrated channel = %+v, %v", channels, err)
-	}
-	if err := s.PutAlertChannel(t.Context(), model.AlertChannel{Name: "backups", Type: "telegram", ChatID: "2", BotToken: "123:token", NotifyOn: []string{"succeeded"}}, "test"); err != nil {
-		t.Fatal(err)
-	}
-	channels, err = s.AlertChannels(t.Context())
-	if err != nil || len(channels) != 2 || !slices.Equal(channels[0].NotifyOn, []string{"succeeded"}) {
-		t.Fatalf("saved channel = %+v, %v", channels, err)
 	}
 }

@@ -49,7 +49,7 @@ audit_keep = 10000             # audit-log rows kept
 synchronous = "full"           # SQLite fsync policy: "full" or "normal" (restart)
 
 [logs]
-backend = "file"               # only "file" in v0.1
+backend = "file"               # only "file" is supported
 max_line = 256                 # single log line cap in KiB (1..16384)
 worker_flush_interval = 15     # seal+archive cadence for running workers, minutes
 db_keep_for = 30               # log-archive age budget, days (rolling)
@@ -388,9 +388,8 @@ process environment.
 Manage channels in **Settings → Alert channels** or with
 `PUT /api/v1/alert-channels/{name}`. SQLite stores the channel settings and
 literal Telegram `bot_token`; `env:` and `file:` references are not supported.
-`[[alert_channel]]` is no longer accepted in bootstrap TOML or bundles. There
-is no file migration: remove the old blocks and recreate channels via the UI/API.
-Existing definitions referencing missing channels must be fixed before startup.
+`[[alert_channel]]` is not accepted in bootstrap TOML or bundles. Definitions
+must reference existing channels before startup.
 
 Example PUT body (name comes from the URL):
 

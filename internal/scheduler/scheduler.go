@@ -512,14 +512,6 @@ func (c compiledSchedule) latestFire(ctx context.Context, first, anchor, last, n
 	}
 }
 
-func nextFireDistinct(d model.Definition, after, anchor, last time.Time) (time.Time, error) {
-	c, err := compileSchedule(d)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return c.nextFireDistinct(after, anchor, last)
-}
-
 func (c compiledSchedule) nextFireDistinct(after, anchor, last time.Time) (time.Time, error) {
 	candidate, err := c.nextFire(after, anchor)
 	if err != nil || last.IsZero() || c.interval > 0 {
@@ -529,14 +521,6 @@ func (c compiledSchedule) nextFireDistinct(after, anchor, last time.Time) (time.
 		return c.nextFire(candidate, anchor)
 	}
 	return candidate, nil
-}
-
-func nextFire(d model.Definition, after, anchor time.Time) (time.Time, error) {
-	c, err := compileSchedule(d)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return c.nextFire(after, anchor)
 }
 
 func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {

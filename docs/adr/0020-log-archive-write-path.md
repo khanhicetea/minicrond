@@ -47,8 +47,7 @@ merging and every public contract stay as they are.
    compressed (`fileChunkMin`) gets a `log_chunks` row with `file_bytes > 0`
    and an empty blob. Its buffer file is renamed into
    `data/log-archive/<run_id>/<number>.zst` instead of being copied. Smaller
-   chunks stay blobs. Log archive schema 4 adds the column and a partial
-   index on file chunks.
+   chunks stay blobs. A partial index covers file chunks only.
    - **Order:** commit, then rename (like commit-before-unlink). Until the
      rename, readers fall back to the buffer path. After a crash the orphan
      sweep upserts the same row and renames again. If a rename fails (for

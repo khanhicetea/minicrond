@@ -93,7 +93,7 @@ func TestLogArchiveWritePathIsDocumented(t *testing.T) {
 	docContains(t, "operations.md", "Pipe EOF and run completion join the same group", "a finished run's last output included")
 	docContains(t, "configuration.md", "database pages plus the chunk files in")
 	if fileChunkMin != 64<<10 || archiveRunBatch != 32 || maxDeferredSeals != 4096 {
-		t.Fatalf("ADR-20 constants changed (%d/%d/%d): update docs/adr/0020-log-archive-write-path.md, docs/operations.md and docs/releases/next.md",
+		t.Fatalf("ADR-20 constants changed (%d/%d/%d): update docs/adr/0020-log-archive-write-path.md, docs/operations.md and docs/releases/v0.6.0.md",
 			fileChunkMin, archiveRunBatch, maxDeferredSeals)
 	}
 }

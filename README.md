@@ -2,7 +2,8 @@
 
 A small, trustworthy local job scheduler and process supervisor in a
 single binary: durable cron jobs, supervised workers, compressed tagged
-logs, a REST + SSE API, and an embedded web UI. Linux, v0.2.
+logs, a REST + SSE API, and an embedded web UI. Linux. Current release: 0.6.0
+([release notes](docs/releases/v0.6.0.md)).
 
 ```
 CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
@@ -63,8 +64,8 @@ CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
 This is a **user-mode** instance. Its default data directory is
 `~/.local/share/minicron` (private, mode 0700); config and data paths can be
 changed with `MINICRON_CONFIG` / `MINICRON_DATA`. The bootstrap TOML controls
-the server, scheduler, storage, logs, defaults, and alert channels — **not**
-job definitions. Set `BASE_PATH=/tools/minicron` to serve the web UI and API
+the server, scheduler, storage, logs, and defaults — **not** editable job
+definitions or alert channels. Set `BASE_PATH=/tools/minicron` to serve the web UI and API
 under that URL prefix (including health and OpenAPI routes). On first boot,
 read the one-time web/API token from
 `~/.local/share/minicron/initial-token` and remove that file:
@@ -143,10 +144,8 @@ returned by the API. Protect the metadata database and its backups.
 
 Set `alerts = ["ops"]` on the desired job or worker in `bundle.toml`, then
 re-import the bundle (or select the channel in the job editor). Alert channels
-are excluded from bundles. `[[alert_channel]]` in bootstrap TOML is no longer
-supported; remove old blocks and recreate channels in the UI/API. There is
-no file migration and no `env:`/`file:` credential resolution for channels.
-Bind changes need a restart. See the
+are excluded from bundles and cannot be declared in bootstrap TOML, and their
+credentials are literal (no `env:`/`file:` resolution). Bind changes need a restart. See the
 [configuration reference](docs/configuration.md) for retries, timeouts,
 secrets, retention, and worker restart controls.
 
@@ -184,7 +183,7 @@ Use the second command only for a root service; plain `sudo minicrond crontab`
 would read root's crontab. Review unsupported cron syntax and recovery steps
 in the [CLI reference](docs/cli.md#crontab--migrate-your-user-crontab).
 Back up the **whole data directory** with the daemon stopped (both SQLite
-DBs, WAL files, and live `logs/` buffers); check disk space and retention.
+DBs, WAL files, `log-archive/` and live `logs/` buffers); check disk space and retention.
 See the [operations runbook](docs/operations.md) for backup/restore, upgrades,
 security, and troubleshooting.
 
@@ -206,12 +205,12 @@ Machine-readable contracts, CI-verified: `schema/minicron.schema.json`
 - Data defaults to `~/.local/share/minicron` and must stay mode 0700;
   SQLite runs WAL — never write the DBs directly.
 - Back up and restore the **complete** data directory together
-  (`minicron.db`, `minicron-logs.db`, WAL files, `logs/` buffers), daemon
+  (`minicron.db`, `minicron-logs.db`, WAL files, `log-archive/`, `logs/`), daemon
   stopped. Copying only `minicron.db` loses log history.
 - Rotate a lost token locally: `minicrond token --rotate`.
 - TCP is plaintext HTTP, loopback by default; non-loopback binds require
   the explicit `allow_insecure_remote` opt-in (use only behind TLS).
-- v0.1 is a trusted-workload supervisor, not a sandbox: the daemon signals
+- minicrond is a trusted-workload supervisor, not a sandbox: the daemon signals
   process groups, but deliberately daemonized descendants can escape.
 
 ## Development

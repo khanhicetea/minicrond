@@ -24,8 +24,9 @@ Rules of thumb:
 - Never write the databases directly. SQLite runs in WAL mode; a binary
   that encounters a newer schema refuses to start (no silent downgrades).
 - One daemon per data directory, enforced by `minicron.lock`.
-- This development build rejects databases from the former file-authority
-  schema era — remove the old database and restart.
+- Databases created by pre-0.6 development builds are refused (`not created
+  by minicrond 0.6 or later`); they cannot be upgraded. Remove the data
+  directory and start fresh.
 
 ## CPU and memory monitoring
 
@@ -43,8 +44,7 @@ summary, shown on its run detail page. Peak RSS is not a combined process-tree
 peak; exit CPU may include waited-for descendants. Live samples are not stored.
 Older/unspawned/crash-interrupted runs have no resource summary. Run retention
 also removes the summary; export histories separately before pruning if needed
-for later aggregation. Schema 10 upgrades existing databases automatically;
-older binaries cannot open the upgraded database. See
+for later aggregation. See
 [ADR-12](adr/0012-resource-monitoring.md) for limits and accounting caveats.
 
 ## Hybrid log storage
@@ -90,7 +90,7 @@ between batches. `GET /api/v1/daemon` reports the archive backlog under
 `diagnostics.log_archive_backlog`, and connection waits for both databases
 (`diagnostics.databases`, writer and read pool) to show whether SQLite is the
 bottleneck.
-Reads synchronize with migration and share one page budget across the
+Reads synchronize with archival (a chunk moving from buffer to archive) and share one page budget across the
 database and the buffer files (the active chunk included, since it is written
 through on every frame). The daemon keeps **no in-memory payload tail or
 per-viewer queue**: a log viewer reads stored chunks on demand, so an
@@ -188,11 +188,9 @@ budget is enforced.
 If everything eligible is gone and pressure remains, `diagnostics.log_storage.disk`
 shows `insufficient: true` and the daemon logs one error per episode. Running
 children then follow the capture-failure policy above (output is discarded, they keep
-running). **Admission is not wired to disk pressure in this build:** jobs and
-workers still start normally while `insufficient` is true, and the only effect on
-them is that their log output is dropped (ADR-8 2A) until space returns. Refusing
-or queueing new work under disk pressure belongs to the queue policy (ADR-8 4B),
-which may consult `Store.DiskPressure()` once it exists. Fix the cause: free space, raise
+running). **Admission is not tied to disk pressure:** jobs and workers still
+start normally while `insufficient` is true, and the only effect on them is that
+their log output is dropped (ADR-8 2A) until space returns. Fix the cause: free space, raise
 `logs.disk_budget`, or lower retention. Expect occasional shorter history during
 noisy periods; this is the accepted trade-off.
 
@@ -244,10 +242,7 @@ Retention:
   to the filesystem (incremental auto-vacuum) and the WAL is truncated.
 
 Monitor data-directory free space (the log disk budget above reacts to
-low headroom, but only by deleting logs). The first start after upgrading to log
-archive schema 3 runs a one-time `VACUUM` of `minicron-logs.db` to enable
-incremental auto-vacuum; it needs temporary free space about the size of the
-file. The main `minicron.db` does not shrink after run retention deletes rows;
+low headroom, but only by deleting logs). The main `minicron.db` does not shrink after run retention deletes rows;
 if physical reclamation is needed there, stop the daemon, back up the
 complete directory, and use SQLite `VACUUM` before restarting.
 
@@ -322,9 +317,9 @@ is not secure erasure. API list/save responses and audit entries redact tokens.
 Save/delete reloads all channels in memory; no config polling is added.
 Queued batches keep their original channel even after edit/deletion.
 
-`[[alert_channel]]` TOML support is removed without import/migration. Remove
-old blocks and recreate channels via UI/API. Existing job/worker references
-must resolve before daemon startup. The delete checkbox removes registry-owned
+Alert channels are not configured in TOML: an `[[alert_channel]]` block is
+rejected as an unknown key. Job/worker references must resolve before daemon
+startup. The delete checkbox removes registry-owned
 references atomically; config-owned definitions must be edited in the file first.
 See [configuration](configuration.md#alerts) and [ADR-13](adr/0013-database-alert-channels.md).
 
@@ -380,7 +375,7 @@ minicrond as a container's process manager:
   with the daemon's status after giving leftover processes SIGTERM and up to 2 s.
   Without it, a job such as `sleep 1 & exit 0` leaves zombies that are never
   reaped (about 3 per second in tests) until the PID limit is exhausted.
-  Stops ignore zombie group members (they used to wait the full `grace`). No `--init`/tini is
+  Stops ignore zombie group members. No `--init`/tini is
   needed; with one, set `MINICROND_INIT=0` (or leave it: minicrond is then not
   PID 1 and does nothing extra).
 - **Stop timeout.** Shutdown sends each run its `stop_signal` and waits up to
@@ -433,7 +428,7 @@ minicrond as a container's process manager:
 
 1. Stop the daemon (`systemctl stop minicrond` or SIGTERM; wait for exit).
 2. Copy the **complete** data directory: `minicron.db`, `minicron-logs.db`,
-   their WAL files, and `logs/` buffers together. Copying only
+   their WAL files, `log-archive/` and `logs/` buffers together. Copying only
    `minicron.db` does not preserve log history.
 3. Restore = stop the daemon, replace the directory, start the daemon.
    Never restore into a directory a daemon is using, and never run two
@@ -500,7 +495,7 @@ by non-root users, including symlink routes; they are revalidated on every spawn
 - `run_as` is available only to a root daemon; in user mode jobs and
   workers always run as the daemon user.
 - The daemon signals process **groups** for stop/timeout. Deliberately
-  daemonized descendants can escape; v0.1 is not a hostile-workload
+  daemonized descendants can escape; minicrond is not a hostile-workload
   sandbox.
 
 ### Browser XSS defenses
@@ -557,12 +552,13 @@ a unique TCP port. Service mode logs to the journal.
 |---|---|
 | `data directory must be a private directory` | `chmod 700` the data dir (or recreate it) |
 | `data directory is locked by another daemon` | Another daemon owns it; stop it first |
-| Daemon won't start after alert-channel change | Remove unsupported `[[alert_channel]]` blocks; create channels via UI/API. Fix missing channel references in definitions before startup |
+| Daemon won't start: unknown alert channel | A definition references a channel that does not exist. Create it via UI/API or fix the reference; `[[alert_channel]]` TOML blocks are not supported |
+| `not created by minicrond 0.6 or later` | The data directory was written by a pre-0.6 development build. Remove it (back it up first if needed) and start fresh |
 | `non-loopback plaintext HTTP requires allow_insecure_remote=true` | Intentional; bind loopback or set the opt-in behind TLS |
 | Web UI 401 | Wrong/rotated token — rotate again or re-check `initial-token` |
 | Runs recorded as `interrupted` | Daemon was killed; recovery marks unobservable active runs `interrupted` at boot |
 | `metadata storage is failing; runs keep executing...` | The metadata database rejects writes (full/read-only volume, external lock). Jobs and workers keep running; history is written when storage recovers. Watch `diagnostics.run_history` in `minicrond status`; `dropped > 0` means some history was lost |
-| `metadata database opened read-only` / `Unix socket unavailable` | The data directory is not writable (read-only volume or mode). Jobs and workers run from the stored definitions; no history, logs, schedule state or API token can be written, the local CLI cannot connect (TCP still works when enabled), and `minicrond healthcheck` fails. Make the volume writable and restart. Boot still fails when the metadata database is missing, unreadable, or needs a schema migration |
+| `metadata database opened read-only` / `Unix socket unavailable` | The data directory is not writable (read-only volume or mode). Jobs and workers run from the stored definitions; no history, logs, schedule state or API token can be written, the local CLI cannot connect (TCP still works when enabled), and `minicrond healthcheck` fails. Make the volume writable and restart. Boot still fails when the metadata database is missing, unreadable, or has an unsupported schema |
 | `run history not recorded ... budget is full` | Storage stayed down long enough for 1024 runs' history to wait; later history is dropped until it recovers |
 | Runs stay `queued` / end `queue_expired` | `max_concurrent_runs` stays full for longer than `queue.max_age`; raise the limit, shorten jobs, or raise `max_age` (see Execution queue) |
 | Jobs didn't fire while daemon was down | By design (`catch_up = "none"` default); use `catch_up = "latest"` to fire the most recent miss |
@@ -571,17 +567,18 @@ a unique TCP port. Service mode logs to the journal.
 
 Stop the daemon, back up the data directory (above), replace the binary,
 start. Rollback = stop, restore the directory snapshot, restore the old
-binary, start. Never downgrade a live newer-schema database.
+binary, start. Never downgrade a live newer-schema database. 0.6.0 is the
+first release with a stable schema; data directories from earlier
+development builds are refused and must be recreated.
 
-**Upgrading to the log disk budget.** `logs.disk_min_free` is **on by default**
-(512 MiB, clamped to a quarter of the filesystem). After upgrading, a host with
-less than that free on the data directory's filesystem deletes the oldest
-archived logs (completed runs' and running workers' chunks beyond their newest
-8 MiB) and, if that is not enough, sealed buffers on the first pass at startup;
-deleted logs are not recoverable. Before upgrading a small
-or nearly full disk, check `df` for the data directory, and either free space,
-size `logs.disk_budget` deliberately, or set `logs.disk_min_free = 0` to keep the
-previous behavior. The daemon logs one `log disk budget:` INFO line at every
-start and reload with the configured and effective values (`min_free_mib`,
-`effective_min_free_mib`, `filesystem_mib`, `budget_mib`, quarantine policy); read
-it after upgrading, and see [Log disk budget](#log-disk-budget).
+**Small or nearly full disks.** `logs.disk_min_free` is **on by default**
+(512 MiB, clamped to a quarter of the filesystem). A host with less than that
+free on the data directory's filesystem deletes the oldest archived logs
+(completed runs' and running workers' chunks beyond their newest 8 MiB) and, if
+that is not enough, sealed buffers on the first pass at startup; deleted logs
+are not recoverable. Check `df` for the data directory, and either free space,
+size `logs.disk_budget` deliberately, or set `logs.disk_min_free = 0` to turn
+the rule off. The daemon logs one `log disk budget:` INFO line at every start
+and reload with the configured and effective values (`min_free_mib`,
+`effective_min_free_mib`, `filesystem_mib`, `budget_mib`, quarantine policy);
+see [Log disk budget](#log-disk-budget).

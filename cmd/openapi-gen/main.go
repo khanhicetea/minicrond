@@ -17,7 +17,7 @@ func main() {
 }
 
 func generate(out io.Writer) error {
-	if _, err := fmt.Fprintf(out, "%s\n", api.OpenAPIContract("0.2.0")); err != nil {
+	if _, err := fmt.Fprintf(out, "%s\n", api.OpenAPIContract("0.6.0")); err != nil {
 		return fmt.Errorf("write OpenAPI contract: %w", err)
 	}
 	return nil

@@ -530,9 +530,6 @@ func (s *Supervisor) BeginShutdown() {
 	s.mu.Unlock()
 }
 
-// Shutdown joins supervision without a deadline. Prefer ShutdownContext.
-func (s *Supervisor) Shutdown() { _ = s.ShutdownContext(context.Background()) }
-
 // ShutdownContext stops supervision and waits for the worker loops until ctx
 // ends. Once closing is set no loop can be started (every loops.Go is ordered
 // before this call by s.mu), and it never waits for the lifecycle lock, which
@@ -566,12 +563,6 @@ type State struct {
 	Status            string                  `json:"status"`
 	Exhaustion        *model.WorkerExhaustion `json:"exhaustion,omitempty"`
 	ExhaustionPending bool                    `json:"exhaustion_pending,omitempty"`
-}
-
-func (s *Supervisor) State(name string) State {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stateLocked(name)
 }
 
 // States takes a consistent snapshot of the requested workers under one lock.

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,9 +12,10 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/khanhicetea/minicrond/internal/model"
+	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-func TestFreshMigrationAndReopen(t *testing.T) {
+func TestFreshSchemaAndReopen(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(t.Context(), dir)
 	if err != nil {
@@ -126,7 +128,7 @@ func TestNewerSchemaRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version=99"); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA application_id=%d; PRAGMA user_version=99", ApplicationID)); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -136,19 +138,35 @@ func TestNewerSchemaRefused(t *testing.T) {
 	}
 }
 
-func TestLegacyAuthoritySchemaRefused(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", dir+"/minicron.db")
+// Databases from pre-0.6 development builds have a user_version but no
+// application_id; they are refused, never upgraded.
+func TestPreReleaseSchemaRefused(t *testing.T) {
+	for _, version := range []int{1, 12} {
+		dir := t.TempDir()
+		db, err := sql.Open("sqlite", dir+"/minicron.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(fmt.Sprintf("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=%d", version)); err != nil {
+			t.Fatal(err)
+		}
+		db.Close()
+		_, err = Open(t.Context(), dir)
+		if !errors.Is(err, sqlite.ErrUnsupportedSchema) || !strings.Contains(err.Error(), "pre-0.6") {
+			t.Fatalf("schema %d: expected pre-0.6 refusal, got %v", version, err)
+		}
+	}
+}
+
+func TestFreshSchemaIdentity(t *testing.T) {
+	s, err := Open(t.Context(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA user_version=1"); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	_, err = Open(t.Context(), dir)
-	if err == nil || !strings.Contains(err.Error(), "remove the development database") {
-		t.Fatalf("expected incompatible-schema error, got %v", err)
+	defer s.Close()
+	app, version, err := sqlite.SchemaID(t.Context(), s.db)
+	if err != nil || app != ApplicationID || version != SchemaVersion {
+		t.Fatalf("application_id = %#x, user_version = %d, %v", app, version, err)
 	}
 }
 
@@ -523,32 +541,5 @@ func TestDeleteRunsKeepsActiveAndIdempotentRuns(t *testing.T) {
 	}
 	if err := s.DeleteRuns(t.Context(), nil); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestUpgradeFromOlderSchemaFixture(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", dir+"/minicron.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A pre-v0.1 fixture: meta table only, user_version 0.
-	if _, err := db.Exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO meta VALUES ('legacy','kept')"); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	s, err := Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if version, err := s.SchemaVersion(t.Context()); err != nil || version != SchemaVersion {
-		t.Fatalf("schema version after upgrade = %d, %v", version, err)
-	}
-	if got, err := s.Meta(t.Context(), "legacy"); err != nil || got != "kept" {
-		t.Fatalf("fixture data lost during upgrade: %q, %v", got, err)
 	}
 }

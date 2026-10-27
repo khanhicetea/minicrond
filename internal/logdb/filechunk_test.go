@@ -3,7 +3,6 @@ package logdb
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -133,44 +132,4 @@ func TestDeletionsRemoveArchivedFiles(t *testing.T) {
 			t.Fatal("run deletion did not remove exactly the run's files")
 		}
 	})
-}
-
-// Migrating schema 3 adds the file_bytes column; existing chunks are blobs.
-func TestMigration4AddsFileChunks(t *testing.T) {
-	dir := t.TempDir()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Recreate a schema-3 table in place.
-	for _, stmt := range []string{
-		"DROP INDEX idx_log_chunks_files",
-		"ALTER TABLE log_chunks DROP COLUMN file_bytes",
-		"INSERT INTO log_runs VALUES('run','job','job',1,1)",
-		"INSERT INTO log_chunks VALUES('run',1,1,1,1,1,x'00')",
-		"PRAGMA user_version=3",
-	} {
-		if _, err := l.db.ExecContext(t.Context(), stmt); err != nil {
-			t.Fatal(stmt, err)
-		}
-	}
-	l.Close()
-	l, err = Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	if v := pragma(t, l.db, "user_version"); v != SchemaVersion {
-		t.Fatalf("user_version = %d", v)
-	}
-	var c Chunk
-	if err := l.EachChunk(t.Context(), "run", 0, func(got Chunk) (bool, error) { c = got; return false, nil }); err != nil {
-		t.Fatal(err)
-	}
-	if c.FileBytes != 0 || len(c.Blob) != 1 {
-		t.Fatalf("migrated chunk = %+v", c)
-	}
-	if _, err := os.Stat(filepath.Join(dir, FilesDirName)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("archive file directory created eagerly: %v", err)
-	}
 }

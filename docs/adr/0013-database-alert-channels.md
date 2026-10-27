@@ -17,10 +17,8 @@ This is a management change, not a measured performance optimization.
 
 SQLite owns channel definitions **and literal credentials**, as explicitly chosen
 by the owner. Remove TOML support and env/file credential resolution completely;
-do not import existing file channels. Metadata schema 11 creates an empty channel
-table for existing databases; it does not migrate any channel configuration.
-Old TOML blocks are errors. Before startup, remove stale definition references;
-create replacement channels via UI/API, then restore references.
+do not import file channels. `[[alert_channel]]` TOML blocks are errors.
+Definitions must reference existing channels before startup.
 
 Rejected: retaining file ownership (simpler implementation, but split management),
 DB settings plus external secret references (less secret-bearing storage, but

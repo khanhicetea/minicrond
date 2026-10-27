@@ -786,12 +786,8 @@ func validateDefinitions(definitions []model.Definition, schedulerTimezone strin
 	return nil
 }
 
-func ValidateDefinition(d *model.Definition, jobDefaults ...model.Definition) error {
-	return validateDefinition(d, explicit{}, jobDefaults)
-}
-
-// ValidateDefinitionInput normalizes a decoded API definition. Unlike
-// ValidateDefinition, an explicit timeout/retries of 0 overrides the defaults.
+// ValidateDefinitionInput normalizes a decoded API definition. An explicit
+// timeout/retries of 0 overrides the defaults.
 func ValidateDefinitionInput(in DefinitionInput, jobDefaults ...model.Definition) (model.Definition, error) {
 	d := in.Resolve()
 	err := validateDefinition(&d, inputExplicit(in), jobDefaults)

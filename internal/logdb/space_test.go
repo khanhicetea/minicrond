@@ -3,6 +3,7 @@ package logdb
 import (
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,47 +127,6 @@ func TestCompactReturnsPrunedSpace(t *testing.T) {
 	}
 }
 
-// Archives created before schema 3 have no auto-vacuum; the migration turns
-// it on so pruned space can be returned.
-func TestMigrationEnablesIncrementalVacuum(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sqlite.Open(filepath.Join(dir, "minicron-logs.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode=WAL"); err != nil {
-		t.Fatal(err)
-	}
-	v2 := `BEGIN;
-CREATE TABLE log_runs (run_id TEXT PRIMARY KEY, job TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT '', created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL);
-CREATE TABLE log_chunks (run_id TEXT NOT NULL REFERENCES log_runs(run_id) ON DELETE CASCADE, number INTEGER NOT NULL, first_seq INTEGER NOT NULL, last_seq INTEGER NOT NULL, raw_bytes INTEGER NOT NULL, archived_us INTEGER NOT NULL, blob BLOB NOT NULL, PRIMARY KEY(run_id, number));
-CREATE INDEX idx_log_runs_time ON log_runs(created_us);
-CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
-CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
-INSERT INTO log_runs VALUES('run','job','job',1,1);
-INSERT INTO log_chunks VALUES('run',1,1,1,1,1,x'00');
-PRAGMA user_version=2;
-COMMIT;`
-	if _, err := db.ExecContext(t.Context(), v2); err != nil {
-		t.Fatal(err)
-	}
-	if mode := pragma(t, db, "auto_vacuum"); mode != 0 {
-		t.Fatalf("fixture auto_vacuum = %d", mode)
-	}
-	db.Close()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	if mode, version := pragma(t, l.db, "auto_vacuum"), pragma(t, l.db, "user_version"); mode != 2 || version != SchemaVersion {
-		t.Fatalf("auto_vacuum = %d, user_version = %d", mode, version)
-	}
-	if runs, chunks, _, err := l.Stats(t.Context()); err != nil || runs != 1 || chunks != 1 {
-		t.Fatalf("migrated archive has %d runs, %d chunks, error %v", runs, chunks, err)
-	}
-}
-
 // API reads use the read-only pool, so they cannot write by mistake.
 func TestReadPoolIsReadOnly(t *testing.T) {
 	l, err := Open(t.TempDir())
@@ -176,5 +136,35 @@ func TestReadPoolIsReadOnly(t *testing.T) {
 	defer l.Close()
 	if _, err := l.rdb.ExecContext(t.Context(), "DELETE FROM log_runs"); err == nil {
 		t.Fatal("read pool accepted a write")
+	}
+}
+
+// A pre-0.6 archive (user_version set, no application_id) is refused.
+func TestPreReleaseSchemaRefused(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE log_runs (run_id TEXT PRIMARY KEY); PRAGMA user_version=4"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if _, err := Open(dir); !errors.Is(err, sqlite.ErrUnsupportedSchema) {
+		t.Fatalf("expected unsupported-schema error, got %v", err)
+	}
+}
+
+func TestFreshSchemaIdentity(t *testing.T) {
+	l, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if app, version := pragma(t, l.db, "application_id"), pragma(t, l.db, "user_version"); app != ApplicationID || version != SchemaVersion {
+		t.Fatalf("application_id = %#x, user_version = %d", app, version)
+	}
+	if mode := pragma(t, l.db, "auto_vacuum"); mode != 2 {
+		t.Fatalf("auto_vacuum = %d, want incremental", mode)
 	}
 }

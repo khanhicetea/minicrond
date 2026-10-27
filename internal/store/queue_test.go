@@ -1,9 +1,7 @@
 package store
 
 import (
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -289,8 +287,8 @@ func TestDeleteAndDisableDropQueuedItems(t *testing.T) {
 }
 
 // S3: the active-run index must cover 'queued', or RunMetrics and the active
-// filter fall back to full table scans. Checked on fresh and migrated databases.
-func TestActiveIndexCoversQueuedOnFreshAndMigratedDatabases(t *testing.T) {
+// filter fall back to full table scans.
+func TestActiveIndexCoversQueued(t *testing.T) {
 	check := func(t *testing.T, st *Store) {
 		t.Helper()
 		queries := map[string]string{
@@ -318,35 +316,8 @@ func TestActiveIndexCoversQueuedOnFreshAndMigratedDatabases(t *testing.T) {
 			}
 		}
 	}
-	t.Run("fresh", func(t *testing.T) {
-		st, _, _ := queueFixture(t)
-		check(t, st)
-	})
-	t.Run("migrated", func(t *testing.T) {
-		dir := t.TempDir()
-		db, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		old := strings.Replace(schema, resourceUsageDDL, "", 1)
-		old = strings.Replace(old, alertChannelsDDL+alertNotifyDDL, "", 1)
-		old = strings.Replace(old, "PRAGMA user_version=12;", "PRAGMA user_version=8;", 1)
-		old = strings.Replace(old, execQueueDDL, "", 1)
-		old = strings.Replace(old, "idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running')", "idx_runs_active ON runs(status) WHERE status IN ('pending','running')", 1)
-		if !strings.Contains(old, "WHERE status IN ('pending','running');") {
-			t.Fatal("fixture did not recreate the old index")
-		}
-		if _, err := db.Exec(old); err != nil {
-			t.Fatal(err)
-		}
-		db.Close()
-		st, err := Open(t.Context(), dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer st.Close()
-		check(t, st)
-	})
+	st, _, _ := queueFixture(t)
+	check(t, st)
 }
 
 // NIT 4: Recover repairs a queued run that has no queue row, and leaves

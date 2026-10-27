@@ -1,9 +1,6 @@
 package store
 
 import (
-	"database/sql"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -89,41 +86,5 @@ func TestResourceUsageRoundTripAndReopen(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-func TestMigration10KeepsHistoricalUsageUnavailable(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := strings.Replace(schema, resourceUsageDDL, "", 1)
-	old = strings.Replace(old, alertChannelsDDL+alertNotifyDDL, "", 1)
-	old = strings.Replace(old, "PRAGMA user_version=12;", "PRAGMA user_version=9;", 1)
-	if _, err := db.Exec(old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO definitions(definition_id,name,kind,spec,spec_hash,revision,enabled,created_us,updated_us) VALUES(1,'old','job','{}','hash',1,1,1,1);
- INSERT INTO runs(run_id,definition_id,job,kind,revision,definition_hash,status,trigger,queued_us) VALUES('old',1,'old','job',1,'hash','succeeded','manual',1);`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	r, err := st.Run(t.Context(), "old")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.ResourceUsage != nil {
-		t.Fatalf("old usage = %+v", r.ResourceUsage)
-	}
-	if version, err := st.SchemaVersion(t.Context()); err != nil || version != SchemaVersion {
-		t.Fatalf("schema = %d, %v", version, err)
 	}
 }

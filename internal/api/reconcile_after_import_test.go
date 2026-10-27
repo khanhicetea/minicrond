@@ -16,7 +16,7 @@ import (
 // transient failures, with no further API call.
 func TestImportApplyReconcilesAfterCallerCancelsAndRetries(t *testing.T) {
 	s, _, st := setup(t)
-	t.Cleanup(s.super.Shutdown)
+	t.Cleanup(func() { _ = s.super.ShutdownContext(context.Background()) })
 	old := reconcileBackoff
 	reconcileBackoff = time.Millisecond
 	t.Cleanup(func() { reconcileBackoff = old })
@@ -63,13 +63,13 @@ func TestImportApplyReconcilesAfterCallerCancelsAndRetries(t *testing.T) {
 	if attempts.Load() < 2 {
 		t.Fatalf("reconcile attempts=%d, want a retry after the transient failure", attempts.Load())
 	}
-	waitFor(t, "worker loop started", func() bool { return s.super.State("w").Active })
+	waitFor(t, "worker loop started", func() bool { return s.super.States([]string{"w"})["w"].Active })
 
 	// Replace/disable the worker; only the import call is made.
 	if rec := apply("[[worker]]\nname='w'\ncommand='sleep 30'\ngrace=1\nenabled=false\n"); rec.Code != 200 {
 		t.Fatalf("second apply: %d %s", rec.Code, rec.Body.String())
 	}
-	waitFor(t, "old worker loop stopped", func() bool { return !s.super.State("w").Active })
+	waitFor(t, "old worker loop stopped", func() bool { return !s.super.States([]string{"w"})["w"].Active })
 }
 
 func TestImportApplyReconcileGivesUpAfterBoundedAttempts(t *testing.T) {

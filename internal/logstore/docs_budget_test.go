@@ -55,7 +55,7 @@ func TestDocumentedActiveTailMatchesTheCode(t *testing.T) {
 
 // Review SF2: the docs must not promise admission control that does not exist.
 func TestDocsStateAdmissionIsNotWiredToDiskPressure(t *testing.T) {
-	docContains(t, "operations.md", "Admission is not wired to disk pressure in this build", "their log output is dropped")
+	docContains(t, "operations.md", "Admission is not tied to disk pressure", "their log output is dropped")
 	docContains(t, "adr/0010-log-disk-budget.md", "New work (4B) is not wired yet", "admission is unchanged")
 	for _, f := range []string{"operations.md", "adr/0010-log-disk-budget.md"} {
 		b, _ := os.ReadFile("../../docs/" + f)

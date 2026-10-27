@@ -341,11 +341,11 @@ func TestDiskPolicyIsLoggedAtStartAndReload(t *testing.T) {
 	}
 }
 
-// The upgrade note exists where operators look for it.
+// The default-on headroom is documented where operators look for it.
 func TestUpgradeNotesDescribeTheDefaultOnHeadroom(t *testing.T) {
 	for file, phrases := range map[string][]string{
-		"../../docs/operations.md":    {"Upgrading to the log disk budget", "`logs.disk_min_free = 0`", "`log disk budget:` INFO line"},
-		"../../docs/releases/next.md": {"on by default", "`logs.disk_min_free = 0`"},
+		"../../docs/operations.md":      {"Small or nearly full disks", "`logs.disk_min_free = 0`", "`log disk budget:` INFO line"},
+		"../../docs/releases/v0.6.0.md": {"on by default", "`logs.disk_min_free = 0`"},
 	} {
 		b, err := os.ReadFile(file)
 		if err != nil {

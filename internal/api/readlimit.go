@@ -178,12 +178,6 @@ func (g *readGate) acquireKind(ctx context.Context, cost int64, wait time.Durati
 	}
 }
 
-func (g *readGate) stats() (inflight int, bytes int64, waiting int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.inflight, g.bytes, g.waiting
-}
-
 // SetReadLimits configures expensive-read admission. Call it before the HTTP
 // listeners start; the defaults apply otherwise.
 func (s *Server) SetReadLimits(l ReadLimits) {

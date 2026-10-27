@@ -20,7 +20,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 12
+const SchemaVersion = 1
 
 // Sentinel errors used by callers to map storage failures onto API statuses.
 var ErrRevisionConflict = errors.New("revision conflict")
@@ -89,11 +89,14 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	s := &Store{db: db, syncFull: sqlite.SyncFull(opt...)}
-	if err := s.migrate(ctx); err != nil {
+	if err := s.initSchema(ctx); err != nil {
+		if errors.Is(err, sqlite.ErrUnsupportedSchema) {
+			return nil, errors.Join(fmt.Errorf("prepare metadata database: %w", err), db.Close())
+		}
 		// A read-only or full volume cannot open a WAL database for writing
 		// (no -shm). Boot needs a readable database (ADR-16): fall back to a
 		// read-only open when the schema is current, else report both errors.
-		return openReadOnly(ctx, path, errors.Join(fmt.Errorf("migrate metadata database: %w", err), db.Close()))
+		return openReadOnly(ctx, path, errors.Join(fmt.Errorf("prepare metadata database: %w", err), db.Close()))
 	}
 	if s.rdb, err = sqlite.OpenReader(path); err != nil {
 		return nil, errors.Join(fmt.Errorf("open metadata read pool: %w", err), db.Close())
@@ -109,8 +112,8 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 // openReadOnly opens the metadata database when it cannot be opened for
 // writing: a read-only or full volume (ADR-16: boot needs a readable metadata database, not a
 // writable one). Definitions and history can be read; every write fails as
-// unavailable storage, which execution already tolerates. The schema must be
-// current: a read-only database cannot be migrated.
+// unavailable storage, which execution already tolerates. The file must
+// already exist with the current schema.
 func openReadOnly(ctx context.Context, path string, cause error) (*Store, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, errors.Join(cause, err)
@@ -119,12 +122,12 @@ func openReadOnly(ctx context.Context, path string, cause error) (*Store, error)
 	if err != nil {
 		return nil, errors.Join(cause, err)
 	}
-	var version int
-	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+	app, version, err := sqlite.SchemaID(ctx, db)
+	if err != nil {
 		return nil, errors.Join(cause, fmt.Errorf("read-only metadata database: %w", err), db.Close())
 	}
-	if version != SchemaVersion {
-		return nil, errors.Join(cause, fmt.Errorf("read-only fallback: metadata database has schema %d, this daemon needs %d and cannot migrate it", version, SchemaVersion), db.Close())
+	if err := sqlite.CheckSchema("metadata", ApplicationID, SchemaVersion, app, version); err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("read-only fallback: %w", err), db.Close())
 	}
 	slog.Warn("metadata database opened read-only: it cannot be opened for writing (read-only or full volume); jobs and workers run, history is not stored until a restart", "path", path, "cause", cause)
 	return &Store{db: db, rdb: db, readOnly: true}, nil
@@ -176,82 +179,21 @@ func (s *Store) SetMeta(ctx context.Context, key, value string) error {
 	return err
 }
 
-func (s *Store) migrate(ctx context.Context) error {
+// initSchema creates the schema in a new database and verifies an existing one.
+// Databases from pre-0.6 development builds carry no application_id and are
+// refused rather than upgraded.
+func (s *Store) initSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	var version int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return err
-	}
-	if version > SchemaVersion {
-		return fmt.Errorf("database schema %d is newer than supported schema %d", version, SchemaVersion)
-	}
-	if version != 0 && version < 2 {
-		return fmt.Errorf("database schema %d is incompatible with schema %d; remove the development database", version, SchemaVersion)
-	}
-	if version == 0 {
-		if _, err := s.db.ExecContext(ctx, schema); err != nil {
-			return fmt.Errorf("migration: %w", err)
-		}
-		return nil
-	}
-	if version == 2 {
-		if _, err := s.db.ExecContext(ctx, migration3); err != nil {
-			return fmt.Errorf("migration 3: %w", err)
-		}
-	}
-	if version <= 3 {
-		if _, err := s.db.ExecContext(ctx, migration4); err != nil {
-			return fmt.Errorf("migration 4: %w", err)
-		}
-	}
-	if version <= 4 {
-		if _, err := s.db.ExecContext(ctx, migration5); err != nil {
-			return fmt.Errorf("migration 5: %w", err)
-		}
-	}
-	if version <= 5 {
-		if _, err := s.db.ExecContext(ctx, migration6); err != nil {
-			return fmt.Errorf("migration 6: %w", err)
-		}
-	}
-	if version <= 6 {
-		if _, err := s.db.ExecContext(ctx, migration7); err != nil {
-			return fmt.Errorf("migration 7: %w", err)
-		}
-	}
-	if version <= 7 {
-		if _, err := s.db.ExecContext(ctx, migration8); err != nil {
-			return fmt.Errorf("migration 8: %w", err)
-		}
-	}
-	if version <= 8 {
-		if _, err := s.db.ExecContext(ctx, migration9); err != nil {
-			return fmt.Errorf("migration 9: %w", err)
-		}
-	}
-	if version <= 9 {
-		if _, err := s.db.ExecContext(ctx, migration10); err != nil {
-			return fmt.Errorf("migration 10: %w", err)
-		}
-	}
-	if version <= 10 {
-		if _, err := s.db.ExecContext(ctx, migration11); err != nil {
-			return fmt.Errorf("migration 11: %w", err)
-		}
-	}
-	if version <= 11 {
-		if _, err := s.db.ExecContext(ctx, migration12); err != nil {
-			return fmt.Errorf("migration 12: %w", err)
-		}
-	}
-	return nil
+	return sqlite.EnsureSchema(ctx, s.db, "metadata", ApplicationID, SchemaVersion, schema)
 }
 
+// ApplicationID is stored in the SQLite header of minicron.db ("MCRN").
+const ApplicationID = 0x4d43524e
+
 const schema = `
-BEGIN;
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE definitions (
  definition_id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  kind TEXT NOT NULL CHECK(kind IN ('job','worker')), spec TEXT NOT NULL,
@@ -264,6 +206,7 @@ CREATE TABLE definition_revisions (
  spec TEXT NOT NULL, spec_hash TEXT NOT NULL, actor TEXT NOT NULL, at_us INTEGER NOT NULL,
  PRIMARY KEY(definition_id, revision)
 );
+-- Nullable resource counters distinguish unavailable accounting from measured zero.
 CREATE TABLE runs (
  run_id TEXT PRIMARY KEY, definition_id INTEGER NOT NULL REFERENCES definitions(definition_id),
  job TEXT NOT NULL, kind TEXT NOT NULL, revision INTEGER NOT NULL, definition_hash TEXT NOT NULL,
@@ -272,7 +215,8 @@ CREATE TABLE runs (
  scheduled_for_us INTEGER, missed_count INTEGER NOT NULL DEFAULT 0, boot_id TEXT,
  pid INTEGER, pgid INTEGER, process_start_id TEXT, exit_code INTEGER, signal TEXT,
  queued_us INTEGER NOT NULL, started_us INTEGER, ended_us INTEGER, log_ref TEXT,
- log_bytes INTEGER NOT NULL DEFAULT 0, log_truncated INTEGER NOT NULL DEFAULT 0
+ log_bytes INTEGER NOT NULL DEFAULT 0, log_truncated INTEGER NOT NULL DEFAULT 0,
+ user_cpu_us INTEGER, system_cpu_us INTEGER, peak_rss_bytes INTEGER
 );
 CREATE INDEX idx_runs_job_time ON runs(job, queued_us DESC);
 CREATE INDEX idx_runs_time ON runs(queued_us DESC);
@@ -290,65 +234,9 @@ CREATE TABLE idempotency (principal TEXT NOT NULL, operation TEXT NOT NULL, key 
 CREATE INDEX idx_idempotency_run_time ON idempotency(run_id,created_us);
 CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
 CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-` + execQueueDDL + resourceUsageDDL + alertChannelsDDL + alertNotifyDDL + `PRAGMA user_version=12;
-COMMIT;`
-
-// Nullable counters distinguish unavailable accounting from measured zero.
-const resourceUsageDDL = `ALTER TABLE runs ADD COLUMN user_cpu_us INTEGER;
-ALTER TABLE runs ADD COLUMN system_cpu_us INTEGER;
-ALTER TABLE runs ADD COLUMN peak_rss_bytes INTEGER;
-`
-
-const migration10 = `BEGIN;
-` + resourceUsageDDL + `PRAGMA user_version=10;
-COMMIT;`
-
-const migration3 = `
-BEGIN;
-CREATE INDEX IF NOT EXISTS idx_runs_time ON runs(queued_us DESC);
-CREATE INDEX IF NOT EXISTS idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
-DELETE FROM runs WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL AND rowid NOT IN (
- SELECT MIN(rowid) FROM runs WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL GROUP BY definition_id,scheduled_for_us
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
-PRAGMA user_version=3;
-COMMIT;`
-
-const migration4 = `
-BEGIN;
-CREATE TABLE alert_deliveries (run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE, channel TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, updated_us INTEGER NOT NULL, PRIMARY KEY(run_id,channel));
-CREATE INDEX idx_alert_deliveries_status ON alert_deliveries(status,updated_us);
-PRAGMA user_version=4;
-COMMIT;`
-
-const migration5 = `
-BEGIN;
-ALTER TABLE runs ADD COLUMN parent_run_id TEXT;
-PRAGMA user_version=5;
-COMMIT;`
-
-const migration6 = `
-BEGIN;
-ALTER TABLE definitions ADD COLUMN source TEXT NOT NULL DEFAULT '';
-PRAGMA user_version=6;
-COMMIT;`
-
-const migration7 = `
-BEGIN;
-CREATE INDEX IF NOT EXISTS idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
-CREATE INDEX IF NOT EXISTS idx_idempotency_run_time ON idempotency(run_id,created_us);
-PRAGMA user_version=7;
-COMMIT;`
-
-const migration8 = `
-BEGIN;
-CREATE INDEX IF NOT EXISTS idx_runs_end_time ON runs(ended_us DESC);
-PRAGMA user_version=8;
-COMMIT;`
-
-// execQueueDDL creates the durable execution queue (ADR-9). Each row belongs to
-// a run in status 'queued'; both are written and removed in one transaction.
-const execQueueDDL = `CREATE TABLE exec_queue (
+-- The durable execution queue (ADR-9). Each row belongs to a run in status
+-- 'queued'; both are written and removed in one transaction.
+CREATE TABLE exec_queue (
  seq INTEGER PRIMARY KEY AUTOINCREMENT,
  run_id TEXT NOT NULL UNIQUE REFERENCES runs(run_id) ON DELETE CASCADE,
  definition_id INTEGER NOT NULL, enqueued_us INTEGER NOT NULL, expires_us INTEGER NOT NULL,
@@ -356,14 +244,12 @@ const execQueueDDL = `CREATE TABLE exec_queue (
 );
 CREATE INDEX idx_exec_queue_definition ON exec_queue(definition_id, seq);
 CREATE INDEX idx_exec_queue_expiry ON exec_queue(expires_us);
-`
-
-const migration9 = `
-BEGIN;
-DROP INDEX IF EXISTS idx_runs_active;
-CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
-` + execQueueDDL + `PRAGMA user_version=9;
-COMMIT;`
+CREATE TABLE alert_channels (
+ name TEXT PRIMARY KEY, type TEXT NOT NULL, bot_token TEXT NOT NULL,
+ chat_id TEXT NOT NULL, disable_notification INTEGER NOT NULL,
+ batch_window INTEGER NOT NULL,
+ notify_on TEXT NOT NULL DEFAULT 'failed,timeout,exhausted'
+);`
 
 func (s *Store) Definitions(ctx context.Context) ([]model.Definition, error) {
 	return s.definitions(ctx, s.db)

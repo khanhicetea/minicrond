@@ -15,7 +15,7 @@ func waitWorkerActive(t *testing.T, d *Daemon, name string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		d.mu.Lock()
-		ready := d.running && d.super != nil && d.super.State(name).Active
+		ready := d.running && d.super != nil && d.super.States([]string{name})[name].Active
 		d.mu.Unlock()
 		if ready {
 			return

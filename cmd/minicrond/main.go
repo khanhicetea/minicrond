@@ -30,7 +30,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/fault"
 )
 
-var version = "0.2.0-dev"
+var version = "0.6.0-dev"
 var commit = "unknown"
 
 //go:embed minicron.schema.json

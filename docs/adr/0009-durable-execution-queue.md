@@ -31,8 +31,7 @@ run is a pending run of that job. `parallel` jobs may queue several items.
 
 A queued item **is** a `runs` row with the new non-terminal status `queued`,
 plus a small `exec_queue` row (`run_id`, `seq`, `definition_id`, `enqueued_us`,
-`expires_us`, `payload_bytes`) written in the **same SQLite transaction**
-(schema 9). The caller therefore gets a real run id: `GET /runs/{id}`, run
+`expires_us`, `payload_bytes`) written in the **same SQLite transaction**. The caller therefore gets a real run id: `GET /runs/{id}`, run
 history, idempotency keys, the unique `(definition, scheduled_for)` schedule
 occurrence index and retention all work unchanged. Queue wait is
 `started_at - queued_at`.

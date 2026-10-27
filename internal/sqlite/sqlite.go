@@ -3,6 +3,7 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -124,4 +125,57 @@ func IsConstraint(err error) bool {
 		return e.Code()&0xff == 19 // SQLITE_CONSTRAINT
 	}
 	return false
+}
+
+// ErrUnsupportedSchema reports a database file this build cannot use: one
+// written by a pre-0.6 development build, by another program, or by a newer
+// minicrond.
+var ErrUnsupportedSchema = errors.New("unsupported database schema")
+
+// EnsureSchema creates the schema in an empty database, in one transaction
+// that also records appID and version, or checks that an existing database
+// carries both. There are no upgrade steps. name labels errors.
+func EnsureSchema(ctx context.Context, db *sql.DB, name string, appID, version int, schema string) error {
+	gotApp, gotVersion, err := SchemaID(ctx, db)
+	if err != nil {
+		return err
+	}
+	if gotApp == 0 && gotVersion == 0 {
+		var objects int
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema").Scan(&objects); err != nil {
+			return err
+		}
+		if objects == 0 {
+			ddl := fmt.Sprintf("BEGIN;\n%s\nPRAGMA application_id=%d;\nPRAGMA user_version=%d;\nCOMMIT;", schema, appID, version)
+			if _, err := db.ExecContext(ctx, ddl); err != nil {
+				return fmt.Errorf("create %s schema: %w", name, err)
+			}
+			return nil
+		}
+	}
+	return CheckSchema(name, appID, version, gotApp, gotVersion)
+}
+
+// SchemaID reads the application_id and user_version PRAGMAs.
+func SchemaID(ctx context.Context, db *sql.DB) (appID, version int, err error) {
+	if err := db.QueryRowContext(ctx, "PRAGMA application_id").Scan(&appID); err != nil {
+		return 0, 0, err
+	}
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return 0, 0, err
+	}
+	return appID, version, nil
+}
+
+// CheckSchema compares a database's identity with the one this build needs.
+func CheckSchema(name string, wantApp, wantVersion, gotApp, gotVersion int) error {
+	switch {
+	case gotApp != wantApp:
+		return fmt.Errorf("%w: the %s database was not created by minicrond 0.6 or later (application_id %#x, schema %d); pre-0.6 development databases cannot be upgraded, remove the data directory", ErrUnsupportedSchema, name, gotApp, gotVersion)
+	case gotVersion > wantVersion:
+		return fmt.Errorf("%w: %s database schema %d is newer than supported schema %d", ErrUnsupportedSchema, name, gotVersion, wantVersion)
+	case gotVersion != wantVersion:
+		return fmt.Errorf("%w: %s database schema %d is not supported (want %d)", ErrUnsupportedSchema, name, gotVersion, wantVersion)
+	}
+	return nil
 }

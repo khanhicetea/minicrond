@@ -33,6 +33,10 @@ directory (enforced by an flock on `minicron.lock`).
 | `internal/logstore` | Live-tier tagged, zstd-compressed chunk files with fsync-before-ack |
 | `internal/logdb` | Archive tier: separate SQLite log database, retention sweeps |
 | `internal/api` | HTTP API, SSE streaming, embedded SPA assets, auth (bearer + unix peer) |
+| `internal/sqlite` | Shared SQLite connection setup (writer + read pool) and schema identity checks |
+| `internal/model` | Definition, run, worker and alert-channel types shared by every package |
+| `internal/procstats` | Process CPU/RSS sampling for the Monitor page (Linux procfs) |
+| `internal/trustedpath` | Validation of `scheduler.trusted_path` executable directories |
 | `internal/fault` | Panic errors with stack traces at explicit operation boundaries |
 | `internal/alerts` | Async, bounded, best-effort alert dispatch (Telegram; interface for more) |
 | `cmd/minicrond` | CLI + daemon entrypoint; embeds the config JSON Schema |
@@ -42,17 +46,54 @@ directory (enforced by an flock on `minicron.lock`).
 ## Run lifecycle
 
 ```
-pending ──▶ running ──▶ succeeded | failed | timeout | stopped | interrupted
-   │                    (terminal)
-   └──▶ skipped | missed
+queued ──▶ pending ──▶ running ──▶ succeeded | failed | timeout | stopped | interrupted
+  │           │                    (terminal)
+  │           └──▶ failed(start_error) | stopped | interrupted | skipped | missed
+  └──▶ skipped (queue_expired, queue_full, …) | stopped (queue_cancelled)
 ```
+
+| From | Allowed next states |
+|---|---|
+| queued | pending, skipped, stopped |
+| pending | running, failed(start_error), stopped, interrupted, skipped, missed |
+| running | succeeded, failed, timeout, stopped, interrupted |
+| terminal | none |
 
 - Terminal vocabulary is non-overlapping and enforced by guarded UPDATEs
   in the store; recovery marks unobservable active runs `interrupted`.
 - A timeout stays `timeout` even if termination yields exit code 0; an
   operator stop stays `stopped`.
-- Lifecycle rows commit **before** spawning (or before returning success),
-  so history never loses a run the daemon actually started.
+- History follows execution ([ADR-16](adr/0016-execution-first.md)): a run is
+  written synchronously while the metadata database is healthy and by a
+  bounded background writer otherwise. Only idempotent API triggers, the
+  durable queue and jobs with `on_history_unavailable = "skip"` require the
+  database before starting.
+
+## Behavioral invariants
+
+- **Registry, import, reload.** A valid hash-bound TOML import is one database
+  transaction, then reconciliation; an invalid or duplicate bundle entry leaves
+  registry and runtime unchanged. An API/UI edit increments the revision, then
+  reconciles. A daemon settings reload validates settings and reconciles the
+  runtime from SQLite.
+- **Scheduling and workers.** `@every` keeps a database anchor. A schedule hash
+  change resets catch-up history. `catch_up = "none"` records one summarized
+  `missed` run; `latest` admits one. `on_overlap = "skip"` records the decline.
+  Job capacity is independent from workers. A worker operator hold suppresses
+  `always` restart.
+- **Logs.** Frames carry version, stream, flags, a stable sequence (daemon
+  ingestion order), a Unix-microsecond timestamp, a uint32 payload length and
+  the original bytes. Partial final lines, invalid UTF-8 and truncation are
+  flagged. stdout/stderr drain to EOF before close; a descendant holding an
+  inherited pipe gets a 5-second post-exit drain, then the pipe is force-closed
+  with a system annotation.
+- **Idempotency.** `Idempotency-Key` on trigger is scoped by principal and the
+  stored request hash binds the target: the same key and target return the
+  original run (200), a different target is 409.
+- **Retention.** Only terminal runs are candidates and the newest terminal run
+  of each definition is always kept. A run is deleted when either the count or
+  the age limit is exceeded; logs are deleted first, and metadata is kept when
+  log deletion fails.
 
 ## Failure handling
 
@@ -113,7 +154,9 @@ and invalid orphan indexes preserve buffers for repair or another archive attemp
 Browser, CLI, and API edits write the registry directly; TOML is an
 explicit import/export format only (previewed, hash-checked, idempotent by
 name). There is no watched config file for definitions — this removes an
-entire class of drift problems (ADR-5).
+entire class of drift problems (ADR-5). Main-config `[[init]]`, `[[job]]` and
+`[[worker]]` entries are file-owned, applied on start and reload, and
+read-only in the UI.
 
 ## Alert channels
 
@@ -129,11 +172,16 @@ See [ADR-13](adr/0013-database-alert-channels.md).
 
 Two SQLite databases, never merged:
 
-- `minicron.db` — definitions, alert-channel settings and credentials, runs, audit. Schema-versioned; binaries
-  refuse newer schemas.
+- `minicron.db` — definitions, alert-channel settings and credentials, runs,
+  audit, the durable execution queue.
 - `minicron-logs.db` — the long-term log archive with a rolling age budget
   (`logs.db_keep_for`) and optional size budget (`logs.db_max_size`), pruned
   daily at `logs.db_prune_at`.
+
+Each file carries a SQLite `application_id` and a schema version (both 1 as of
+0.6.0). A new file gets the full schema in one transaction; an existing file
+must match exactly. A newer schema, or a pre-0.6 development database (no
+`application_id`), is refused, never upgraded in place.
 
 Each database has one writer connection (transactions use `BEGIN IMMEDIATE`)
 and a small read-only pool. Run listings, metrics and log reads use the pool,
@@ -167,13 +215,14 @@ authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
 
 ## Design records
 
-- [ADR-5: v0.1 foundations](adr/0005-v01-foundations.md) — stack, SQLite
+All accepted decisions are in [`adr/`](adr/) (ADR-5 to ADR-20; earlier numbers
+were retired drafts). Start with:
+
+- [ADR-5: foundations](adr/0005-v01-foundations.md) — stack, SQLite
   authority, run vocabulary, process guarantees
 - [ADR-6: hybrid log storage](adr/0006-hybrid-log-storage.md) — file
   buffer + separate SQLite archive
-- [ADR-7: Unix-only and proxy UI](adr/0007-unix-only-and-proxy-ui.md) — optional local transport and browser authentication
-- [ADR-13: database alert channels](adr/0013-database-alert-channels.md) — channel ownership, credential storage and deletion semantics
+- [ADR-8: background-first trade-offs](adr/0008-background-first-trade-offs.md) — batched fsync, capture failure, disk budget, durable queue, small-server tuning
 - [ADR-16: execution first](adr/0016-execution-first.md) — runs never wait for history storage; PID 1 init
 - [ADR-20: log archive write path](adr/0020-log-archive-write-path.md) — file chunks, batched archive commits, deferred seal syncs
-- [`releases/`](releases/) — release notes with the v0.1 acceptance tables
-  and measurements
+- [`releases/`](releases/) — release notes

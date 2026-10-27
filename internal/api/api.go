@@ -110,10 +110,8 @@ var cachedAssets = sync.OnceValue(func() map[string]cachedAsset {
 		if name != "index.html" {
 			var compressed bytes.Buffer
 			writer := gzip.NewWriter(&compressed)
-			if _, err := writer.Write(body); err == nil {
-				err = writer.Close()
-			}
-			if err == nil {
+			_, werr := writer.Write(body)
+			if werr = errors.Join(werr, writer.Close()); werr == nil {
 				asset.gzip = compressed.Bytes()
 			}
 		}
@@ -826,8 +824,6 @@ type httpError struct {
 	// retryAfter, when positive, is sent as a Retry-After header in seconds.
 	retryAfter int
 }
-
-func (e *httpError) Error() string { return e.msg }
 
 // beginTrigger runs the idempotency check, the trigger itself, and the key
 // save while holding idemMu, so concurrent requests sharing a key cannot

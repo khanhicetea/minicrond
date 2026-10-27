@@ -19,7 +19,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 1
 
 // Chunk is one sealed, compressed stream of log frames as produced by the
 // logstore file writer. Blobs are stored verbatim so archived chunks decode
@@ -57,7 +57,7 @@ type LogDB struct {
 // file chunks.
 const FilesDirName = "log-archive"
 
-// Open creates or opens <dataDir>/minicron-logs.db and applies migrations.
+// Open creates or opens <dataDir>/minicron-logs.db.
 func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log database directory: %w", err)
@@ -68,8 +68,8 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
 	l := &LogDB{db: db, path: path, files: filepath.Join(dataDir, FilesDirName)}
-	if err := l.migrate(context.Background()); err != nil {
-		return nil, errors.Join(fmt.Errorf("migrate log database: %w", err), db.Close())
+	if err := l.initSchema(context.Background()); err != nil {
+		return nil, errors.Join(fmt.Errorf("prepare log database: %w", err), db.Close())
 	}
 	if l.rdb, err = sqlite.OpenReader(path); err != nil {
 		return nil, errors.Join(fmt.Errorf("open log database read pool: %w", err), db.Close())
@@ -140,61 +140,25 @@ func (l *LogDB) PoolStats() (writer, reader sql.DBStats) { return l.db.Stats(), 
 
 func (l *LogDB) Ping(ctx context.Context) error { return l.db.PingContext(ctx) }
 
-func (l *LogDB) migrate(ctx context.Context) error {
+func (l *LogDB) initSchema(ctx context.Context) error {
 	// Incremental auto-vacuum must be chosen before the file has a header,
-	// which switching to WAL writes. On an existing file this only records
-	// the wish; migration 3 applies it with VACUUM.
+	// which switching to WAL writes. On an existing file it is a no-op.
 	if _, err := l.db.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
 		return err
 	}
 	if _, err := l.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	var version int
-	if err := l.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return err
-	}
-	if version > SchemaVersion {
-		return fmt.Errorf("log database schema %d is newer than supported schema %d", version, SchemaVersion)
-	}
-	if version == 0 {
-		if _, err := l.db.ExecContext(ctx, schema); err != nil {
-			return fmt.Errorf("log database migration: %w", err)
-		}
-		return nil
-	}
-	if version == 1 {
-		if _, err := l.db.ExecContext(ctx, migration2); err != nil {
-			return fmt.Errorf("log database migration 2: %w", err)
-		}
-		version = 2
-	}
-	if version == 2 {
-		// Existing files were created without auto-vacuum, so pruned space was
-		// never returned to the filesystem. Switching modes needs one VACUUM,
-		// which rewrites the file and temporarily needs as much free space.
-		slog.Info("enabling incremental vacuum on the log archive; this rewrites the file once")
-		if _, err := l.db.ExecContext(ctx, "PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
-			return fmt.Errorf("log database migration 3: %w", err)
-		}
-		if _, err := l.db.ExecContext(ctx, "VACUUM"); err != nil {
-			return fmt.Errorf("log database migration 3: %w", err)
-		}
-		if _, err := l.db.ExecContext(ctx, "PRAGMA user_version=3"); err != nil {
-			return fmt.Errorf("log database migration 3: %w", err)
-		}
-		version = 3
-	}
-	if version == 3 {
-		if _, err := l.db.ExecContext(ctx, migration4); err != nil {
-			return fmt.Errorf("log database migration 4: %w", err)
-		}
-	}
-	return nil
+	return sqlite.EnsureSchema(ctx, l.db, "log", ApplicationID, SchemaVersion, schema)
 }
 
+// ApplicationID is stored in the SQLite header of minicron-logs.db ("MCRL").
+const ApplicationID = 0x4d43524c
+
+// A file chunk (ADR-20) has file_bytes > 0 and an empty blob. The partial
+// index keeps the file byte total and per-run file lookups proportional to
+// file chunks only.
 const schema = `
-BEGIN;
 CREATE TABLE log_runs (
  run_id TEXT PRIMARY KEY,
  job TEXT NOT NULL DEFAULT '',
@@ -216,26 +180,7 @@ CREATE TABLE log_chunks (
 CREATE INDEX idx_log_runs_time ON log_runs(created_us);
 CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
 CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
-CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;
-PRAGMA user_version=4;
-COMMIT;`
-
-// migration4 adds file chunks (ADR-20). The partial index keeps the file
-// byte total and the per-run file lookups proportional to file chunks only.
-const migration4 = `
-BEGIN;
-ALTER TABLE log_chunks ADD COLUMN file_bytes INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;
-PRAGMA user_version=4;
-COMMIT;`
-
-const migration2 = `
-BEGIN;
-ALTER TABLE log_chunks ADD COLUMN archived_us INTEGER NOT NULL DEFAULT 0;
-UPDATE log_chunks SET archived_us=COALESCE((SELECT updated_us FROM log_runs WHERE log_runs.run_id=log_chunks.run_id),0);
-CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
-PRAGMA user_version=2;
-COMMIT;`
+CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;`
 
 // PutChunks upserts chunks for a run. Re-archiving the same chunk after a
 // crash between the database write and the buffer-file cleanup is safe: the

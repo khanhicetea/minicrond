@@ -14,24 +14,6 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-const alertChannelsDDL = `CREATE TABLE alert_channels (
- name TEXT PRIMARY KEY, type TEXT NOT NULL, bot_token TEXT NOT NULL,
- chat_id TEXT NOT NULL, disable_notification INTEGER NOT NULL,
- batch_window INTEGER NOT NULL
-);
-`
-const migration11 = `BEGIN;
-` + alertChannelsDDL + `PRAGMA user_version=11;
-COMMIT;`
-
-// alertNotifyDDL adds the statuses a channel delivers; existing channels keep
-// the statuses that alerted before the column existed.
-const alertNotifyDDL = `ALTER TABLE alert_channels ADD COLUMN notify_on TEXT NOT NULL DEFAULT 'failed,timeout,exhausted';
-`
-const migration12 = `BEGIN;
-` + alertNotifyDDL + `PRAGMA user_version=12;
-COMMIT;`
-
 var ErrUnknownAlertChannel = errors.New("unknown or duplicate alert channel")
 var ErrAlertChannelReferenced = errors.New("alert channel is referenced by definitions")
 var ErrAlertChannelLimit = errors.New("alert channel limit reached")

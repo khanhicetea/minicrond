@@ -43,7 +43,7 @@ included in completion callbacks and run history APIs. This adds no extra
 SQLite transaction, no child sampling, and no monitoring goroutine. Worker
 restarts and job retries each have their own run record and accounting.
 
-Schema 10 adds three nullable counters. Historical, skipped, queued-expired,
+The `runs` table has three nullable counters. Historical, skipped, queued-expired,
 unspawned, and crash-interrupted runs have no accounting, not measured zero.
 A measured all-zero result is distinct from missing. Accounting is collected
 only on normal wait/completion paths; exceptional execution panics may lack it.

@@ -931,10 +931,6 @@ func (s *Service) notifyFinished(r model.Run, d model.Definition) {
 		}
 	}
 }
-func buildCommand(d model.Definition, r model.Run) (*exec.Cmd, string, error) {
-	return buildCommandWithTrustedPath(d, r, nil)
-}
-
 func buildCommandWithTrustedPath(d model.Definition, r model.Run, paths []string) (*exec.Cmd, string, error) {
 	cred, home, label, err := identity(d.RunAs)
 	if err != nil {
@@ -1058,10 +1054,6 @@ func identity(runAs string) (cred *syscall.Credential, home, label string, err e
 	}
 	return cred, u.HomeDir, u.Username, nil
 }
-func environment(d model.Definition, home string, r model.Run) ([]string, error) {
-	return environmentWithTrustedPath(d, home, r, nil)
-}
-
 func environmentWithTrustedPath(d model.Definition, home string, r model.Run, paths []string) ([]string, error) {
 	path := "/usr/bin:/bin"
 	if paths != nil {
