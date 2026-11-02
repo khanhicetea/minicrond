@@ -2,6 +2,9 @@ module github.com/khanhicetea/minicrond
 
 go 1.27.0
 
+// Keep MPTCP off by default, including in release binaries.
+godebug multipathtcp=0
+
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/klauspost/compress v1.20.0

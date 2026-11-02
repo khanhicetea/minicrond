@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+func TestMultipathTCPDisabledByDefault(t *testing.T) {
+	// Clear any runtime override to check the default embedded by go.mod.
+	t.Setenv("GODEBUG", "")
+	var dialer net.Dialer
+	if dialer.MultipathTCP() {
+		t.Fatal("default dialer must not use MPTCP")
+	}
+	var listener net.ListenConfig
+	if listener.MultipathTCP() {
+		t.Fatal("default listener must not use MPTCP")
+	}
+}
+
 func TestLocalCLIUsesDataDirectorySocket(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MINICRON_DATA", dir)

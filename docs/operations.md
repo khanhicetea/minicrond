@@ -498,6 +498,28 @@ by non-root users, including symlink routes; they are revalidated on every spawn
   daemonized descendants can escape; minicrond is not a hostile-workload
   sandbox.
 
+### MPTCP disabled by default
+
+Builds embed `multipathtcp=0` through the `go.mod` `godebug` directive, so
+release binaries, source builds and the container image default to ordinary
+TCP for Go dialers and listeners. No runtime environment variable is needed.
+An explicit runtime `GODEBUG` setting can override this default; do not enable
+MPTCP on an unpatched kernel.
+
+For an existing binary, disable MPTCP at runtime:
+
+```sh
+GODEBUG=multipathtcp=0 minicrond daemon
+```
+
+If `GODEBUG` already contains other settings, retain them and append
+`,multipathtcp=0`. This is a process-level precaution against Linux MPTCP
+vulnerabilities, not a kernel fix or a system-wide disable. The embedded default
+does not set `GODEBUG` in job/worker environments or prevent child processes
+from using MPTCP. Update the host kernel; administrators can also disable MPTCP
+in the relevant network namespace with `sudo sysctl -w net.mptcp.enabled=0`
+where supported. Containers share the host kernel.
+
 ### Browser XSS defenses
 
 The UI renders job definitions, API errors, and decoded log output as React
