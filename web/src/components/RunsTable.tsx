@@ -63,7 +63,7 @@ export default function RunsTable({ runs, compact = false, bare = false }: { run
               <td className="muted">{run.trigger}</td>
               <td className="text-right">
                 <Link
-                  href={`/runs/${run.run_id}`}
+                  href={`/runs/${encodeURIComponent(run.run_id)}`}
                   className="btn-sub !px-2 !py-1.5"
                   title="View log"
                   aria-label={`View log for ${run.job}`}
@@ -107,7 +107,7 @@ export function RunsList({ runs, currentId }: { runs: Run[]; currentId?: string 
         return (
           <li key={run.run_id}>
             <Link
-              href={`/runs/${run.run_id}`}
+              href={`/runs/${encodeURIComponent(run.run_id)}`}
               aria-current={current ? 'page' : undefined}
               className={`group flex items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors ${
                 current

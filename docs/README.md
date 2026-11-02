@@ -10,6 +10,7 @@ embedded web UI. Linux is the supported platform.
 | [configuration.md](configuration.md) | Bootstrap TOML reference + full job/worker definition reference |
 | [cli.md](cli.md) | Every CLI command, flags, and environment variable |
 | [http-api.md](http-api.md) | HTTP API surface, auth model, SSE log streaming, OpenAPI |
+| [embedding-ui.md](embedding-ui.md) | Vendoring the UI behind a gateway: bundle contract, BASE_PATH rewrites, media types, untrusted API data |
 | [operations.md](operations.md) | Runbook: data layout, hybrid log storage, backup/restore, retention, tokens, security, troubleshooting |
 | [architecture.md](architecture.md) | Components, run lifecycle, storage design, design decisions |
 | [adr/](adr/) | Accepted architecture decision records (ADR-5 to ADR-20). Key ones: [ADR-8](adr/0008-background-first-trade-offs.md) background-first trade-offs, [ADR-9](adr/0009-durable-execution-queue.md) durable execution queue, [ADR-10](adr/0010-log-disk-budget.md) log disk budget, [ADR-16](adr/0016-execution-first.md) execution first, [ADR-20](adr/0020-log-archive-write-path.md) log archive write path |

@@ -346,7 +346,7 @@ function MainTab() {
                     </Link>{' '}
                     {run.status} ({formatSpan(run.started_at, run.ended_at)})
                     {run.exit_code !== undefined && run.exit_code !== 0 ? ` · exit ${run.exit_code}` : ''} ·{' '}
-                    <Link href={`/runs/${run.run_id}`} className="text-blue-300 hover:underline">
+                    <Link href={`/runs/${encodeURIComponent(run.run_id)}`} className="text-blue-300 hover:underline">
                       run {shortRunId(run.run_id)}
                     </Link>
                   </span>

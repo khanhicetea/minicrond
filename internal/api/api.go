@@ -455,6 +455,11 @@ func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 		// (any UI path), bundled assets, and health probes are public: they
 		// contain no secrets, and the SPA authenticates its own API calls.
 		isAPI := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/openapi.json"
+		if isAPI {
+			// Keep ServeMux redirects/method errors within the gateway's API
+			// media-type allowlist too; data handlers override this default.
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		}
 		if isAPI && s.closing.Load() {
 			writeError(w, http.StatusServiceUnavailable, "not_ready", "daemon is shutting down")
 			return
@@ -1651,6 +1656,8 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	base := s.basePath + "/"
 	page := strings.Replace(string(asset.body), `<base href="/" />`, `<base href="`+base+`" />`, 1)
+	// Gateway compatibility contract: docs/embedding-ui.md. Bento applies
+	// these same literal rewrites to the release's vendored index.html.
 	// Vite emits relative links for the entry script and stylesheet.
 	// Put those HTML links under the asset route; the <base> tag
 	// resolves them under BASE_PATH on every client-side route.

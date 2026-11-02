@@ -45,6 +45,19 @@ a trusted embedding proxy must replace the former and the latter directive
 with a narrow framing policy, preserving the other CSP restrictions. Adding
 a second CSP header cannot relax the daemon's framing restriction.
 
+## Response media types and gateway embedding
+
+`/api/v1/*` responses use only `application/json`, `text/plain`,
+`text/event-stream`, or `application/toml` (optional media-type parameters
+such as `charset=utf-8` are permitted). This includes errors and router
+redirects; API routes never serve HTML or executable assets. Bento rejects
+other upstream response types with 502. The UI needs only `/api/v1/*`, not
+health/readiness probes or the OpenAPI endpoint.
+
+Gateways can vendor the release's trusted static UI instead of proxying it.
+See [Embedding the UI](embedding-ui.md) for the pinned bundle layout, literal
+HTML rewrites, BASE_PATH behavior, and untrusted-API rendering rules.
+
 ## Endpoints
 
 ### Daemon

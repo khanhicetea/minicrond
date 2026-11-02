@@ -29,6 +29,17 @@ jobs:
           go test -count=1 ./...
           go vet ./...
           CGO_ENABLED=1 go test -race -count=1 ./...
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Check UI gateway and security contracts
+        working-directory: web
+        run: |
+          npm ci
+          npm run check
+          npm test
       - name: Check contracts and shipping build
         run: |
           make contracts
@@ -61,6 +72,31 @@ jobs:
             # Deleting a tag demotes its release to a draft; re-publish it.
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
           fi
+
+  upload-web:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.tag }}
+      - name: Package and upload vendored UI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          ASSET="minicrond-web-${TAG}.tar.gz"
+          mkdir -p dist
+          LC_ALL=C tar --sort=name --format=ustar --mtime=@0 \
+            --owner=0 --group=0 --numeric-owner \
+            -C internal/api/assets -cf - . | gzip -n > "dist/${ASSET}"
+          (cd dist && sha256sum "$ASSET" > "${ASSET}.sha256")
+          gh release upload "$TAG" "dist/${ASSET}" "dist/${ASSET}.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
   build-and-upload:
     needs: prepare-release

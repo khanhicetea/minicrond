@@ -138,7 +138,7 @@ export default function Jobs() {
     const blob = new Blob([text], { type: 'application/toml' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `${definition.name}.toml`;
+    link.download = 'minicron-definition.toml';
     link.click();
     URL.revokeObjectURL(link.href);
   };
@@ -396,7 +396,7 @@ function Row({
           <>
             <div>
               <Link
-                href={`/runs/${lastRun.run_id}`}
+                href={`/runs/${encodeURIComponent(lastRun.run_id)}`}
                 className="text-sky-300 hover:text-sky-200 hover:underline"
                 aria-label={`Open last run ${lastRun.run_id}`}
               >

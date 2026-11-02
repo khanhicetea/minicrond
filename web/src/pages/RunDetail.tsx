@@ -186,7 +186,7 @@ export default function RunDetail() {
               className="btn-sub"
               onClick={() => {
                 setDownloadError('');
-                downloadFile(api.rawLogUrl(id), `${data.run_id}.log`, api.download).catch(err => setDownloadError(errorText(err)));
+                downloadFile(api.rawLogUrl(id), 'minicron-run.log', api.download).catch(err => setDownloadError(errorText(err)));
               }}
             >
               <Icon name="download" size={14} />

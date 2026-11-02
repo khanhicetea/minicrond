@@ -69,7 +69,7 @@ export default function Monitor() {
           <tbody>
             <tr className="bg-base-200/50"><td className="font-semibold"><span className="inline-flex items-center gap-2"><Icon name="settings" size={14} className="text-sky-400" />minicrond</span></td><td><span className="chip chip-info !py-0.5">daemon</span></td><td>{data.daemon_pid}</td><td>{percent('daemon')}</td><td>{memoryMiB(data.daemon?.rss_bytes)}</td><td>{data.daemon ? `${(data.daemon.cpu_us / 1e6).toFixed(3)} s` : '—'}</td></tr>
             {data.items.map(item => <tr key={item.run_id}>
-              <td><Link className="inline-flex items-center gap-2 font-medium text-sky-300 hover:text-sky-200" href={`/runs/${item.run_id}`}><Icon name={item.kind === 'worker' ? 'terminal' : 'calendar'} size={14} />{item.job}</Link><span className="ml-2 text-xs faint">#{shortRunId(item.run_id)}</span></td>
+              <td><Link className="inline-flex items-center gap-2 font-medium text-sky-300 hover:text-sky-200" href={`/runs/${encodeURIComponent(item.run_id)}`}><Icon name={item.kind === 'worker' ? 'terminal' : 'calendar'} size={14} />{item.job}</Link><span className="ml-2 text-xs faint">#{shortRunId(item.run_id)}</span></td>
               <td>{item.kind}</td><td>{item.pid || '—'}</td><td>{percent(item.run_id)}</td><td>{memoryMiB(item.stats?.rss_bytes)}</td><td>{item.stats ? `${(item.stats.cpu_us / 1e6).toFixed(3)} s` : '—'}</td>
             </tr>)}
           </tbody>

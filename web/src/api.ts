@@ -1,5 +1,5 @@
 import { auth } from './auth';
-import { publicPath } from './lib/base';
+import { apiPath } from './lib/base';
 import type { AlertChannel, AlertChannelInput, DaemonInfo, Definition, Frame, JobDetail, Run, RunAlert, RunMetrics, WorkerState, MonitorSnapshot } from './types';
 
 export class ApiError extends Error {
@@ -33,7 +33,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const headers: Record<string, string> = { ...options.headers };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(publicPath(path), {
+  const response = await fetch(apiPath(path), {
     method: options.method ?? 'GET',
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
@@ -163,7 +163,7 @@ export const api = {
   download: async (url: string): Promise<Blob> => {
     const headers: Record<string, string> = {};
     if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-    const response = await fetch(publicPath(url), { headers });
+    const response = await fetch(apiPath(url), { headers });
     if (!response.ok) {
       if (response.status === 401) auth.revoke();
       throw new ApiError(response.status, 'download_failed', 'download failed');
@@ -191,7 +191,7 @@ export async function streamRunLogs(
 ): Promise<void> {
   const headers: Record<string, string> = {};
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
-  const response = await fetch(publicPath(`/api/v1/runs/${encodeURIComponent(runId)}/log/stream?after=${after}`), {
+  const response = await fetch(apiPath(`/api/v1/runs/${encodeURIComponent(runId)}/log/stream?after=${after}`), {
     headers,
     signal,
   });
