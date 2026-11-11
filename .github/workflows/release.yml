@@ -21,8 +21,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          # Keep CI's compiler ahead of the module's Go language version.
-          go-version: "1.27.3"
+          # Use the patched Go toolchain required by the module.
+          go-version: "1.27.4"
           cache: true
       - name: Test and vet
         run: |
@@ -115,8 +115,8 @@ jobs:
           ref: ${{ needs.prepare-release.outputs.tag }}
       - uses: actions/setup-go@v7
         with:
-          # Keep CI's compiler ahead of the module's Go language version.
-          go-version: "1.27.3"
+          # Use the patched Go toolchain required by the module.
+          go-version: "1.27.4"
           cache: true
       - name: Build Linux binary
         env:

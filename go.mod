@@ -1,13 +1,13 @@
 module github.com/khanhicetea/minicrond
 
-go 1.27.0
+go 1.27.4
 
 // Keep MPTCP off by default, including in release binaries.
 godebug multipathtcp=0
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.2
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/sys v0.48.0

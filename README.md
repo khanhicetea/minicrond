@@ -2,8 +2,8 @@
 
 A small, trustworthy local job scheduler and process supervisor in a
 single binary: durable cron jobs, supervised workers, compressed tagged
-logs, a REST + SSE API, and an embedded web UI. Linux. Current release: 0.7.0
-([release notes](docs/releases/v0.7.0.md)).
+logs, a REST + SSE API, and an embedded web UI. Linux. Current release: 0.7.1
+([release notes](docs/releases/v0.7.1.md)).
 
 ```
 CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
