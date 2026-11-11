@@ -19,7 +19,8 @@ output, IDs and URLs, are untrusted data even over a local socket.
   1. `<base href="/" />` → `<base href="<BASE_PATH>/" />` (once).
   2. `src="./` → `src="assets/` (all).
   3. `href="./` → `href="assets/` (all).
-- `BASE_PATH` is an empty string at the origin root, otherwise a validated
+- `BASE_PATH` denotes the URL prefix (configured on the daemon with
+  `MINICROND_BASE_PATH`); it is an empty string at the origin root, otherwise a validated
   absolute path prefix without a trailing slash (e.g. `/tools/minicron`).
   Use a trailing slash in the HTML base. Redirect the bare prefix to its
   slash-terminated form. Do not accept arbitrary HTML in this value.

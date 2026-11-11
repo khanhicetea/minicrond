@@ -154,16 +154,16 @@ export default function Runs() {
       </section>
 
       <section className="runs-pane runs-output" aria-label="Selected run output">
-        {!selectedRun ? (
+        {selectedJob && runId && detail.isPending ? (
+          <div className="p-5 text-sm muted">Loading run output…</div>
+        ) : selectedJob && runId && detail.isError ? (
+          <div role="alert" className="p-5 text-sm text-red-400">Failed to load run: {errorText(detail.error)}</div>
+        ) : !selectedRun ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center muted">
             <Icon name="terminal" size={24} className="faint" />
             <p>Select a run to view its output.</p>
           </div>
-        ) : detail.isPending ? (
-          <div className="p-5 text-sm muted">Loading run output…</div>
-        ) : detail.isError ? (
-          <div role="alert" className="p-5 text-sm text-red-400">Failed to load run: {errorText(detail.error)}</div>
-        ) : (
+        ) : detail.isSuccess ? (
           <>
             <div className="runs-output-header">
               <div className="min-w-0">
@@ -218,7 +218,7 @@ export default function Runs() {
               {detail.data.exit_code !== undefined && <span className="ml-3">Exit code: {detail.data.exit_code}</span>}
             </div>
           </>
-        )}
+        ) : null}
       </section>
     </div>
   );

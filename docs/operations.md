@@ -3,7 +3,7 @@
 ## Data directory
 
 Default `~/.local/share/minicron`, or `/var/lib/minicron` when there is no
-usable HOME (`--data-dir` / `MINICRON_DATA` to change). The daemon **requires**
+usable HOME (`--data-dir` / `MINICROND_DATA` to change). The daemon **requires**
 it to be private (group/other bits zero). An empty directory owned by the
 daemon's user (a fresh container volume) is tightened to 0700 at startup; any
 other non-private directory makes it refuse to start.
@@ -387,7 +387,7 @@ minicrond as a container's process manager:
   used at shutdown plus 10 s. If the runtime kills the daemon first, nothing is
   corrupted: the next start marks the runs `interrupted` and salvages their logs.
 - **Data volume.** Mount a volume at the data directory
-  (`MINICRON_DATA=/var/lib/minicron` in the image). An **empty** directory owned
+  (`MINICROND_DATA=/var/lib/minicron` in the image). An **empty** directory owned
   by the daemon's user is tightened to 0700 at startup (runtimes create mount
   points 0755 or 1777); a non-empty directory with group/other access is refused.
   Run one daemon per data directory: a second container on the same volume exits
@@ -450,7 +450,7 @@ minicrond as a container's process manager:
 
 Set `server.tcp_enabled = false` and keep `server.unix_socket = true`, then
 restart the daemon. This is a general local service option: the CLI and all
-HTTP routes use `MINICRON_DATA/minicron.sock`, while no TCP port is opened.
+HTTP routes use `MINICROND_DATA/minicron.sock`, while no TCP port is opened.
 Keep the data directory mode 0700 and socket mode 0600. The socket accepts
 the daemon UID and root; a proxy therefore needs a same-UID relay or process
 identity, with access granted only to trusted operators.
@@ -468,7 +468,7 @@ a second CSP header does not override the original restriction.
 Never grant access by trusting a caller-supplied identity header.
 
 For an unprivileged numeric UID without a passwd entry, set an absolute
-`MINICRON_DATA` and a usable `HOME` for the daemon process. Set each job's
+`MINICROND_DATA` and a usable `HOME` for the daemon process. Set each job's
 `working_dir` and, if needed, `env.HOME` explicitly. Jobs inherit the actual
 daemon UID/GID; they do not inherit an ambient `HOME`, `USER`, or `LOGNAME`
 when that UID has no passwd entry. Set `env.PATH` for shell commands and

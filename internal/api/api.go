@@ -124,7 +124,7 @@ type localKey struct{}
 
 // Charts emit style attributes, but do not need inline stylesheet blocks.
 // The SPA submits forms through fetch and needs its same-origin <base> tag
-// for deployments under BASE_PATH.
+// for deployments under MINICROND_BASE_PATH.
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; script-src-attr 'none'; " +
 	"style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
 	"base-uri 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; " +
@@ -195,15 +195,15 @@ func (s *Server) SetBasePath(value string) error {
 		return nil
 	}
 	if !strings.HasPrefix(value, "/") || strings.Contains(value, "//") {
-		return fmt.Errorf("BASE_PATH must be an absolute URL path")
+		return fmt.Errorf("MINICROND_BASE_PATH must be an absolute URL path")
 	}
 	for _, segment := range strings.Split(value[1:], "/") {
 		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("BASE_PATH must not contain dot segments")
+			return fmt.Errorf("MINICROND_BASE_PATH must not contain dot segments")
 		}
 		for _, char := range segment {
 			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("-._~", char)) {
-				return fmt.Errorf("BASE_PATH contains an invalid URL path character %q", char)
+				return fmt.Errorf("MINICROND_BASE_PATH contains an invalid URL path character %q", char)
 			}
 		}
 	}
@@ -393,7 +393,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 func (s *Server) middleware(next http.Handler, local bool) http.Handler {
 	allowIframe := true
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("MINICRON_ALLOW_IFRAME"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MINICROND_ALLOW_IFRAME"))) {
 	case "", "0", "false", "f", "no", "n", "off":
 		allowIframe = false
 	}
@@ -1660,7 +1660,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	// these same literal rewrites to the release's vendored index.html.
 	// Vite emits relative links for the entry script and stylesheet.
 	// Put those HTML links under the asset route; the <base> tag
-	// resolves them under BASE_PATH on every client-side route.
+	// resolves them under MINICROND_BASE_PATH on every client-side route.
 	page = strings.ReplaceAll(page, `src="./`, `src="assets/`)
 	page = strings.ReplaceAll(page, `href="./`, `href="assets/`)
 	_, _ = io.WriteString(w, page)

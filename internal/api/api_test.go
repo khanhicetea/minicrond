@@ -89,7 +89,7 @@ func TestBasePath(t *testing.T) {
 		`/bad"><script>alert(1)</script>`, "/bad&quote;", "/bad%22", "/bad\npath",
 	} {
 		if err := s.SetBasePath(invalid); err == nil {
-			t.Errorf("accepted invalid BASE_PATH %q", invalid)
+			t.Errorf("accepted invalid MINICROND_BASE_PATH %q", invalid)
 		}
 	}
 	if err := s.SetBasePath("/tools/minicron/"); err != nil {
@@ -357,7 +357,7 @@ func TestDaemonRunAsCapabilityReflectsPrivileges(t *testing.T) {
 }
 
 func TestSecurityHeadersAndURLCap(t *testing.T) {
-	t.Setenv("MINICRON_ALLOW_IFRAME", "")
+	t.Setenv("MINICROND_ALLOW_IFRAME", "")
 	s, token, _ := setup(t)
 	rec := call(s, false, "GET", "/api/v1/daemon", token, "", nil)
 	for header, want := range map[string]string{
@@ -381,7 +381,7 @@ func TestSecurityHeadersAndURLCap(t *testing.T) {
 }
 
 func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
-	t.Setenv("MINICRON_ALLOW_IFRAME", "")
+	t.Setenv("MINICROND_ALLOW_IFRAME", "")
 	s, _, _ := setup(t)
 	var script string
 	for name := range cachedAssets() {
@@ -427,6 +427,7 @@ func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
 }
 
 func TestIframeEnvironmentOnBrowserResponses(t *testing.T) {
+	t.Setenv("MINICRON_ALLOW_IFRAME", "1") // The old name must not enable framing.
 	s, _, _ := setup(t)
 	for _, tt := range []struct {
 		value string
@@ -439,7 +440,7 @@ func TestIframeEnvironmentOnBrowserResponses(t *testing.T) {
 		{" TRUE ", true}, {"enabled", true},
 	} {
 		t.Run(tt.value, func(t *testing.T) {
-			t.Setenv("MINICRON_ALLOW_IFRAME", tt.value)
+			t.Setenv("MINICROND_ALLOW_IFRAME", tt.value)
 			for _, local := range []bool{false, true} {
 				for _, base := range []string{"", "/tools/minicron"} {
 					if err := s.SetBasePath(base); err != nil {

@@ -8,7 +8,7 @@ load_env
 
 if ! pid=$(daemon_pid); then
 	echo "daemon is not running"
-	rm -f "$MINICRON_DATA/minicron.sock"
+	rm -f "$MINICROND_DATA/minicron.sock"
 	exit 0
 fi
 
@@ -27,4 +27,4 @@ if kill -0 "$pid" 2>/dev/null; then
 else
 	echo "stopped cleanly"
 fi
-rm -f "$MINICRON_DATA/minicron.sock"
+rm -f "$MINICROND_DATA/minicron.sock"

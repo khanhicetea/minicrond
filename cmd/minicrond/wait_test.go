@@ -17,8 +17,8 @@ import (
 // terminal and prints the final run, not the interim 202 body.
 func TestRunWaitPollsQueuedRunToTerminal(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("MINICRON_DATA", dir)
-	t.Setenv("MINICRON_URL", "")
+	t.Setenv("MINICROND_DATA", dir)
+	t.Setenv("MINICROND_URL", "")
 	t.Cleanup(closeClient)
 	listener, err := net.Listen("unix", filepath.Join(dir, "minicron.sock"))
 	if err != nil {

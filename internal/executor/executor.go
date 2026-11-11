@@ -1065,7 +1065,7 @@ func environmentWithTrustedPath(d model.Definition, home string, r model.Run, pa
 	}
 	if d.EnvBase == "inherit" {
 		env = slices.DeleteFunc(os.Environ(), func(v string) bool {
-			return strings.HasPrefix(v, "MINICRON_") || (home == "" && (strings.HasPrefix(v, "HOME=") || strings.HasPrefix(v, "USER=") || strings.HasPrefix(v, "LOGNAME=")))
+			return strings.HasPrefix(v, "MINICROND_") || (home == "" && (strings.HasPrefix(v, "HOME=") || strings.HasPrefix(v, "USER=") || strings.HasPrefix(v, "LOGNAME=")))
 		})
 		env = append(env, "TZ="+d.Timezone)
 	}
@@ -1086,7 +1086,7 @@ func environmentWithTrustedPath(d model.Definition, home string, r model.Run, pa
 		}
 		env = append(env, k+"="+value)
 	}
-	env = append(env, "MINICRON_JOB="+d.Name, "MINICRON_RUN_ID="+r.ID, "MINICRON_TRIGGER="+r.Trigger, "MINICRON_ATTEMPT="+strconv.Itoa(r.Attempt))
+	env = append(env, "MINICROND_JOB="+d.Name, "MINICROND_RUN_ID="+r.ID, "MINICROND_TRIGGER="+r.Trigger, "MINICROND_ATTEMPT="+strconv.Itoa(r.Attempt))
 	return env, nil
 }
 func readEnvFile(path string) (map[string]string, error) {

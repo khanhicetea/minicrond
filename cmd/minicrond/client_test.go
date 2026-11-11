@@ -16,6 +16,24 @@ import (
 	"time"
 )
 
+func TestAPIBaseURLEnvironment(t *testing.T) {
+	t.Setenv("MINICROND_URL", "")
+	t.Setenv("MINICRON_URL", "http://old.example")
+	t.Setenv("BASE_PATH", "/old")
+	t.Setenv("MINICROND_BASE_PATH", "")
+	if got := apiBaseURL(); got != "http://minicron" {
+		t.Fatalf("legacy BASE_PATH affected URL: %q", got)
+	}
+	t.Setenv("MINICROND_BASE_PATH", "/new/")
+	if got := apiBaseURL(); got != "http://minicron/new" {
+		t.Fatalf("new base path: %q", got)
+	}
+	t.Setenv("MINICROND_URL", "http://example.com/prefix/")
+	if got := apiBaseURL(); got != "http://example.com/prefix" {
+		t.Fatalf("MINICROND_URL override: %q", got)
+	}
+}
+
 func openFDs() int {
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
@@ -38,8 +56,8 @@ func waitFor(cond func() bool) bool {
 
 func TestCLIReusesSmallUnixConnectionSet(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("MINICRON_DATA", dir)
-	t.Setenv("MINICRON_URL", "")
+	t.Setenv("MINICROND_DATA", dir)
+	t.Setenv("MINICROND_URL", "")
 	t.Cleanup(closeClient)
 	listener, err := net.Listen("unix", filepath.Join(dir, "minicron.sock"))
 	if err != nil {
@@ -96,14 +114,14 @@ func TestCLIReusesSmallUnixConnectionSet(t *testing.T) {
 }
 
 func TestClientIsSharedPerTargetAndResetOnClose(t *testing.T) {
-	t.Setenv("MINICRON_URL", "")
-	t.Setenv("MINICRON_DATA", t.TempDir())
+	t.Setenv("MINICROND_URL", "")
+	t.Setenv("MINICROND_DATA", t.TempDir())
 	t.Cleanup(closeClient)
 	a := client()
 	if client() != a {
 		t.Fatal("client() must return the shared client for the same target")
 	}
-	t.Setenv("MINICRON_DATA", t.TempDir())
+	t.Setenv("MINICROND_DATA", t.TempDir())
 	if client() == a {
 		t.Fatal("client() must not reuse a client for a different target")
 	}
@@ -117,7 +135,7 @@ func logServer(t *testing.T, requests *atomic.Int64) {
 	t.Helper()
 	server := newLogServer(requests)
 	t.Cleanup(server.Close)
-	t.Setenv("MINICRON_URL", server.URL)
+	t.Setenv("MINICROND_URL", server.URL)
 	t.Cleanup(closeClient)
 }
 
@@ -191,7 +209,7 @@ func busyLogServer(t *testing.T, refusals int, retryAfter string, requests *atom
 		_, _ = w.Write([]byte(`{"items":[]}` + "\n"))
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("MINICRON_URL", server.URL)
+	t.Setenv("MINICROND_URL", server.URL)
 	t.Cleanup(closeClient)
 }
 
@@ -275,7 +293,7 @@ func TestFollowLogsDoesNotRetryOtherErrors(t *testing.T) {
 			// A 503 for another reason (not_ready, stream_capacity) is not read admission.
 			_, _ = w.Write([]byte(`{"error":{"code":"not_ready","message":"daemon is shutting down"}}`))
 		}))
-		t.Setenv("MINICRON_URL", server.URL)
+		t.Setenv("MINICROND_URL", server.URL)
 		err := followLogs("run", true, func(time.Duration) error { t.Error("waited"); return errors.New("waited") })
 		closeClient()
 		server.Close()

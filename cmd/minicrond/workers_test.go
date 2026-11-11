@@ -29,7 +29,7 @@ func TestWorkerCommands(t *testing.T) {
 				_, _ = w.Write([]byte(`{"ok":true}`))
 			}))
 			defer server.Close()
-			t.Setenv("MINICRON_URL", server.URL)
+			t.Setenv("MINICROND_URL", server.URL)
 			defer closeClient()
 			var err error
 			if action == "runs" {

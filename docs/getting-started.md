@@ -90,8 +90,8 @@ need no token:
 ```
 
 Every run gets a durable row: status, exit code, timing, trigger, attempt,
-and log reference. Jobs receive `MINICRON_JOB`, `MINICRON_RUN_ID`,
-`MINICRON_TRIGGER`, and `MINICRON_ATTEMPT` in their environment.
+and log reference. Jobs receive `MINICROND_JOB`, `MINICROND_RUN_ID`,
+`MINICROND_TRIGGER`, and `MINICROND_ATTEMPT` in their environment.
 
 ## 6. Open the web UI
 
@@ -133,7 +133,7 @@ To migrate existing cron jobs, run the interactive import against the desired
 
 ```sh
 minicrond crontab  # run as Alice: Alice's crontab -> Alice's user daemon
-sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
 # Alice's crontab -> root service, with every imported job set to run_as=alice
 ```
 

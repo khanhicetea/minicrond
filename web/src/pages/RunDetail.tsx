@@ -176,7 +176,7 @@ export default function RunDetail() {
             {mode === 'token' && <button
               type="button"
               className="btn-sub"
-              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" ${publicURL(`/api/v1/runs/${data.run_id}`)}`)}
+              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICROND_TOKEN" ${publicURL(`/api/v1/runs/${data.run_id}`)}`)}
             >
               <Icon name="copy" size={14} />
               Copy as curl

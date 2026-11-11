@@ -35,7 +35,7 @@ json_num() {
 }
 
 echo "== 1. config validates"
-if "$BIN" validate "$MINICRON_CONFIG" >/dev/null; then
+if "$BIN" validate "$MINICROND_CONFIG" >/dev/null; then
 	ok "validate"
 else
 	bad "validate"
@@ -64,7 +64,7 @@ else
 fi
 logs=$("$BIN" logs "$run_id")
 if echo "$logs" | grep -q "hello from minicron example" && echo "$logs" | grep -q "run_id=$run_id"; then
-	ok "logs contain greeting + injected MINICRON_RUN_ID"
+	ok "logs contain greeting + injected MINICROND_RUN_ID"
 else
 	bad "logs missing expected output"
 fi

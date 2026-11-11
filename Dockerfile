@@ -24,8 +24,8 @@ RUN apt-get update \
  && install -d -m 0700 /var/lib/minicron
 COPY --from=build /out/minicrond /usr/local/bin/minicrond
 COPY examples/docker/minicron.toml /etc/minicron/minicron.toml
-ENV MINICRON_CONFIG=/etc/minicron/minicron.toml \
-    MINICRON_DATA=/var/lib/minicron
+ENV MINICROND_CONFIG=/etc/minicron/minicron.toml \
+    MINICROND_DATA=/var/lib/minicron
 VOLUME ["/var/lib/minicron"]
 # minicrond detects that it is PID 1 and runs a built-in init that forwards
 # signals and reaps orphaned processes; no tini/--init is needed (set

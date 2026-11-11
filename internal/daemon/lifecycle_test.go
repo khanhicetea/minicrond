@@ -4,11 +4,38 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/khanhicetea/minicrond/internal/executor"
 	"github.com/khanhicetea/minicrond/internal/model"
 )
+
+func TestBasePathEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, old, current string
+		wantBasePathError  bool
+	}{
+		{"legacy ignored", "invalid", "", false},
+		{"new validated", "", "invalid", true},
+		{"new takes precedence", "invalid", "/valid", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BASE_PATH", tc.old)
+			t.Setenv("MINICROND_BASE_PATH", tc.current)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "minicron.toml")
+			if err := os.WriteFile(path, []byte("[server]\nbind='127.0.0.1:99999'\nunix_socket=false\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d := &Daemon{ConfigPath: path, DataDir: filepath.Join(dir, "data")}
+			err := d.Run(t.Context())
+			if err == nil || strings.Contains(err.Error(), "MINICROND_BASE_PATH") != tc.wantBasePathError {
+				t.Fatalf("unexpected startup error: %v", err)
+			}
+		})
+	}
+}
 
 func TestStartupFailureStopsExecutionAndReleasesLock(t *testing.T) {
 	dir := t.TempDir()

@@ -6,5 +6,5 @@
 set -eu
 say=${1:-hello}
 echo "hello from minicron example: $say"
-echo "job=$MINICRON_JOB run_id=$MINICRON_RUN_ID trigger=$MINICRON_TRIGGER attempt=$MINICRON_ATTEMPT"
+echo "job=$MINICROND_JOB run_id=$MINICROND_RUN_ID trigger=$MINICROND_TRIGGER attempt=$MINICROND_ATTEMPT"
 echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -9,21 +9,21 @@ With no arguments the binary starts the daemon (same as `daemon`).
 ## Connection model
 
 - **Default (local):** CLI commands talk to the daemon over its mode-0600
-  Unix socket (`$MINICRON_DATA/minicron.sock`). No token needed — access is
+  Unix socket (`$MINICROND_DATA/minicron.sock`). No token needed — access is
   granted by filesystem permission plus local peer credentials.
-- **Remote:** set `MINICRON_URL` (e.g. `http://host:7423`) and the CLI
-  switches to HTTP, requiring `MINICRON_TOKEN` (a bearer token).
+- **Remote:** set `MINICROND_URL` (e.g. `http://host:7423`) and the CLI
+  switches to HTTP, requiring `MINICROND_TOKEN` (a bearer token).
 
 ### Environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MINICRON_CONFIG` | `minicron.toml` | Bootstrap config path (`daemon`, `init`, `validate`) |
-| `MINICRON_DATA` | `~/.local/share/minicron` | Data directory (`daemon`, `logs`, local CLI socket) |
+| `MINICROND_CONFIG` | `minicron.toml` | Bootstrap config path (`daemon`, `init`, `validate`) |
+| `MINICROND_DATA` | `~/.local/share/minicron` | Data directory (`daemon`, `logs`, local CLI socket) |
 | `GOGC` | unset (daemon uses `50`) | Go garbage-collector target. The daemon collects at +50% heap growth when this is unset; set `GOGC=100` for the Go default, or see [ADR-17](adr/0017-gc-pacing.md) |
-| `MINICRON_URL` | unset | Switch CLI to TCP/HTTP mode |
-| `MINICRON_TOKEN` | unset | Bearer token for `MINICRON_URL` and `export` |
-| `MINICRON_BIN` | — | Sandbox only: binary override used by `examples/local-test` |
+| `MINICROND_URL` | unset | Switch CLI to TCP/HTTP mode |
+| `MINICROND_TOKEN` | unset | Bearer token for `MINICROND_URL` and `export` |
+| `MINICROND_BIN` | — | Sandbox only: binary override used by `examples/local-test` |
 
 ## Commands
 
@@ -81,7 +81,7 @@ because the metadata database is failing).
 minicrond healthcheck
 ```
 
-GETs `/readyz` over the Unix socket (or `MINICRON_URL`) within 3 s. Prints
+GETs `/readyz` over the Unix socket (or `MINICROND_URL`) within 3 s. Prints
 nothing on success; exits 0 when the daemon is ready, 1 otherwise. Suitable for
 Docker `HEALTHCHECK`. Readiness does not depend on the databases.
 
@@ -134,18 +134,18 @@ channels or via the alert-channel API.
 ```sh
 minicrond crontab
 # To import Alice's crontab into the root system service instead:
-sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
 ```
 
 Without `--user`, reads the calling user's crontab and imports into the daemon
-at `$MINICRON_DATA/minicron.sock` (default: that user's data directory). With
+at `$MINICROND_DATA/minicron.sock` (default: that user's data directory). With
 `--user NAME`, the CLI must run as root: it reads and comments NAME's crontab
 using `crontab -u NAME`, checks that the selected local daemon supports
 `run_as`, and sets `run_as = "NAME"` on every imported job so they run as NAME,
-not root. Set `MINICRON_DATA=/var/lib/minicron` to target the root system
+not root. Set `MINICROND_DATA=/var/lib/minicron` to target the root system
 service; without it, a root CLI would look for a socket under root's home.
 The daemon's TCP port does not select a daemon for this command, and
-`MINICRON_URL` is rejected. Do not run `sudo minicrond crontab` without
+`MINICROND_URL` is rejected. Do not run `sudo minicrond crontab` without
 `--user` when intending to migrate a non-root user's crontab: that reads
 root's crontab instead.
 

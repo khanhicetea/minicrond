@@ -300,7 +300,7 @@ function MainTab() {
             {mode === 'token' && <button
               type="button"
               className="btn-sub"
-              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICRON_TOKEN" ${publicURL('/api/v1/daemon')}`)}
+              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICROND_TOKEN" ${publicURL('/api/v1/daemon')}`)}
             >
               <Icon name="terminal" size={14} />
               Copy as curl

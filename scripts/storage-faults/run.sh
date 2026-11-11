@@ -46,7 +46,7 @@ restart = "always"
 restart_delay = 1
 healthy_after = 1
 TOML
-export MINICRON_CONFIG=$WORK/minicron.toml MINICRON_DATA=$DATA
+export MINICROND_CONFIG=$WORK/minicron.toml MINICROND_DATA=$DATA
 start() { "$BIN" daemon >> "$OUT/daemon.log" 2>&1 & PID=$!; sleep 3; }
 count() { wc -l < "$1" | tr -d ' '; }
 status() { timeout 5 "$BIN" status 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["diagnostics"]["run_history"]; print(" ".join(f"{k}={v}" for k,v in sorted(d.items())))' 2>/dev/null || echo "status unavailable"; }

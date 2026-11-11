@@ -25,31 +25,31 @@ load_env() {
 	# shellcheck disable=SC1091
 	. "$EXAMPLE_DIR/.env"
 	set +a
-	case ${MINICRON_CONFIG:-} in
-	"") die "MINICRON_CONFIG is empty in .env" ;;
+	case ${MINICROND_CONFIG:-} in
+	"") die "MINICROND_CONFIG is empty in .env" ;;
 	/*) ;;
-	*) MINICRON_CONFIG="$EXAMPLE_DIR/$MINICRON_CONFIG" ;;
+	*) MINICROND_CONFIG="$EXAMPLE_DIR/$MINICROND_CONFIG" ;;
 	esac
-	case ${MINICRON_DATA:-} in
-	"") die "MINICRON_DATA is empty in .env" ;;
+	case ${MINICROND_DATA:-} in
+	"") die "MINICROND_DATA is empty in .env" ;;
 	/*) ;;
-	*) MINICRON_DATA="$EXAMPLE_DIR/$MINICRON_DATA" ;;
+	*) MINICROND_DATA="$EXAMPLE_DIR/$MINICROND_DATA" ;;
 	esac
-	export MINICRON_CONFIG MINICRON_DATA
+	export MINICROND_CONFIG MINICROND_DATA
 }
 
 # Resolve the minicrond binary to use and set $BIN.
-# Order: $MINICRON_BIN override, then build from source, then repo bin/.
+# Order: $MINICROND_BIN override, then build from source, then repo bin/.
 resolve_bin() {
-	if [ -n "${MINICRON_BIN:-}" ]; then
-		[ -x "$MINICRON_BIN" ] || die "MINICRON_BIN=$MINICRON_BIN is not executable"
-		BIN=$MINICRON_BIN
+	if [ -n "${MINICROND_BIN:-}" ]; then
+		[ -x "$MINICROND_BIN" ] || die "MINICROND_BIN=$MINICROND_BIN is not executable"
+		BIN=$MINICROND_BIN
 		return
 	fi
 	if command -v go >/dev/null 2>&1; then
 		mkdir -p "$EXAMPLE_DIR/.bin"
 		if [ ! -x "$EXAMPLE_DIR/.bin/minicrond" ]; then
-			notice "building minicrond from source (override with MINICRON_BIN in .env)"
+			notice "building minicrond from source (override with MINICROND_BIN in .env)"
 		fi
 		(cd "$REPO_ROOT" && CGO_ENABLED=0 go build -trimpath -o "$EXAMPLE_DIR/.bin/minicrond" ./cmd/minicrond) \
 			|| die "go build failed"
@@ -60,14 +60,14 @@ resolve_bin() {
 		BIN=$REPO_ROOT/bin/minicrond
 		return
 	fi
-	die "no usable binary: install go, or set MINICRON_BIN in .env, or run 'make build' first"
+	die "no usable binary: install go, or set MINICROND_BIN in .env, or run 'make build' first"
 }
 
 # Echo the running daemon's pid, or fail if it is not running.
-# The daemon writes its pid to $MINICRON_DATA/minicron.lock while holding flock.
+# The daemon writes its pid to $MINICROND_DATA/minicron.lock while holding flock.
 daemon_pid() {
-	[ -f "$MINICRON_DATA/minicron.lock" ] || return 1
-	pid=$(head -n1 "$MINICRON_DATA/minicron.lock" 2>/dev/null)
+	[ -f "$MINICROND_DATA/minicron.lock" ] || return 1
+	pid=$(head -n1 "$MINICROND_DATA/minicron.lock" 2>/dev/null)
 	case $pid in
 	'' | *[!0-9]*) return 1 ;;
 	esac

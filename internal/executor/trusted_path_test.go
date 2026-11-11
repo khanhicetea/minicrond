@@ -19,6 +19,25 @@ func envValue(entries []string, key string) string {
 	return value
 }
 
+func TestInheritedEnvironmentFiltersDaemonVariables(t *testing.T) {
+	t.Setenv("MINICROND_TOKEN", "secret")
+	t.Setenv("MINICROND_JOB", "wrong")
+	d := model.Definition{Name: "example", EnvBase: "inherit"}
+	r := model.Run{ID: "run-id", Trigger: "manual", Attempt: 2}
+	env, err := environmentWithTrustedPath(d, "", r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"MINICROND_TOKEN": "", "MINICROND_JOB": "example", "MINICROND_RUN_ID": "run-id",
+		"MINICROND_TRIGGER": "manual", "MINICROND_ATTEMPT": "2",
+	} {
+		if got := envValue(env, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestConfiguredTrustedLookupDoesNotUseAmbientPATH(t *testing.T) {
 	if _, err := os.Stat("/usr/sbin/nologin"); err != nil {
 		t.Skip("requires /usr/sbin/nologin")

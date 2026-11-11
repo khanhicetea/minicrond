@@ -281,7 +281,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 		}
 	})
 	apiServer := api.New(st, logs, execService, super, d.Reload, d.Reconcile, d.Version)
-	if err := apiServer.SetBasePath(os.Getenv("BASE_PATH")); err != nil {
+	if err := apiServer.SetBasePath(os.Getenv("MINICROND_BASE_PATH")); err != nil {
 		return err
 	}
 	apiServer.SetTCPEnabled(cfg.Server.TCPOn())
@@ -1003,7 +1003,7 @@ func ensurePrivateDataDir(dir string) error {
 	if info.Mode().Perm()&0o077 == 0 {
 		return nil
 	}
-	refuse := fmt.Errorf("data directory %s must be a private directory (mode %#o; run chmod 700 on it, or point MINICRON_DATA at a subdirectory, which minicrond creates privately)", dir, info.Mode().Perm())
+	refuse := fmt.Errorf("data directory %s must be a private directory (mode %#o; run chmod 700 on it, or point MINICROND_DATA at a subdirectory, which minicrond creates privately)", dir, info.Mode().Perm())
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(st.Uid) != os.Geteuid() {
 		return refuse

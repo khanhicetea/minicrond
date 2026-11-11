@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Collect pprof data from a daemon built with the benchmark-only pprof hook
-# (MINICRON_BENCH_PPROF). Usage: profile-collect.sh <host:port> <out-dir> <seconds>
+# (MINICROND_BENCH_PPROF). Usage: profile-collect.sh <host:port> <out-dir> <seconds>
 set -u
 A=$1; D=$2; S=$3
 mkdir -p "$D"

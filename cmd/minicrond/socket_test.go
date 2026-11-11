@@ -23,8 +23,8 @@ func TestMultipathTCPDisabledByDefault(t *testing.T) {
 
 func TestLocalCLIUsesDataDirectorySocket(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("MINICRON_DATA", dir)
-	t.Setenv("MINICRON_URL", "")
+	t.Setenv("MINICROND_DATA", dir)
+	t.Setenv("MINICROND_URL", "")
 	t.Setenv("HOME", "/root")
 	listener, err := net.Listen("unix", filepath.Join(dir, "minicron.sock"))
 	if err != nil {

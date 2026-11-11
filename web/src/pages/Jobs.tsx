@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
@@ -114,15 +115,15 @@ export default function Jobs() {
   const copyCurl = async () => {
     const sample = filtered[0];
     const lines = [
-      '# minicrond REST API — replace $MINICRON_TOKEN (rotate locally if lost)',
+      '# minicrond REST API — replace $MINICROND_TOKEN (rotate locally if lost)',
       `BASE=${publicURL('/api/v1')}`,
       '',
       '# List definitions',
-      'curl -s -H "Authorization: Bearer $MINICRON_TOKEN" $BASE/jobs',
+      'curl -s -H "Authorization: Bearer $MINICROND_TOKEN" $BASE/jobs',
       '',
-      sample ? `# Trigger ${sample.name}\ncurl -s -X POST -H "Authorization: Bearer $MINICRON_TOKEN" $BASE/jobs/${sample.name}/trigger` : '',
-      sample ? `\n# Edit ${sample.name} (send the full JSON definition)\ncurl -s -X PUT -H "Authorization: Bearer $MINICRON_TOKEN" -H 'Content-Type: application/json' --data @definition.json $BASE/jobs/${sample.name}` : '',
-      sample ? `\n# Delete ${sample.name}\ncurl -s -X DELETE -H "Authorization: Bearer $MINICRON_TOKEN" $BASE/jobs/${sample.name}` : '',
+      sample ? `# Trigger ${sample.name}\ncurl -s -X POST -H "Authorization: Bearer $MINICROND_TOKEN" $BASE/jobs/${sample.name}/trigger` : '',
+      sample ? `\n# Edit ${sample.name} (send the full JSON definition)\ncurl -s -X PUT -H "Authorization: Bearer $MINICROND_TOKEN" -H 'Content-Type: application/json' --data @definition.json $BASE/jobs/${sample.name}` : '',
+      sample ? `\n# Delete ${sample.name}\ncurl -s -X DELETE -H "Authorization: Bearer $MINICROND_TOKEN" $BASE/jobs/${sample.name}` : '',
     ];
     try {
       await navigator.clipboard.writeText(lines.filter(Boolean).join('\n'));
@@ -201,9 +202,9 @@ export default function Jobs() {
         </div>
       </div>
 
-      {(actionError || trigger.error || remove.error) && (
+      {(actionError || trigger.error || remove.error || setEnabled.error) && (
         <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {actionError || errorText(trigger.error ?? remove.error)}
+          {actionError || errorText(trigger.error ?? remove.error ?? setEnabled.error)}
         </div>
       )}
 
@@ -327,16 +328,53 @@ function Row({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
   const isWorker = definition.kind === 'worker';
   const enabled = definition.enabled !== false;
+
+  // Portal out of the table's overflow container, then fit to the viewport.
+  useLayoutEffect(() => {
+    if (!menuOpen || !buttonRef.current || !menuRef.current) return;
+    const anchor = buttonRef.current.getBoundingClientRect();
+    const menu = menuRef.current.getBoundingClientRect();
+    const margin = 8;
+    const below = anchor.bottom + 4;
+    setMenuPosition({
+      left: Math.max(margin, Math.min(anchor.right - menu.width, window.innerWidth - menu.width - margin)),
+      top: Math.max(margin, Math.min(
+        below + menu.height <= window.innerHeight - margin ? below : anchor.top - menu.height - 4,
+        window.innerHeight - menu.height - margin,
+      )),
+    });
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!menuOpen) return;
     const onClick = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
+      const target = event.target as Node;
+      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) setMenuOpen(false);
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
+    const onScroll = (event: Event) => {
+      if (!(event.target instanceof Node) || !menuRef.current?.contains(event.target)) setMenuOpen(false);
+    };
+    const close = () => setMenuOpen(false);
     document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', close);
+    };
   }, [menuOpen]);
 
   const scheduleLine = isWorker ? 'Continuous' : definition.run_on_start ? 'Startup init' : humanizeSchedule(definition.schedule ?? '') || '—';
@@ -458,12 +496,12 @@ function Row({
         </label>
       </td>
       <td className="relative text-right">
-        <div ref={menuRef} className="inline-block">
-          <button type="button" className="btn-icon" onClick={() => setMenuOpen(open => !open)} aria-label={`Actions for ${definition.name}`} aria-expanded={menuOpen}>
+        <div className="inline-block">
+          <button ref={buttonRef} type="button" className="btn-icon" onClick={() => setMenuOpen(open => !open)} aria-label={`Actions for ${definition.name}`} aria-expanded={menuOpen}>
             <Icon name="more-vertical" size={16} />
           </button>
-          {menuOpen && (
-            <div className="menu-pop right-0 top-full mt-1">
+          {menuOpen && createPortal(
+            <div ref={menuRef} className="menu-pop" style={{ position: 'fixed', ...menuPosition, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)', overflowY: 'auto' }}>
               {!isWorker && definition.source !== 'config' && (
                 <button
                   type="button"
@@ -518,7 +556,8 @@ function Row({
               >
                 <Icon name="trash" size={14} /> Delete
               </button>}
-            </div>
+            </div>,
+            document.body,
           )}
         </div>
       </td>

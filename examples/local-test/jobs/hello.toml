@@ -1,5 +1,5 @@
 # Hello job: runs every minute. Demonstrates @every schedules, injected
-# MINICRON_* metadata, and tagged stdout. env_file is provided by start.sh
+# MINICROND_* metadata, and tagged stdout. env_file is provided by start.sh
 # (env.local, written by start.sh) defines EXAMPLE_DIR so the command can
 # reference the checked-in scripts without a hardcoded path. start.sh
 # substitutes the @EXAMPLE_DIR@ placeholder with the sandbox location before

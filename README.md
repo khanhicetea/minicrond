@@ -2,8 +2,8 @@
 
 A small, trustworthy local job scheduler and process supervisor in a
 single binary: durable cron jobs, supervised workers, compressed tagged
-logs, a REST + SSE API, and an embedded web UI. Linux. Current release: 0.6.0
-([release notes](docs/releases/v0.6.0.md)).
+logs, a REST + SSE API, and an embedded web UI. Linux. Current release: 0.7.0
+([release notes](docs/releases/v0.7.0.md)).
 
 ```
 CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
@@ -63,9 +63,9 @@ CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
 
 This is a **user-mode** instance. Its default data directory is
 `~/.local/share/minicron` (private, mode 0700); config and data paths can be
-changed with `MINICRON_CONFIG` / `MINICRON_DATA`. The bootstrap TOML controls
+changed with `MINICROND_CONFIG` / `MINICROND_DATA`. The bootstrap TOML controls
 the server, scheduler, storage, logs, and defaults — **not** editable job
-definitions or alert channels. Set `BASE_PATH=/tools/minicron` to serve the web UI and API
+definitions or alert channels. Set `MINICROND_BASE_PATH=/tools/minicron` to serve the web UI and API
 under that URL prefix (including health and OpenAPI routes). On first boot,
 read the one-time web/API token from
 `~/.local/share/minicron/initial-token` and remove that file:
@@ -92,7 +92,7 @@ before publishing the UI through a reverse proxy.
 as Alice. Installation enables and starts the unit. These are separate
 instances from the foreground user daemon; stop the foreground daemon before
 installing another on the same port, and target the right data directory for
-CLI commands (e.g. `sudo env MINICRON_DATA=/var/lib/minicron minicrond status`
+CLI commands (e.g. `sudo env MINICROND_DATA=/var/lib/minicron minicrond status`
 for the root service). Its first token is in `/var/lib/minicron/initial-token`;
 read and remove it as root. See [service operations](docs/operations.md#systemd-installation).
 
@@ -152,7 +152,7 @@ secrets, retention, and worker restart controls.
 ### 3. Operate and inspect
 
 In a second terminal, with the same user's data directory (for a root
-service, run these as root with `MINICRON_DATA=/var/lib/minicron`):
+service, run these as root with `MINICROND_DATA=/var/lib/minicron`):
 
 ```sh
 ./minicrond status                 # uptime, schema, token fingerprint
@@ -175,7 +175,7 @@ then comments out migrated cron lines:
 
 ```sh
 minicrond crontab   # current user's crontab -> current user's daemon
-sudo env MINICRON_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
 # Alice's crontab -> root service; imported jobs get run_as=alice
 ```
 

@@ -104,16 +104,16 @@ and `max_concurrent_runs` are unitless.
 - `server.bind` — when TCP is enabled, a non-loopback host is rejected at load time unless
   `server.allow_insecure_remote = true`. TCP is plaintext HTTP; use the
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
-- `BASE_PATH` — optional daemon environment variable for serving the API and
+- `MINICROND_BASE_PATH` — optional daemon environment variable for serving the API and
   web UI below a URL prefix, such as `/tools/minicron`. It must start with `/`
   and contain URL path segments made of letters, digits, `-`, `_`, `.`, or `~`.
   A trailing slash is accepted. The prefix applies to both TCP and Unix
   socket routes, including `/healthz`, `/readyz`, and `/openapi.json`.
   Set the same variable for local Unix-socket CLI commands, or include the
-  prefix in `MINICRON_URL` for HTTP CLI commands. Restart the daemon after
-  changing it.
-- `MINICRON_ALLOW_IFRAME` — optional daemon environment variable to allow
-  embedding the web UI in an iframe, for example `MINICRON_ALLOW_IFRAME=1`.
+  prefix in `MINICROND_URL` for HTTP CLI commands. Restart the daemon after
+  changing it. The former `BASE_PATH` variable is ignored; there is no fallback.
+- `MINICROND_ALLOW_IFRAME` — optional daemon environment variable to allow
+  embedding the web UI in an iframe, for example `MINICROND_ALLOW_IFRAME=1`.
   Unset, empty, or whitespace-only values and `0`, `false`, `f`, `no`, `n`,
   or `off` keep embedding blocked (case-insensitive, with surrounding
   whitespace ignored). Any other value enables embedding by omitting
@@ -365,8 +365,8 @@ With `env_base = "clean"` (default) the process gets a minimal environment:
 `PATH=/usr/bin:/bin` (or the configured `scheduler.trusted_path` joined with `:`),
 the definition's `TZ`, a passwd-resolved `HOME` when
 available, everything from `env`, `env_file`, and resolved `secret_env`, plus the metadata variables
-`MINICRON_JOB`, `MINICRON_RUN_ID`, `MINICRON_TRIGGER` (`schedule`,
-`manual`, `worker`), and `MINICRON_ATTEMPT`.
+`MINICROND_JOB`, `MINICROND_RUN_ID`, `MINICROND_TRIGGER` (`schedule`,
+`manual`, `worker`), and `MINICROND_ATTEMPT`.
 
 If the daemon UID has no passwd entry, jobs and workers still run as its
 actual UID/GID. Set an absolute `HOME` in a definition's `env` or `env_file`

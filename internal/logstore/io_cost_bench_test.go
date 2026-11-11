@@ -21,17 +21,17 @@ import (
 // TestIOCostPerRun measures the disk cost of storing run logs: block-device
 // flushes (a system-wide fsync proxy, as in docs/benchmarks) and bytes this
 // process sent to storage, per run. It needs a real disk and a quiet host, so
-// it runs only when MINICRON_IO_BENCH_DIR names a directory on that disk and
-// MINICRON_IO_BENCH_DEV the block device (for example sda).
-// MINICRON_IO_BENCH_CORPUS may name a text file whose lines are used as output.
+// it runs only when MINICROND_IO_BENCH_DIR names a directory on that disk and
+// MINICROND_IO_BENCH_DEV the block device (for example sda).
+// MINICROND_IO_BENCH_CORPUS may name a text file whose lines are used as output.
 //
 // "split" mode stores runs with no archive attached, then archives them in a
 // second step, to attribute cost to the file buffer and to the archive.
 // "live" mode runs the archiver in the background as the daemon does.
 func TestIOCostPerRun(t *testing.T) {
-	root, dev := os.Getenv("MINICRON_IO_BENCH_DIR"), os.Getenv("MINICRON_IO_BENCH_DEV")
+	root, dev := os.Getenv("MINICROND_IO_BENCH_DIR"), os.Getenv("MINICROND_IO_BENCH_DEV")
 	if root == "" || dev == "" {
-		t.Skip("set MINICRON_IO_BENCH_DIR and MINICRON_IO_BENCH_DEV")
+		t.Skip("set MINICROND_IO_BENCH_DIR and MINICROND_IO_BENCH_DEV")
 	}
 	corpus := benchCorpus(t)
 	type scenario struct {
@@ -45,7 +45,7 @@ func TestIOCostPerRun(t *testing.T) {
 		{"silent (exit line only)", 300, 10, 0},
 		{"large (~4 MiB raw)", 6, 2, 36000},
 	}
-	reps, _ := strconv.Atoi(os.Getenv("MINICRON_IO_BENCH_REPS"))
+	reps, _ := strconv.Atoi(os.Getenv("MINICROND_IO_BENCH_REPS"))
 	reps = max(reps, 1)
 	for _, sc := range scenarios {
 		for _, mode := range []string{"split", "live"} {
@@ -68,7 +68,7 @@ type ioPhase struct {
 }
 
 func benchCorpus(t *testing.T) [][]byte {
-	if p := os.Getenv("MINICRON_IO_BENCH_CORPUS"); p != "" {
+	if p := os.Getenv("MINICROND_IO_BENCH_CORPUS"); p != "" {
 		f, err := os.Open(p)
 		if err != nil {
 			t.Fatal(err)

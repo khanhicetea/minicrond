@@ -116,7 +116,7 @@ CGO_ENABLED=0 go build -trimpath -o ~/mcb/minicrond ./cmd/minicrond
 # CFG_APPEND=$'[storage]\nsynchronous = "normal"'
 SCENARIOS=tier-large REPS=1 DURATION=120 WARMUP=20 STRACE=0 CHILD_CPUS=2-3 \
   GOGC=100 scripts/bench-5a/run-profile.sh ~/mcb/minicrond ~/mcb/out
-# profile: add PPROF_ADDR=127.0.0.1:6061 with a binary that starts net/http/pprof when MINICRON_BENCH_PPROF is set
+# profile: add PPROF_ADDR=127.0.0.1:6061 with a binary that starts net/http/pprof when MINICROND_BENCH_PPROF is set
 ```
 
 New harness features used: scenarios `tier-*` and `tier-large-quiet`, `CFG_APPEND`, `JOB_KINDS`, a block-device flush/IO

@@ -95,7 +95,12 @@ function GlobalSearch() {
   };
 
   return (
-    <div className="relative min-w-0 flex-1 max-w-md">
+    <div
+      className="relative min-w-0 flex-1 max-w-md"
+      onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
       <div className="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-1.5">
         <Icon name="search" size={15} className="shrink-0 faint" />
         <input
@@ -106,7 +111,6 @@ function GlobalSearch() {
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
           placeholder="Search jobs, workers, runs…"
           className="w-full bg-transparent text-sm outline-none placeholder:text-[color-mix(in_srgb,var(--color-base-content)_38%,transparent)]"
           aria-label="Search"
@@ -123,10 +127,7 @@ function GlobalSearch() {
               key={job.name}
               type="button"
               className="menu-item"
-              onMouseDown={event => {
-                event.preventDefault();
-                go(jobPath(job.name));
-              }}
+              onClick={() => go(jobPath(job.name))}
             >
               <Icon name={job.kind === 'worker' ? 'terminal' : 'calendar'} size={14} className="muted" />
               <span className="font-mono text-[0.8rem]">{job.name}</span>
@@ -140,10 +141,7 @@ function GlobalSearch() {
               key={run.run_id}
               type="button"
               className="menu-item"
-              onMouseDown={event => {
-                event.preventDefault();
-                go(`/runs/${run.run_id}`);
-              }}
+              onClick={() => go(`/runs/${encodeURIComponent(run.run_id)}`)}
             >
               <Icon name="history" size={14} className="muted" />
               <span className="font-mono text-[0.8rem]">#{shortRunId(run.run_id)}</span>

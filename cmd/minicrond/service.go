@@ -97,7 +97,7 @@ func serviceInstall(args []string) error {
 	fmt.Printf("installed %s\n", unitPath)
 	fmt.Printf("config %s (bind 127.0.0.1:%d), data %s\n", plan.configPath, plan.port, plan.dataDir)
 	if plan.runAs == nil {
-		fmt.Printf("CLI note: local commands need MINICRON_DATA=%s (or MINICRON_URL/MINICRON_TOKEN over HTTP)\n", systemDataDir)
+		fmt.Printf("CLI note: local commands need MINICROND_DATA=%s (or MINICROND_URL/MINICROND_TOKEN over HTTP)\n", systemDataDir)
 	} else {
 		fmt.Printf("the daemon runs as %s; run CLI commands as that user\n", plan.runAs.Username)
 	}

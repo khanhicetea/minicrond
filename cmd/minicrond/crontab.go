@@ -49,8 +49,8 @@ func crontab(args []string) error {
 			return errors.New("omit --user to migrate root's own crontab")
 		}
 	}
-	if os.Getenv("MINICRON_URL") != "" {
-		return errors.New("crontab import requires a local daemon (unset MINICRON_URL)")
+	if os.Getenv("MINICROND_URL") != "" {
+		return errors.New("crontab import requires a local daemon (unset MINICROND_URL)")
 	}
 	if _, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS); err != nil {
 		return errors.New("crontab import requires an interactive terminal for confirmation")

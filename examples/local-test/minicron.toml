@@ -1,5 +1,5 @@
 # Daemon settings for the local-test sandbox. Loaded by start.sh via
-# MINICRON_CONFIG / `daemon --config`. start.sh explicitly imports jobs/*.toml
+# MINICROND_CONFIG / `daemon --config`. start.sh explicitly imports jobs/*.toml
 # into the SQLite definition registry after the daemon is ready.
 
 [server]

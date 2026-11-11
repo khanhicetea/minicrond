@@ -38,7 +38,7 @@ func TestLogsRejectInvalidPayload(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("MINICRON_URL", server.URL)
+	t.Setenv("MINICROND_URL", server.URL)
 	if err := logs([]string{"run"}); err == nil || !strings.Contains(err.Error(), "decode log frame 1") {
 		t.Fatalf("invalid log payload was accepted: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestRequestPreservesHTTPStatusAndBodyReadError(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("MINICRON_URL", server.URL)
+	t.Setenv("MINICROND_URL", server.URL)
 	var out any
 	err := requestJSON("GET", "/test", nil, &out)
 	if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "HTTP 500") {

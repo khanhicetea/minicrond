@@ -16,7 +16,7 @@ examples/local-test/
 ├── common.sh      # shared helpers (sourced, not run directly)
 ├── minicron.toml  # sandbox bootstrap config (bind 127.0.0.1:7423)
 ├── jobs/          # example definitions included by minicron.toml
-│   ├── hello.toml         # job: @every 1m, MINICRON_* metadata env
+│   ├── hello.toml         # job: @every 1m, MINICROND_* metadata env
 │   ├── heartbeat.toml     # job: @every 2m, multi-line stdout
 │   ├── flaky.toml         # job: exits 42 -> recorded as failed
 │   ├── slow.toml          # job: 3s timeout + 2s grace kill
@@ -59,8 +59,8 @@ Web UI: open <http://127.0.0.1:7423> and paste the bearer token printed by
 
 ## What the sandbox demonstrates
 
-- `hello` — `@every` schedules, injected `MINICRON_JOB` /
-  `MINICRON_RUN_ID` / `MINICRON_TRIGGER` env, tagged stdout logs
+- `hello` — `@every` schedules, injected `MINICROND_JOB` /
+  `MINICROND_RUN_ID` / `MINICROND_TRIGGER` env, tagged stdout logs
 - `heartbeat` — multi-line output captured per run
 - `flaky` — non-zero exit recorded as `failed` with `exit_code`
 - `slow` — `timeout` + `grace` process-group kill -> terminal status `timeout`
@@ -76,8 +76,8 @@ The CLI defaults to the unix socket at `.data/minicron.sock` (no token). To
 exercise the TCP API instead, set in `.env`:
 
 ```
-MINICRON_URL=http://127.0.0.1:7423
-MINICRON_TOKEN=<token from start.sh or ./mc token --rotate>
+MINICROND_URL=http://127.0.0.1:7423
+MINICROND_TOKEN=<token from start.sh or ./mc token --rotate>
 ```
 
 ## Reset / troubleshoot
@@ -85,6 +85,6 @@ MINICRON_TOKEN=<token from start.sh or ./mc token --rotate>
 - Full reset: `./stop.sh && rm -rf .data .env env.local`
 - Port 7423 busy: edit `bind` in `minicron.toml` (requires daemon restart)
 - "data directory is locked": another daemon owns `.data`; `./stop.sh` first
-- No `go` toolchain: set `MINICRON_BIN` in `.env` or run `make build` at the
+- No `go` toolchain: set `MINICROND_BIN` in `.env` or run `make build` at the
   repo root first
 - Daemon log: `.data/daemon.log`

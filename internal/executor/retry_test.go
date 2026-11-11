@@ -24,7 +24,7 @@ func TestFailedJobRetriesAndLinksAttempts(t *testing.T) {
 	finished := make(chan model.Run, 4)
 	svc := New(st, logs, Options{OnFinished: func(r model.Run, _ model.Definition) { finished <- r }})
 	defer svc.Shutdown(context.Background())
-	d := model.Definition{Name: "flaky", Kind: model.KindJob, Command: `printf '%s\n' "$MINICRON_ATTEMPT"; exit 1`, Shell: "/bin/sh", OnOverlap: "skip", Retries: 2, RetryDelay: 1}
+	d := model.Definition{Name: "flaky", Kind: model.KindJob, Command: `printf '%s\n' "$MINICROND_ATTEMPT"; exit 1`, Shell: "/bin/sh", OnOverlap: "skip", Retries: 2, RetryDelay: 1}
 	if _, err := st.PutDefinition(t.Context(), d, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestFailedJobRetriesAndLinksAttempts(t *testing.T) {
 				}
 			}
 			if !foundAttempt {
-				t.Fatalf("attempt %d: MINICRON_ATTEMPT=%q not found in %#v", attempt, wantAttempt, frames)
+				t.Fatalf("attempt %d: MINICROND_ATTEMPT=%q not found in %#v", attempt, wantAttempt, frames)
 			}
 			parent = r.ID
 		case <-time.After(5 * time.Second):

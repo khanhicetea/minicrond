@@ -30,7 +30,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/fault"
 )
 
-var version = "0.6.0-dev"
+var version = "0.7.0"
 var commit = "unknown"
 
 //go:embed minicron.schema.json
@@ -104,8 +104,8 @@ const defaultGCPercent = 50
 
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	configPath := fs.String("config", env("MINICRON_CONFIG", "minicron.toml"), "bootstrap TOML path")
-	dataDir := fs.String("data-dir", env("MINICRON_DATA", defaultDataDir()), "data directory")
+	configPath := fs.String("config", env("MINICROND_CONFIG", "minicron.toml"), "bootstrap TOML path")
+	dataDir := fs.String("data-dir", env("MINICROND_DATA", defaultDataDir()), "data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -161,7 +161,7 @@ func runDaemon(args []string) error {
 }
 func initConfig(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	path := fs.String("config", env("MINICRON_CONFIG", "minicron.toml"), "config path")
+	path := fs.String("config", env("MINICROND_CONFIG", "minicron.toml"), "config path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,7 +200,7 @@ db_keep_for = 30 # days
 `, bind)
 }
 func validate(args []string) error {
-	path := env("MINICRON_CONFIG", "minicron.toml")
+	path := env("MINICROND_CONFIG", "minicron.toml")
 	if len(args) > 0 {
 		path = args[0]
 	}
@@ -383,7 +383,7 @@ func exportConfig(args []string) (err error) {
 	if err != nil {
 		return fmt.Errorf("create export request: %w", err)
 	}
-	if token := os.Getenv("MINICRON_TOKEN"); token != "" {
+	if token := os.Getenv("MINICROND_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client().Do(req)
@@ -402,7 +402,7 @@ func exportConfig(args []string) (err error) {
 }
 
 // healthcheck is for container HEALTHCHECK probes: GET /readyz over the
-// private Unix socket (or MINICRON_URL) within 3 s, no output on success, exit
+// private Unix socket (or MINICROND_URL) within 3 s, no output on success, exit
 // status 0 when the daemon is ready and 1 otherwise. Readiness does not depend
 // on the databases, so a degraded metadata store never makes an orchestrator
 // restart a daemon that is still running jobs (ADR-16).
@@ -455,7 +455,7 @@ func requestJSON(method, path string, body, out any) (err error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	client := client()
-	if token := os.Getenv("MINICRON_TOKEN"); token != "" {
+	if token := os.Getenv("MINICROND_TOKEN"); token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := client.Do(req)
@@ -547,8 +547,8 @@ var cliHTTP struct {
 }
 
 func client() *http.Client {
-	baseURL := os.Getenv("MINICRON_URL")
-	socket := filepath.Join(env("MINICRON_DATA", defaultDataDir()), "minicron.sock")
+	baseURL := os.Getenv("MINICROND_URL")
+	socket := filepath.Join(env("MINICROND_DATA", defaultDataDir()), "minicron.sock")
 	key := "unix:" + socket
 	if baseURL != "" {
 		key = "url:" + baseURL
@@ -588,10 +588,10 @@ func closeClient() {
 	}
 }
 func apiBaseURL() string {
-	if url := os.Getenv("MINICRON_URL"); url != "" {
+	if url := os.Getenv("MINICROND_URL"); url != "" {
 		return strings.TrimSuffix(url, "/")
 	}
-	return "http://minicron" + strings.TrimSuffix(os.Getenv("BASE_PATH"), "/")
+	return "http://minicron" + strings.TrimSuffix(os.Getenv("MINICROND_BASE_PATH"), "/")
 }
 func env(k, fallback string) string {
 	if v := os.Getenv(k); v != "" {

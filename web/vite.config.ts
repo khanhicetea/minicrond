@@ -9,7 +9,7 @@ export default defineConfig({
     // React 19 with the React Compiler (native oxc port) for automatic memoization.
     react({ compiler: true }),
   ],
-  // Keep generated asset URLs relative so they work under any BASE_PATH.
+  // Keep generated asset URLs relative so they work under any MINICROND_BASE_PATH.
   // The Go server places the HTML entry links under its /assets/ route.
   base: './',
   server: {

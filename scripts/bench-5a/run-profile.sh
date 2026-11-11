@@ -13,7 +13,7 @@
 #   DAEMON_CPU CPU the daemon is pinned to [0]; CHILD_CPUS children [1-3]
 #   SAMPLER_CPU CPU for the sampler/strace [3]
 #   PPROF_ADDR  host:port; only for a binary built with the benchmark-only
-#              pprof hook (MINICRON_BENCH_PPROF). Also sets GODEBUG=gctrace=1
+#              pprof hook (MINICROND_BENCH_PPROF). Also sets GODEBUG=gctrace=1
 #              and collects CPU/alloc/heap profiles during the window. []
 #   STRACE_DETAIL seconds of per-call strace (-y -T) of write/pwrite64/fsync/
 #              nanosleep after the counting sample, for attribution; 0=off [0]
@@ -75,7 +75,7 @@ tier_defs() {
 
 write_config() { # scenario config-path
   local scen=$1 cfg=$2
-  MINICRON_CONFIG="$cfg" "$BIN" init >/dev/null
+  MINICROND_CONFIG="$cfg" "$BIN" init >/dev/null
   sed -i 's/^tcp_enabled = true/tcp_enabled = false/' "$cfg"
   if [ "$scen" = active-flush1 ]; then
     sed -i 's/^worker_flush_interval = 15.*/worker_flush_interval = 1 # minutes (bench variant)/' "$cfg"
@@ -133,10 +133,10 @@ run_one() { # scenario rep
   write_config "$scen" "$cfg"
   echo "== $scen rep $rep -> $dir"
   local extra=()
-  if [ -n "$PPROF_ADDR" ]; then extra=(MINICRON_BENCH_PPROF="$PPROF_ADDR" GODEBUG=gctrace=1); fi
+  if [ -n "$PPROF_ADDR" ]; then extra=(MINICROND_BENCH_PPROF="$PPROF_ADDR" GODEBUG=gctrace=1); fi
   local dcpu=$DAEMON_CPU procs=1
   case "$scen" in tier-normal|tier-large|tier-large-quiet) dcpu=${TIER_DAEMON_CPU:-0-1}; procs=2 ;; esac
-  env MINICRON_CONFIG="$cfg" MINICRON_DATA="$DATA" GOMAXPROCS=$procs "${extra[@]}" \
+  env MINICROND_CONFIG="$cfg" MINICROND_DATA="$DATA" GOMAXPROCS=$procs "${extra[@]}" \
     taskset -c "$dcpu" "$BIN" daemon >"$dir/daemon.log" 2>&1 &
   local pid=$!
   DPID=$pid

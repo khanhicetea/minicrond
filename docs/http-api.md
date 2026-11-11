@@ -4,7 +4,7 @@ Base URL: the daemon's `server.bind` (default `http://127.0.0.1:7423`)
 when TCP is enabled. The same routes are served on the private Unix socket.
 The full OpenAPI 3.1 contract is checked in at
 [`cmd/minicrond/openapi.json`](../cmd/minicrond/openapi.json) and served
-live at `GET /openapi.json`. If `BASE_PATH=/tools/minicron` is set on the
+live at `GET /openapi.json`. If `MINICROND_BASE_PATH=/tools/minicron` is set on the
 daemon, prepend `/tools/minicron` to every route in this document and open the
 web UI at `/tools/minicron/`.
 
@@ -56,7 +56,7 @@ health/readiness probes or the OpenAPI endpoint.
 
 Gateways can vendor the release's trusted static UI instead of proxying it.
 See [Embedding the UI](embedding-ui.md) for the pinned bundle layout, literal
-HTML rewrites, BASE_PATH behavior, and untrusted-API rendering rules.
+HTML rewrites, base path behavior, and untrusted-API rendering rules.
 
 ## Endpoints
 

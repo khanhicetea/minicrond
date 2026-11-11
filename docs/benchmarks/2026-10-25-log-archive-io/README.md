@@ -19,8 +19,8 @@ the group sync.
 
 ## Per run: where the bytes and flushes go
 
-`internal/logstore/io_cost_bench_test.go` (opt-in: `MINICRON_IO_BENCH_DIR`,
-`MINICRON_IO_BENCH_DEV`). It runs the log store alone on the real disk, with
+`internal/logstore/io_cost_bench_test.go` (opt-in: `MINICROND_IO_BENCH_DIR`,
+`MINICROND_IO_BENCH_DEV`). It runs the log store alone on the real disk, with
 the archiver running as in the daemon, and counts bytes this process wrote
 (`/proc/self/io`) and block-device flushes (system-wide). Each run is 3 lines
 of journal text, the exit line only, or ~4 MiB of journal text. There are 300
