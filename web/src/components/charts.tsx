@@ -2,6 +2,7 @@ import { barY, defineChart, lineY } from '@tanstack/charts';
 import { scaleLinear } from '@tanstack/charts/scales/linear';
 import { tooltip } from '@tanstack/charts/tooltip';
 import { Chart } from '@tanstack/charts/react';
+import { useChartColors, type ChartColors } from '../lib/tokens';
 
 export interface Series {
   name: string;
@@ -9,8 +10,6 @@ export interface Series {
   points: (number | null)[];
 }
 
-const GRID = 'color-mix(in srgb, var(--color-base-content) 13%, transparent)';
-const TEXT = 'color-mix(in srgb, var(--color-base-content) 55%, transparent)';
 const BG = 'transparent';
 
 function niceScale(max: number): { ticks: number[]; top: number } {
@@ -29,11 +28,11 @@ function labelFor(labels: string[], count: number, value: number) {
   return labels[Math.max(0, Math.min(labelIndex, labels.length - 1))] ?? String(value);
 }
 
-function theme(palette: readonly string[]) {
+function theme(palette: readonly string[], colors: ChartColors) {
   return {
-    foreground: TEXT,
-    muted: TEXT,
-    grid: GRID,
+    foreground: colors.text,
+    muted: colors.text,
+    grid: colors.grid,
     background: BG,
     palette,
   };
@@ -59,6 +58,7 @@ export function LineChart({
   log?: boolean;
   formatY?: (value: number) => string;
 }) {
+  const colors = useChartColors();
   const count = Math.max(...series.map(s => s.points.length), 1);
   const rows = series.flatMap(item =>
     item.points.map((value, index): LineRow => ({
@@ -97,7 +97,7 @@ export function LineChart({
       },
       clip: true,
       margin: { top: 12, right: 12, bottom: 24, left: 44 },
-      theme: theme(series.map(item => item.color)),
+      theme: theme(series.map(item => item.color), colors),
       focus: 'group-x',
       tooltip: {
         use: tooltip,
@@ -146,6 +146,7 @@ export function StackedBars({
   height?: number;
   formatY?: (value: number) => string;
 }) {
+  const colors = useChartColors();
   const count = Math.max(buckets.length, 1);
   const rows = buckets.flatMap((bucket, index): BarRow[] => [
     { index, status: 'Success', value: bucket.success, label: labelFor(labels, count, index) },
@@ -159,7 +160,7 @@ export function StackedBars({
           x: 'index',
           y: 'value',
           color: 'status',
-          fill: row => (row.status === 'Success' ? '#34d399' : '#f87171'),
+          fill: row => (row.status === 'Success' ? colors.ok : colors.danger),
           fillOpacity: 0.9,
           radius: 1,
         }),
@@ -178,10 +179,10 @@ export function StackedBars({
           axis: { ticks: { count: 5, format: formatY } },
         },
       },
-      color: { domain: ['Success', 'Failure'], range: ['#34d399', '#f87171'] },
+      color: { domain: ['Success', 'Failure'], range: [colors.ok, colors.danger] },
       clip: true,
       margin: { top: 12, right: 12, bottom: 24, left: 30 },
-      theme: theme(['#34d399', '#f87171']),
+      theme: theme([colors.ok, colors.danger], colors),
       focus: 'group-x',
       tooltip: {
         use: tooltip,

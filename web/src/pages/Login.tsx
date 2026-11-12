@@ -37,7 +37,7 @@ export default function Login() {
       <div className="w-full max-w-md">
         <div className="panel p-6 sm:p-8">
           <div className="mb-5 flex items-center gap-2.5">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/15 text-blue-400">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-info/15 text-link">
               <Icon name="terminal" size={18} strokeWidth={2.4} />
             </span>
             <div>
@@ -76,7 +76,7 @@ export default function Login() {
               </div>
             </div>
             {error && (
-              <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger-fg">
                 {error}
               </div>
             )}

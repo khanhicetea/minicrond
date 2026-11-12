@@ -1,38 +1,30 @@
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { Link, useLocation, useParams } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
-import { Icon, type IconName } from '../components/Icon';
+import { Icon } from '../components/Icon';
 import LogViewer from '../components/LogViewer';
-import StatusBadge from '../components/StatusBadge';
-import { RunsList } from '../components/RunsTable';
+import { RunStatusDot } from '../components/RunsTable';
+import { Badge, Button, Card, CardHeader, Facts, InlineAlert, KeyValues, Segmented, buttonClass, isFailedStatus, runStatusMeta } from '../components/ui';
 import { api, errorText } from '../api';
 import { useAuthState } from '../auth';
 import { jobQuery, runAlertsQuery, runQuery, runsQuery, useStopRun, useTriggerJob } from '../queries';
-import { decodePayload } from '../lib/ansi';
 import { downloadFile } from '../lib/download';
-import { formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
+import { formatBytes, formatDayTime, formatSpan, formatTimestamp, shortId, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
 import { memoryMiB } from '../lib/resources';
-import { isActiveRun, type Frame } from '../types';
+import { isActiveRun, type Run } from '../types';
 
 type FilterKey = 'all' | 'failed' | 'scheduled' | 'manual';
 
-const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'failed', label: 'Failed' },
-  { key: 'scheduled', label: 'Scheduled' },
-  { key: 'manual', label: 'Manual' },
-];
+function runSpan(run: Run): string {
+  return isActiveRun(run) ? formatSpan(run.started_at ?? run.queued_at) : formatSpan(run.started_at, run.ended_at);
+}
 
 /**
- * Run detail: every fact appears exactly once.
- * - Header: identity (job, status, run ID, trigger) + actions
- * - Essentials row: duration, exit code, started, ended
- * - Collapsible "Run details": attempt, queue/schedule times, process,
- *   definition revision/hash, run-as — hidden until asked for
- * - Output panel: log size in its header; a failed run adds a single-line
- *   hint with "copy last errors" (no repeated status/exit code)
+ * Run detail, failure first: identity and actions, the headline numbers, the
+ * last stderr lines (failed runs), then the log beside timing, process,
+ * sibling runs and alert deliveries.
  */
 export default function RunDetail() {
   const { mode } = useAuthState();
@@ -43,360 +35,242 @@ export default function RunDetail() {
   const alerts = useQuery({ ...runAlertsQuery(id), enabled: Boolean(id) && run.isSuccess });
   const stop = useStopRun();
   const trigger = useTriggerJob();
-  const [downloadError, setDownloadError] = useState('');
   const [actionError, setActionError] = useState('');
-  const [copiedError, setCopiedError] = useState(false);
-  const [copiedId, setCopiedId] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [copied, setCopied] = useState<'' | 'id' | 'curl'>('');
   const [filter, setFilter] = useState<FilterKey>('all');
 
   const jobId = run.data?.job ?? '';
   const jobDetail = useQuery({ ...jobQuery(jobId), enabled: Boolean(jobId) });
-  const siblings = useQuery(runsQuery(jobId, 30));
-
-  const filteredSiblings = (siblings.data ?? []).filter(sibling => {
-    switch (filter) {
-      case 'failed':
-        return ['failed', 'timeout', 'interrupted'].includes(sibling.status);
-      case 'scheduled':
-        return sibling.trigger === 'schedule';
-      case 'manual':
-        return sibling.trigger === 'manual';
-      default:
-        return true;
-    }
-  });
+  const siblings = useQuery({ ...runsQuery(jobId, 30), enabled: Boolean(jobId) });
 
   if (run.isPending) return <div className="skeleton h-64 w-full" />;
-  if (run.isError) {
-    return (
-      <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-300">
-        Failed to load run: {errorText(run.error)}
-      </div>
-    );
-  }
+  if (run.isError) return <InlineAlert>Failed to load run: {errorText(run.error)}</InlineAlert>;
 
   const data = run.data;
-  const running = isActiveRun(data);
-  const failed = ['failed', 'timeout', 'interrupted'].includes(data.status);
-  const exitCode = data.exit_code;
-  const runAs = jobDetail.data?.definition.run_as;
-  const hero = heroIcon(data.status);
+  const meta = runStatusMeta(data.status);
+  const active = isActiveRun(data);
+  const failed = isFailedStatus(data.status);
+  const definition = jobDetail.data?.definition;
+  const configOwned = definition?.source === 'config';
+  const usage = data.resource_usage;
   const triggerLabel = data.trigger === 'manual' ? 'Manual run' : data.trigger === 'schedule' ? 'Scheduled run' : `${data.trigger} run`;
 
-  const copyId = async () => {
-    try {
-      await navigator.clipboard.writeText(data.run_id);
-      setCopiedId(true);
-      setTimeout(() => setCopiedId(false), 2000);
-    } catch {
-      setCopiedId(false);
-    }
-  };
+  const filteredSiblings = (siblings.data ?? []).filter(sibling => {
+    if (filter === 'failed') return isFailedStatus(sibling.status);
+    if (filter === 'scheduled') return sibling.trigger === 'schedule';
+    if (filter === 'manual') return sibling.trigger === 'manual';
+    return true;
+  });
 
-  const copyError = async () => {
+  const copy = async (what: 'id' | 'curl') => {
     try {
-      // A page carries at most about 1 MiB, so walk forward (bounded) to the
-      // end of the log and keep the last stderr lines, where the error is.
-      let stderr: Frame[] = [];
-      let after = 0;
-      for (let page = 0; page < 64; page += 1) {
-        const log = await api.logFrames(id, after, 5000);
-        if (log.items.length === 0) break;
-        stderr = stderr.concat(log.items.filter(frame => frame.stream === 2)).slice(-20);
-        after = log.items[log.items.length - 1].sequence;
-      }
-      const message = stderr.map(frame => decodePayload(frame.payload)).join('').trim() || `run ${id} ended with status ${data.status}`;
-      await navigator.clipboard.writeText(message);
-      setCopiedError(true);
-      setTimeout(() => setCopiedError(false), 2000);
+      await navigator.clipboard.writeText(what === 'id' ? data.run_id : `curl -s -H "Authorization: Bearer $MINICROND_TOKEN" ${publicURL(`/api/v1/runs/${data.run_id}`)}`);
+      setCopied(what);
+      setTimeout(() => setCopied(''), 2000);
     } catch {
-      setCopiedError(false);
+      setActionError('Clipboard unavailable in this browser.');
     }
   };
 
   const rerun = () => {
     setActionError('');
     trigger.mutate(data.job, {
-      onSuccess: next => navigate(`/runs/${next.run_id}`),
+      onSuccess: next => navigate(`/runs/${encodeURIComponent(next.run_id)}`),
       onError: err => setActionError(errorText(err)),
     });
   };
 
+  const summary = [
+    data.scheduled_for ? `Scheduled for ${formatDayTime(data.scheduled_for)}` : triggerLabel,
+    data.attempt > 1 ? `attempt ${data.attempt}` : '',
+    active ? `running for ${runSpan(data)}` : failed && data.exit_code === 0 ? `${meta.label.toLowerCase()} after ${runSpan(data)}` : data.exit_code !== undefined ? `exited with code ${data.exit_code}${data.signal ? ` (${data.signal})` : ''} after ${runSpan(data)}` : data.end_reason || '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <nav className="crumbs" aria-label="Breadcrumb">
-        <Link href="/jobs">Jobs &amp; Workers</Link>
-        <Icon name="chevron-right" size={12} className="faint" />
-        <Link href={jobPath(data.job)}>{data.job}</Link>
-        <Icon name="chevron-right" size={12} className="faint" />
-        <span>Run</span>
+        <Link href="/runs">Runs</Link>
+        <span aria-hidden="true">/</span>
+        <Link href={`/runs?job=${encodeURIComponent(data.job)}`}>{data.job}</Link>
+        <span aria-hidden="true">/</span>
+        <button type="button" className="inline-flex items-center gap-1 mono text-fg-muted hover:text-fg" title="Copy full run ID" onClick={() => void copy('id')}>
+          #{shortRunId(data.run_id)}
+          <Icon name={copied === 'id' ? 'check' : 'copy'} size={11} />
+        </button>
       </nav>
 
-      {/* Header: identity + actions. Status, run ID, and trigger appear only here. */}
-      <section className="panel overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-5 pb-4 pt-4">
-          <div className="flex min-w-0 items-center gap-3.5">
-            <span className={`icon-badge h-11 w-11 ${hero.cls}`}>
-              <Icon name={hero.icon} size={20} className={hero.spin ? 'spin' : ''} />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <h1 className="truncate font-mono text-lg font-bold tracking-tight">{data.job}</h1>
-                <StatusBadge status={data.status} size="md" />
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs muted">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 font-mono transition-colors hover:text-base-content"
-                  title="Copy full run ID"
-                  onClick={() => void copyId()}
-                >
-                  #{shortRunId(data.run_id)}
-                  <Icon name={copiedId ? 'check' : 'copy'} size={11} />
-                </button>
-                <span aria-hidden>·</span>
-                <span>{triggerLabel}</span>
-              </div>
-            </div>
+      <header className="page-header !items-start">
+        <div className="min-w-0 flex-[1_1_22rem]">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="page-title mono">{data.job}</h1>
+            <Badge tone={meta.tone} icon={meta.icon} spin={meta.spin} className="text-[0.8125rem]">
+              {meta.label}
+            </Badge>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {running && (
-              <button type="button" className="btn-danger-x" disabled={stop.isPending} onClick={() => stop.mutate(id)}>
-                <Icon name="square" size={13} />
-                {stop.isPending ? 'Stopping…' : 'Stop'}
-              </button>
-            )}
-            {!running && jobDetail.data?.definition.source !== 'config' && (
-              <button type="button" className="btn-sub" disabled={trigger.isPending} onClick={rerun}>
-                <Icon name="play" size={13} />
-                {trigger.isPending ? 'Starting…' : 'Run again'}
-              </button>
-            )}
-            {mode === 'token' && <button
-              type="button"
-              className="btn-sub"
-              onClick={() => void navigator.clipboard.writeText(`curl -s -H "Authorization: Bearer $MINICROND_TOKEN" ${publicURL(`/api/v1/runs/${data.run_id}`)}`)}
-            >
-              <Icon name="copy" size={14} />
-              Copy as curl
-            </button>}
-            <button
-              type="button"
-              className="btn-sub"
-              onClick={() => {
-                setDownloadError('');
-                downloadFile(api.rawLogUrl(id), 'minicron-run.log', api.download).catch(err => setDownloadError(errorText(err)));
-              }}
-            >
-              <Icon name="download" size={14} />
-              Download raw
-            </button>
-          </div>
+          <p className="page-subtitle">{summary}</p>
         </div>
-
-        {/* Essentials: the four facts that answer "how did this run go?" */}
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-base-300 px-5 py-4 sm:grid-cols-4">
-          <Fact label="Duration" emphasize>
-            <span className="num">
-              {running ? formatSpan(data.started_at ?? data.queued_at) : formatSpan(data.started_at, data.ended_at)}
-            </span>
-          </Fact>
-          <Fact label="Exit code" emphasize>
-            {exitCode === undefined ? (
-              <span className="faint">—</span>
-            ) : (
-              <span className={`inline-flex items-center gap-1.5 font-medium ${exitCode === 0 ? 'text-green-400' : 'text-red-400'}`}>
-                <span className={`inline-flex h-5 w-5 items-center justify-center rounded-full ${exitCode === 0 ? 'bg-green-500/15' : 'bg-red-500/15'}`}>
-                  <Icon name={exitCode === 0 ? 'check' : 'x'} size={11} strokeWidth={3} />
-                </span>
-                <span className="num">
-                  {exitCode}
-                  {data.signal ? ` (${data.signal})` : ''}
-                </span>
-              </span>
-            )}
-          </Fact>
-          <Fact label="Started">{formatTimestamp(data.started_at)}</Fact>
-          <Fact label="Ended">{formatTimestamp(data.ended_at)}</Fact>
-        </div>
-
-        {data.resource_usage && <div className="border-t border-base-300 px-5 py-4">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-            <Fact label="User CPU time">{(data.resource_usage.user_cpu_us / 1e6).toFixed(3)} s</Fact>
-            <Fact label="System CPU time">{(data.resource_usage.system_cpu_us / 1e6).toFixed(3)} s</Fact>
-            <Fact label="Peak RSS">{memoryMiB(data.resource_usage.peak_rss_bytes)}</Fact>
-          </div>
-          <p className="mt-3 text-xs faint">Kernel exit accounting; CPU may include waited-for descendants. Peak RSS is not the combined process-tree peak.</p>
-        </div>}
-
-        {/* Everything else, collapsed by default. */}
-        <div className="border-t border-base-300 bg-base-200/50">
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 px-5 py-2.5 text-xs font-semibold uppercase tracking-wider faint transition-colors hover:text-base-content"
-            aria-expanded={detailsOpen}
-            onClick={() => setDetailsOpen(open => !open)}
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href={jobPath(data.job)} className={buttonClass('secondary')}>
+            {configOwned ? 'View definition' : 'Edit definition'}
+          </Link>
+          {mode === 'token' && (
+            <Button icon={copied === 'curl' ? 'check' : 'terminal'} onClick={() => void copy('curl')}>
+              {copied === 'curl' ? 'Copied' : 'Copy as curl'}
+            </Button>
+          )}
+          <Button
+            icon="download"
+            onClick={() => {
+              setActionError('');
+              downloadFile(api.rawLogUrl(id), 'minicron-run.log', api.download).catch(err => setActionError(errorText(err)));
+            }}
           >
-            <Icon name="chevron-down" size={13} className={`transition-transform ${detailsOpen ? '' : '-rotate-90'}`} />
-            Run details
-            <span className="font-normal normal-case tracking-normal">(attempt, scheduling, process, definition)</span>
-          </button>
-          {detailsOpen && (
-            <div className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 pb-4 sm:grid-cols-3 xl:grid-cols-4">
-              <Meta label="Attempt">
-                <span className="num">{data.attempt}</span>
-              </Meta>
-              <Meta label="Queued">{formatTimestamp(data.queued_at)}</Meta>
-              <Meta label="Scheduled for">{data.scheduled_for ? formatTimestamp(data.scheduled_for) : '—'}</Meta>
-              <Meta label="End reason">{data.end_reason || '—'}</Meta>
-              <Meta label="Revision">
-                <span className="num">r{data.revision}</span>
-              </Meta>
-              <Meta label="Definition hash" mono>
-                {shortId(data.definition_hash, 16)}
-              </Meta>
-              <Meta label="Process" mono>
-                {data.pid || data.pgid ? `${data.pid || '—'} / ${data.pgid || '—'}` : '—'}
-              </Meta>
-              <Meta label="Run as">
-                {runAs ? <span className="font-mono">{runAs}</span> : <span className="faint">—</span>}
-              </Meta>
-            </div>
+            Download log
+          </Button>
+          {active ? (
+            <Button variant="danger" icon="square" busy={stop.isPending} onClick={() => stop.mutate(id, { onError: err => setActionError(errorText(err)) })}>
+              Stop
+            </Button>
+          ) : (
+            !configOwned && (
+              <Button variant="primary" icon="play" busy={trigger.isPending} onClick={rerun}>
+                Run again
+              </Button>
+            )
           )}
         </div>
-      </section>
+      </header>
 
-      {(downloadError || actionError || stop.error) && (
-        <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-2.5 text-sm text-red-300">
-          {downloadError || actionError || errorText(stop.error)}
-        </div>
-      )}
-      {data.log_truncated && (
-        <div role="alert" className="panel flex items-center gap-2 border-amber-500/40 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-300">
-          <Icon name="alert-triangle" size={15} />
-          Stored log exceeded the size cap and was truncated.
-        </div>
-      )}
+      <Facts
+        label="Run summary"
+        items={[
+          {
+            label: 'Exit code',
+            value: data.exit_code === undefined ? '—' : `${data.exit_code}${data.signal ? ` (${data.signal})` : ''}`,
+            tone: data.exit_code === undefined ? undefined : data.exit_code === 0 ? 'ok' : 'danger',
+          },
+          { label: active ? 'Running for' : 'Duration', value: runSpan(data), tone: active ? 'info' : undefined },
+          ...(usage ? [{ label: 'Peak RSS', value: memoryMiB(usage.peak_rss_bytes), title: 'Peak RSS of the direct process; not the combined process-tree peak.' }] : []),
+          { label: 'Started', value: data.started_at ? formatDayTime(data.started_at) : '—' },
+          { label: 'Log size', value: `${formatBytes(data.log_bytes)}${data.log_truncated ? ' · truncated' : ''}` },
+        ]}
+      />
 
-      <section className="panel p-4 sm:p-5" aria-label="Alert deliveries">
-        <h2 className="panel-title mb-3">Alert deliveries</h2>
-        {alerts.isPending ? (
-          <p className="text-sm muted">Loading alert deliveries…</p>
-        ) : alerts.isError ? (
-          <p role="alert" className="text-sm text-red-300">Failed to load alert deliveries: {errorText(alerts.error)}</p>
-        ) : alerts.data.length === 0 ? (
-          <p className="text-sm muted">No alert deliveries for this run.</p>
-        ) : (
-          <ul className="space-y-2">
-            {alerts.data.map(item => (
-              <li key={item.channel} className="rounded-lg border border-base-300 bg-base-200/25 p-3 text-sm">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className="min-w-0 break-all font-mono font-medium">{item.channel}</span>
-                  <span className={`chip ${item.status === 'sent' ? 'chip-success' : ['failed', 'dropped', 'interrupted'].includes(item.status) ? 'chip-error' : 'chip-info'}`}>
-                    {item.status}
-                  </span>
-                  <span className="text-xs muted">{item.attempts} {item.attempts === 1 ? 'attempt' : 'attempts'}</span>
-                  <span className="text-xs muted">Updated {formatTimestamp(item.updated_at)}</span>
-                </div>
-                {item.last_error && <p className="mt-2 break-words text-xs text-red-300">Last error: {item.last_error}</p>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {actionError && <InlineAlert>{actionError}</InlineAlert>}
+      {data.log_truncated && <InlineAlert tone="warn">Stored log exceeded the size cap and was truncated.</InlineAlert>}
 
-      {/* Sidebar + output */}
-      <div className="grid gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
-        <aside className="panel h-fit p-3.5">
-          <div className="mb-2.5 flex items-center justify-between">
-            <h2 className="panel-title">Recent runs</h2>
-            <span className="num text-xs faint">{filteredSiblings.length}</span>
-          </div>
-          <div className="tab-seg mb-3 w-full">
-            {FILTERS.map(f => (
-              <button
-                key={f.key}
-                type="button"
-                className={`flex-1 ${filter === f.key ? 'active' : ''}`}
-                onClick={() => setFilter(f.key)}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-          <RunsList runs={filteredSiblings} currentId={id} />
-          <Link
-            href="/runs"
-            className="mt-3 flex items-center justify-between border-t border-base-300 px-1 pt-2.5 text-[0.8125rem] text-sky-300 hover:text-sky-200"
-          >
-            View all runs
-            <Icon name="chevron-right" size={14} />
-          </Link>
+      <div className="flex flex-wrap items-start gap-5">
+        <Card as="section" aria-label="Run output" className="flex min-h-[34rem] min-w-0 flex-[999_1_34rem] flex-col overflow-hidden">
+          <LogViewer runId={id} errorTail={failed} />
+        </Card>
+
+        <aside className="flex min-w-0 flex-[1_1_19rem] flex-col gap-4" aria-label="Run information">
+          <Card as="section" aria-labelledby="timing">
+            <CardHeader id="timing" title="Timing" />
+            <div className="px-4 py-3">
+              <KeyValues
+                items={[
+                  { label: 'Queued', value: formatTimestamp(data.queued_at) },
+                  { label: 'Scheduled for', value: data.scheduled_for ? formatTimestamp(data.scheduled_for) : '—' },
+                  { label: 'Started', value: formatTimestamp(data.started_at) },
+                  { label: 'Ended', value: formatTimestamp(data.ended_at) },
+                  { label: 'End reason', value: data.end_reason || '—' },
+                ]}
+              />
+            </div>
+          </Card>
+
+          <Card as="section" aria-labelledby="process">
+            <CardHeader id="process" title="Process" />
+            <div className="px-4 py-3">
+              <KeyValues
+                items={[
+                  { label: 'PID / PGID', value: data.pid || data.pgid ? `${data.pid || '—'} / ${data.pgid || '—'}` : '—', mono: true },
+                  { label: 'Run as', value: definition?.run_as || '—', mono: Boolean(definition?.run_as) },
+                  ...(usage
+                    ? [
+                        { label: 'CPU user / sys', value: `${(usage.user_cpu_us / 1e6).toFixed(3)}s / ${(usage.system_cpu_us / 1e6).toFixed(3)}s` },
+                        { label: 'Peak RSS', value: memoryMiB(usage.peak_rss_bytes) },
+                      ]
+                    : []),
+                  { label: 'Revision', value: `r${data.revision}` },
+                  { label: 'Definition hash', value: shortId(data.definition_hash, 16), mono: true },
+                ]}
+              />
+              {usage && <p className="mt-3 text-xs faint">Kernel exit accounting; CPU may include waited-for descendants.</p>}
+            </div>
+          </Card>
+
+          <Card as="section" aria-labelledby="siblings">
+            <CardHeader id="siblings" title="Recent runs" meta={filteredSiblings.length} />
+            <div className="px-3 pt-3">
+              <Segmented<FilterKey>
+                size="sm"
+                label="Filter recent runs"
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'failed', label: 'Failed' },
+                  { value: 'scheduled', label: 'Scheduled' },
+                  { value: 'manual', label: 'Manual' },
+                ]}
+              />
+            </div>
+            <ol className="m-0 max-h-[22rem] list-none overflow-y-auto p-2">
+              {filteredSiblings.length === 0 && <li className="px-2 py-4 text-center text-sm faint">No runs match this filter.</li>}
+              {filteredSiblings.map(sibling => (
+                <li key={sibling.run_id}>
+                  <Link href={`/runs/${encodeURIComponent(sibling.run_id)}`} className="runs-history-row" aria-current={sibling.run_id === id ? 'page' : undefined}>
+                    <RunStatusDot status={sibling.status} />
+                    <span className="flex min-w-0 flex-1 items-center justify-between gap-2 text-[0.78rem]">
+                      <span className="truncate mono">{formatDayTime(sibling.started_at ?? sibling.queued_at)}</span>
+                      <span className="shrink-0 faint tabular">{runSpan(sibling)}</span>
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ol>
+            <div className="border-t border-line-subtle px-4 py-2.5">
+              <Link href={`/runs?job=${encodeURIComponent(data.job)}`} className="text-sm text-link hover:text-link-hover">
+                Open in Runs
+              </Link>
+            </div>
+          </Card>
+
+          <Card as="section" aria-labelledby="alerts">
+            <CardHeader id="alerts" title="Alert deliveries" />
+            <div className="px-4 py-3 text-sm">
+              {alerts.isPending ? (
+                <p className="muted">Loading alert deliveries…</p>
+              ) : alerts.isError ? (
+                <p role="alert" className="text-danger-fg">
+                  Failed to load alert deliveries: {errorText(alerts.error)}
+                </p>
+              ) : alerts.data.length === 0 ? (
+                <p className="muted">No alert deliveries for this run.</p>
+              ) : (
+                <ul className="m-0 list-none space-y-2.5 p-0">
+                  {alerts.data.map(item => (
+                    <li key={item.channel}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="min-w-0 flex-1 break-all mono">{item.channel}</span>
+                        <Badge tone={item.status === 'sent' ? 'ok' : ['failed', 'dropped', 'interrupted'].includes(item.status) ? 'danger' : 'info'}>{item.status}</Badge>
+                      </div>
+                      <div className="mt-0.5 text-xs faint">
+                        {item.attempts} {item.attempts === 1 ? 'attempt' : 'attempts'} · updated {formatTimestamp(item.updated_at)}
+                      </div>
+                      {item.last_error && <p className="mt-1 break-words text-xs text-danger-fg">Last error: {item.last_error}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </Card>
         </aside>
-
-        <section className="panel flex min-h-[32rem] flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-base-300 px-4 py-2.5">
-            <h2 className="panel-title">Run output</h2>
-            <span className="num faint">
-              {formatLogSize(data.log_bytes)}
-              {data.log_truncated ? ' · truncated' : ''}
-            </span>
-          </div>
-          <LogViewer
-            runId={id}
-            footer={
-              failed ? (
-                <div className="flex flex-wrap items-center gap-3 border-t border-red-500/30 bg-red-500/5 px-4 py-2.5">
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-red-400">
-                    <Icon name="alert-circle" size={15} />
-                  </span>
-                  <p className="min-w-0 flex-1 text-xs muted">The last errors are near the end of the output above.</p>
-                  <button type="button" className="btn-sub !border-red-500/40 !text-red-300" onClick={() => void copyError()}>
-                    <Icon name={copiedError ? 'check' : 'copy'} size={13} />
-                    {copiedError ? 'Copied!' : 'Copy last errors'}
-                  </button>
-                </div>
-              ) : undefined
-            }
-          />
-        </section>
       </div>
     </div>
   );
-}
-
-/** Label-over-value cell in the essentials grid. */
-function Fact({ label, emphasize = false, children }: { label: string; emphasize?: boolean; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[0.6875rem] font-semibold uppercase tracking-wider faint">{label}</div>
-      <div className={`mt-1.5 truncate text-sm ${emphasize ? 'font-semibold' : 'font-medium'}`}>{children}</div>
-    </div>
-  );
-}
-
-/** Smaller label-over-value cell inside the collapsed details section. */
-function Meta({ label, mono = false, children }: { label: string; mono?: boolean; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[0.6875rem] font-semibold uppercase tracking-wider faint">{label}</div>
-      <div className={`mt-0.5 truncate text-xs muted ${mono ? 'font-mono' : ''}`}>{children}</div>
-    </div>
-  );
-}
-
-/** Tinted square + icon representing the run status in the header. */
-function heroIcon(status: string): { icon: IconName; cls: string; spin?: boolean } {
-  if (status === 'succeeded') return { icon: 'circle-check', cls: 'icon-green' };
-  if (status === 'failed' || status === 'timeout' || status === 'interrupted')
-    return { icon: 'alert-circle', cls: 'icon-red' };
-  if (status === 'running' || status === 'pending' || status === 'queued') return { icon: 'loader', cls: 'icon-blue', spin: true };
-  return { icon: 'clock', cls: 'icon-amber' };
-}
-
-function formatLogSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }

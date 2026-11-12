@@ -6,7 +6,10 @@ import { api, ApiError } from './api';
 import { auth } from './auth';
 import App from './App';
 import { basePath } from './lib/base';
+import { isEmbedded } from './lib/embed';
 import './index.css';
+
+if (isEmbedded) document.documentElement.dataset.embed = 'true';
 
 // Apply the stored theme before first paint to avoid a wrong-theme flash.
 // The custom dark theme mirrors the reference design and is the default.

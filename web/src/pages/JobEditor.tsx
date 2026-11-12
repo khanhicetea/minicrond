@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from '../components/Icon';
-import JobForm from '../components/JobForm';
+import JobForm, { formSections } from '../components/JobForm';
+import { Badge, Button, Card, CardHeader, Dot, IconButton, InlineAlert, PageHeader, buttonClass } from '../components/ui';
 import RunsTable from '../components/RunsTable';
 import { errorText } from '../api';
 import { daemonQuery, jobQuery, runsQuery, useDeleteJob, useSaveJob } from '../queries';
@@ -40,7 +41,7 @@ export default function JobEditor({ params }: JobEditorProps) {
   const initializedKey = useRef('');
   const [dirty, setDirty] = useState(false);
   const [validationVisible, setValidationVisible] = useState(false);
-  const [tab, setTab] = useState<'form' | 'toml'>('toml');
+  const [copiedToml, setCopiedToml] = useState(false);
   const [serverError, setServerError] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
 
@@ -96,11 +97,22 @@ export default function JobEditor({ params }: JobEditorProps) {
   const errors = issues.filter(issue => issue.severity === 'error');
   const hints = issues.filter(issue => issue.severity === 'hint');
 
+  const copyToml = async () => {
+    try {
+      await navigator.clipboard.writeText(tomlText);
+      setCopiedToml(true);
+      setTimeout(() => setCopiedToml(false), 2000);
+    } catch {
+      setServerError('Clipboard unavailable in this browser.');
+    }
+  };
+
   const submit = () => {
     if (draft.source === 'config' || save.isPending) return;
     setValidationVisible(true);
     if (errors.length > 0) {
-      setTab('toml');
+      const field = errors[0].field;
+      document.getElementById(`${FORM_ID}-${field}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
       return;
     }
     setServerError('');
@@ -131,134 +143,164 @@ export default function JobEditor({ params }: JobEditorProps) {
   }
   if (!creating && detail.isError && !detail.data) {
     return (
-      <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+      <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger-fg">
         Failed to load {existingName}: {errorText(detail.error)}
       </div>
     );
   }
   if (creating && copyFrom && source.isError && !source.data) {
-    return <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">Failed to load {copyFrom} for cloning: {errorText(source.error)} <button type="button" className="ml-2 underline" onClick={() => void source.refetch()}>Retry</button></div>;
+    return <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger-fg">Failed to load {copyFrom} for cloning: {errorText(source.error)} <button type="button" className="ml-2 underline" onClick={() => void source.refetch()}>Retry</button></div>;
   }
   if (loadedKey !== editorKey) return <div className="skeleton h-64 w-full" />;
 
   const isWorker = draft.kind === 'worker';
-	const configOwned = !creating && draft.source === 'config';
+  const configOwned = !creating && draft.source === 'config';
   const runAsEnabled = daemon.data?.capabilities.includes('run-as') ?? false;
+  const showIssues = !creating || validationVisible;
+  const fieldErrors: Record<string, string> = {};
+  if (showIssues) for (const issue of errors) fieldErrors[issue.field] ??= issue.message;
+  const kindLabel = isWorker ? 'worker' : 'job';
+
+  const focusField = (field: string) => {
+    const element = document.getElementById(`${FORM_ID}-${field}`);
+    element?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    window.setTimeout(() => element?.focus({ preventScroll: true }), 250);
+  };
+  const jumpTo = (section: string) => document.getElementById(`${FORM_ID}-section-${section}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+
+  const saveButton = !configOwned && (
+    <Button variant="primary" busy={save.isPending} onClick={submit}>
+      {creating ? `Create ${kindLabel}` : 'Save changes'}
+    </Button>
+  );
 
   return (
-    <div className="space-y-4">
-      {/* Breadcrumb */}
+    <div className="space-y-5">
       <nav className="crumbs" aria-label="Breadcrumb">
-        <Link href="/jobs">Jobs &amp; Workers</Link>
-        <Icon name="chevron-right" size={12} className="faint" />
-        <span>{creating ? (copyFrom ? `Clone of ${copyFrom}` : 'New definition') : draft.name}</span>
+        <Link href="/jobs">Jobs &amp; workers</Link>
+        <span aria-hidden="true">/</span>
+        <span>{creating ? (copyFrom ? `Clone of ${copyFrom}` : `New ${kindLabel}`) : draft.name}</span>
       </nav>
 
-      {/* Title row */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h1 className="text-[1.45rem] font-bold tracking-tight">
-            {creating ? (isWorker ? 'New worker' : 'New job') : <span className="font-mono">{draft.name}</span>}
-          </h1>
-          {savedFlash && <span className="chip chip-success">Saved</span>}
-		  {configOwned && <span className="chip chip-info">Config owned · view only</span>}
-        </div>
-        <div className="flex items-center gap-2">
-          {!creating && existingName && <Link href={`/jobs/new?from=${encodeURIComponent(existingName)}`} className="btn-sub">
-            <Icon name="copy" size={14} /> Clone
-          </Link>}
-          <Link href={creating || !existingName ? '/jobs' : jobPath(existingName)} className="btn-sub">
-            Cancel
-          </Link>
-          {!configOwned && <button type="button" className="btn-primary-x" onClick={submit} disabled={save.isPending}>
-            {save.isPending && <Icon name="loader" size={14} className="spin" />}
-            {creating ? 'Save' : 'Save changes'}
-          </button>}
-        </div>
-      </div>
+      <PageHeader
+        title={creating ? (copyFrom ? `Clone ${copyFrom}` : `New ${kindLabel}`) : <span className="mono">{draft.name}</span>}
+        badge={
+          <>
+            {!creating && <Badge tone={isWorker ? 'ok' : 'info'}>{isWorker ? 'Worker' : 'Job'}</Badge>}
+            {savedFlash && <Badge tone="ok" icon="check">Saved</Badge>}
+            {configOwned && <Badge tone="info">Config owned · view only</Badge>}
+          </>
+        }
+        subtitle={
+          creating
+            ? copyFrom
+              ? `Settings copied from ${copyFrom}. Give it a new name, review, then create.`
+              : 'Fill in the basics, command and schedule; everything else has sensible defaults.'
+            : configOwned
+              ? 'Defined in the daemon configuration file; edit it there and reload.'
+              : undefined
+        }
+        actions={
+          <>
+            {!creating && existingName && (
+              <Link href={`/jobs/new?from=${encodeURIComponent(existingName)}`} className={buttonClass('secondary')}>
+                Clone
+              </Link>
+            )}
+            <Link href={creating || !existingName ? '/jobs' : jobPath(existingName)} className={buttonClass('secondary')}>
+              {configOwned ? 'Back' : 'Cancel'}
+            </Link>
+            {saveButton}
+          </>
+        }
+      />
 
-      {creating && copyFrom && (
-        <p className="text-sm muted">Settings copied from <span className="font-mono">{copyFrom}</span>. Enter a new name, review the settings, then click Save to create this {isWorker ? 'worker' : 'job'}.</p>
-      )}
-
-      {serverError && (
-        <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-300">
-          {serverError}
-        </div>
-      )}
+      {serverError && <InlineAlert>{serverError}</InlineAlert>}
       {(detail.isError || source.isError) && (
-        <div role="alert" className="panel border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
-          The latest definition could not be refreshed. Your draft is preserved; saving may require reloading if the server revision changed.
-        </div>
-      )}
-      {(!creating || validationVisible) && errors.length > 0 && (
-        <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-2.5 text-sm text-red-300">
-          Fix {errors.length} validation {errors.length === 1 ? 'issue' : 'issues'} before saving — see the panel on the right.
-        </div>
+        <InlineAlert tone="warn">The latest definition could not be refreshed. Your draft is preserved; saving may require reloading if the server revision changed.</InlineAlert>
       )}
 
-      {/* Two-column editor: form 8/12, live TOML + validation 4/12 on desktop. */}
-      <div className="grid gap-4 xl:grid-cols-12">
-        <div className="min-w-0 xl:col-span-8">
-          <JobForm
-            showKindTabs={creating && !copyFrom}
-            nameLocked={!creating}
-            draft={draft}
-            readOnly={save.isPending || configOwned}
-            runAsEnabled={runAsEnabled}
-            onChange={patch}
-            formId={FORM_ID}
-          />
-        </div>
+      <div className="editor-grid">
+        <JobForm
+          showKindTabs={creating && !copyFrom}
+          nameLocked={!creating}
+          draft={draft}
+          readOnly={save.isPending || configOwned}
+          runAsEnabled={runAsEnabled}
+          onChange={patch}
+          formId={FORM_ID}
+          errors={fieldErrors}
+        />
 
-        <div className="space-y-4 min-w-0 xl:col-span-4">
-          {(!creating || validationVisible) && <ValidationCard errors={errors} hints={hints} />}
+        <aside className="editor-rail" aria-label="Editor tools">
+          <Card as="section" aria-label="Sections">
+            <ul className="section-nav">
+              {formSections(draft.kind).map((section, index) => {
+                const invalid = errors.some(issue => showIssues && sectionOf(issue.field, draft.kind) === section.id);
+                return (
+                  <li key={section.id}>
+                    <button type="button" onClick={() => jumpTo(section.id)}>
+                      <span className={`section-step !h-5 !w-5 !text-[0.65rem] ${invalid ? 'invalid' : ''}`}>{index + 1}</span>
+                      <span className="flex-1">{section.title}</span>
+                      {invalid && <Icon name="alert-circle" size={13} className="text-danger-fg" />}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
 
-          <section className="panel flex min-h-[24rem] flex-col overflow-hidden">
-            <div className="flex items-center justify-between border-b border-base-300 px-3 py-2">
-              <div className="tab-seg">
-                <button type="button" className={tab === 'form' ? 'active' : ''} onClick={() => setTab('form')}>
-                  Form
-                </button>
-                <button type="button" className={tab === 'toml' ? 'active' : ''} onClick={() => setTab('toml')}>
-                  TOML source
-                </button>
-              </div>
-              <button
-                type="button"
-                className="btn-icon"
-                title="Copy TOML to clipboard"
-                onClick={() => void navigator.clipboard.writeText(tomlText)}
-              >
-                <Icon name="copy" size={14} />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto">
-              {tab === 'toml' ? (
-                <div className="toml-view py-2">
-                  {tomlText.split('\n').map((line, index) => (
-                    <div key={index} className="toml-line">
-                      <span className="toml-num">{index + 1}</span>
-                      <span className="whitespace-pre">
-                        {highlightToml(line).map((segment, segIndex) => (
-                          <span key={segIndex} className={segment.cls}>
-                            {segment.text}
-                          </span>
-                        ))}
+          {showIssues && <ValidationCard errors={errors} hints={hints} onSelect={focusField} />}
+
+          <Card as="section" aria-labelledby="toml-title" className="overflow-hidden">
+            <CardHeader
+              id="toml-title"
+              title="TOML preview"
+              meta="live"
+              actions={<IconButton icon={copiedToml ? 'check' : 'copy'} size="sm" label="Copy TOML to clipboard" onClick={() => void copyToml()} />}
+            />
+            <div className="toml-view max-h-[26rem] overflow-auto py-2">
+              {tomlText.split('\n').map((line, index) => (
+                <div key={index} className="toml-line">
+                  <span className="toml-num">{index + 1}</span>
+                  <span className="whitespace-pre">
+                    {highlightToml(line).map((segment, segIndex) => (
+                      <span key={segIndex} className={segment.cls}>
+                        {segment.text}
                       </span>
-                    </div>
-                  ))}
+                    ))}
+                  </span>
                 </div>
-              ) : (
-                <DefinitionSummary draft={draft} />
-              )}
+              ))}
             </div>
-          </section>
-
-        </div>
+          </Card>
+        </aside>
       </div>
 
-      {/* Edit mode: run history + danger zone */}
+      {!configOwned && (dirty || creating) && (
+        <div className="save-bar" role="region" aria-label="Save changes">
+          <span className="flex items-center gap-2 text-sm">
+            <Dot tone={showIssues && errors.length ? 'danger' : 'info'} />
+            {showIssues && errors.length
+              ? `${errors.length} ${errors.length === 1 ? 'issue' : 'issues'} to fix before saving`
+              : creating
+                ? `New ${kindLabel} — not saved yet`
+                : 'Unsaved changes'}
+          </span>
+          {showIssues && errors.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => focusField(errors[0].field)}>
+              Go to first issue
+            </Button>
+          )}
+          <span className="ml-auto flex gap-2">
+            <Link href={creating || !existingName ? '/jobs' : jobPath(existingName)} className={buttonClass('ghost')}>
+              Discard
+            </Link>
+            {saveButton}
+          </span>
+        </div>
+      )}
+
       {!creating && existingName && !configOwned && (
         <EditExtras name={existingName} onDelete={() => remove.mutate(existingName, { onSuccess: () => navigate('/jobs') })} deleting={remove.isPending} />
       )}
@@ -266,43 +308,54 @@ export default function JobEditor({ params }: JobEditorProps) {
   );
 }
 
+const SECTION_OF: Record<string, string> = {
+  name: 'basics',
+  command: 'command',
+  schedule: 'schedule',
+  timezone: 'schedule',
+  catch_up: 'schedule',
+  timeout: 'limits',
+  on_overlap: 'limits',
+  retries: 'limits',
+  retry_delay: 'limits',
+  success_codes: 'limits',
+  restart_backoff_max: 'lifecycle',
+  log_max: 'retention',
+};
 
-function ValidationCard({ errors, hints }: { errors: DefinitionIssue[]; hints: DefinitionIssue[] }) {
+function sectionOf(field: string, kind: string): string {
+  const section = SECTION_OF[field] ?? '';
+  return kind === 'worker' && section === 'schedule' ? 'lifecycle' : section;
+}
+
+function ValidationCard({ errors, hints, onSelect }: { errors: DefinitionIssue[]; hints: DefinitionIssue[]; onSelect: (field: string) => void }) {
   const ok = errors.length === 0;
-  const issues = ok ? hints : [...errors, ...hints];
+  const issues = [...errors, ...hints];
+  const tone = ok ? (hints.length ? 'warn' : 'ok') : 'danger';
   return (
-    <section
-      role={ok && hints.length === 0 ? 'status' : 'alert'}
-      className={`panel overflow-hidden ${ok ? 'border-green-500/35 bg-green-500/5' : errors.length > 0 ? 'border-red-500/35 bg-red-500/5' : 'border-amber-500/35 bg-amber-500/5'}`}
-    >
-      <div className="flex items-center gap-2 border-b border-base-300 px-3 py-2">
-        <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${ok ? 'bg-green-500/15 text-green-400' : errors.length > 0 ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'}`}>
-          <Icon name={ok ? 'check' : errors.length > 0 ? 'alert-circle' : 'alert-triangle'} size={13} />
+    <section role={ok ? 'status' : 'alert'} className={`callout callout-${tone === 'ok' ? 'info' : tone}`} aria-label="Configuration check">
+      <div className="callout-head">
+        <Icon name={ok ? 'circle-check' : 'alert-circle'} size={16} className={`shrink-0 ${ok ? 'text-ok-fg' : 'callout-icon'}`} />
+        <h2 className={`callout-title ${ok && !hints.length ? '!text-ok-fg' : ''}`}>Configuration check</h2>
+        <span className="text-xs muted">
+          {ok ? (hints.length ? `${hints.length} suggestion${hints.length === 1 ? '' : 's'}` : 'No issues found') : `${errors.length} error${errors.length === 1 ? '' : 's'}${hints.length ? ` · ${hints.length} hint${hints.length === 1 ? '' : 's'}` : ''}`}
         </span>
-        <div className="min-w-0">
-          <p className={`text-sm font-semibold ${ok ? 'text-green-400' : errors.length > 0 ? 'text-red-400' : 'text-amber-400'}`}>Configuration check</p>
-          <p className="text-xs muted">{ok ? (hints.length ? `${hints.length} suggestion${hints.length === 1 ? '' : 's'}` : 'No issues found') : `${errors.length} error${errors.length === 1 ? '' : 's'}${hints.length ? ` · ${hints.length} hint${hints.length === 1 ? '' : 's'}` : ''}`}</p>
-        </div>
       </div>
-      {issues.length > 0 && (
-        <div className="divide-y divide-base-300">
-          {issues.map(issue => {
-            const error = issue.severity === 'error';
-            return (
-              <div key={`${issue.field}-${issue.message}`} className="grid grid-cols-[auto_1fr] gap-x-2 px-3 py-2">
-                <Icon name={error ? 'alert-circle' : 'alert-triangle'} size={13} className={error ? 'mt-0.5 text-red-400' : 'mt-0.5 text-amber-400'} />
-                <div className="min-w-0">
-                  <p className={`flex items-baseline justify-between gap-2 text-xs font-semibold ${error ? 'text-red-400' : 'text-amber-400'}`}>
-                    <span className="truncate">{issue.title}</span>
-                    {issue.line && <span className="num shrink-0 opacity-80">Line {issue.line}</span>}
-                  </p>
-                  <p className="text-xs muted">{issue.message}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {issues.map(issue => {
+        const error = issue.severity === 'error';
+        return (
+          <button key={`${issue.field}-${issue.message}`} type="button" className="issue-button" onClick={() => onSelect(issue.field)}>
+            <Icon name={error ? 'alert-circle' : 'alert-triangle'} size={13} className={`mt-0.5 ${error ? 'text-danger-fg' : 'text-warn-fg'}`} />
+            <span className="min-w-0">
+              <span className={`flex items-baseline justify-between gap-2 text-xs font-semibold ${error ? 'text-danger-fg' : 'text-warn-fg'}`}>
+                <span className="truncate">{issue.title}</span>
+                {issue.line && <span className="num shrink-0 opacity-80">TOML line {issue.line}</span>}
+              </span>
+              <span className="block text-xs muted">{issue.message}</span>
+            </span>
+          </button>
+        );
+      })}
     </section>
   );
 }
@@ -325,8 +378,8 @@ function EditExtras({ name, onDelete, deleting }: { name: string; onDelete: () =
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold text-red-400">Danger zone</h2>
-        <div className="panel flex flex-wrap items-center justify-between gap-3 border-red-500/30 px-4 py-3">
+        <h2 className="mb-2 text-sm font-semibold text-danger-fg">Danger zone</h2>
+        <div className="panel flex flex-wrap items-center justify-between gap-3 border-danger/30 px-4 py-3">
           <p className="text-sm muted">
             Removes the definition. Past runs and logs are kept until retention cleans them.
           </p>
@@ -337,37 +390,5 @@ function EditExtras({ name, onDelete, deleting }: { name: string; onDelete: () =
         </div>
       </section>
     </div>
-  );
-}
-
-function DefinitionSummary({ draft }: { draft: Definition }) {
-  const rows: [string, string][] = [
-    ['Kind', draft.kind],
-    ['Command', draft.command ?? ((draft.argv ?? []).join(' ') || '—')],
-    ['Schedule', draft.schedule ?? (draft.kind === 'worker' ? 'continuous' : '—')],
-    ['Timezone', draft.timezone ?? 'UTC'],
-    ['Run as', draft.run_as ?? '—'],
-    ['Timeout', draft.timeout === undefined ? '—' : `${draft.timeout} seconds`],
-    ['Grace', draft.grace === undefined ? '—' : `${draft.grace} seconds`],
-    ['Overlap', draft.on_overlap ?? '—'],
-    ['Catch up', draft.catch_up ?? '—'],
-    ['Database unavailable', draft.kind === 'worker' ? '—' : (draft.on_history_unavailable || 'run')],
-    ['Run on start', draft.run_on_start ? 'yes' : 'no'],
-    ['Env base', draft.env_base ?? 'clean'],
-    ['Env file', draft.env_file ?? '—'],
-    ['Keep runs', String(draft.keep_runs ?? 0)],
-    ['Keep for', draft.keep_for === undefined ? '—' : `${draft.keep_for} days`],
-    ['Labels', Object.entries(draft.labels ?? {}).map(([k, v]) => `${k}=${v}`).join(', ') || '—'],
-    ['Alerts', (draft.alerts ?? []).join(', ') || '—'],
-  ];
-  return (
-    <dl className="grid grid-cols-[9rem_1fr] gap-y-2.5 p-4 text-sm">
-      {rows.map(([label, value]) => (
-        <div key={label} className="contents">
-          <dt className="muted">{label}</dt>
-          <dd className="break-words font-mono text-[0.8rem]">{value}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }

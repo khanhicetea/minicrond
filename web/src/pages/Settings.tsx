@@ -157,7 +157,7 @@ function Panel({
     <section className={`panel flex min-w-0 flex-col ${className}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-base-300)_60%,transparent)] px-4 py-3">
         <h2 className="panel-title flex items-center gap-2">
-          <Icon name={icon} size={14} className="text-blue-400" />
+          <Icon name={icon} size={14} className="text-link" />
           {title}
           {badge}
         </h2>
@@ -260,7 +260,7 @@ function MainTab() {
             </button>
           </div>
           {rotateError && (
-            <p role="alert" className="mt-2 text-xs text-amber-400">{rotateError}</p>
+            <p role="alert" className="mt-2 text-xs text-warn-fg">{rotateError}</p>
           )}
         </Panel> : <Panel icon="key" title="Security" badge={<span className={`chip chip-info ${BADGE}`}>proxy</span>}>
           <p className="text-sm muted">Access to this daemon is managed by the authenticated proxy. No bearer token is stored in this browser.</p>
@@ -318,7 +318,7 @@ function MainTab() {
           badge={<span className={`chip chip-neutral ${BADGE}`}>{activity.length}</span>}
           actions={
             <div className="flex items-center gap-3">
-              <Link href="/runs" className="text-xs font-medium text-sky-300 hover:text-sky-200">
+              <Link href="/runs" className="text-xs font-medium text-link hover:text-link-hover">
                 View all runs
               </Link>
               <label className="flex items-center gap-2 text-xs muted">
@@ -341,12 +341,12 @@ function MainTab() {
                   <span className="log-ts">{formatDayTime(run.queued_at)}</span>
                   <span className={`log-tag !w-auto ${failed ? 'stderr' : 'system'}`}>{level}</span>
                   <span className="log-text">
-                    <Link href={jobPath(run.job)} className="text-blue-300 hover:underline">
+                    <Link href={jobPath(run.job)} className="text-link hover:underline">
                       {run.job}
                     </Link>{' '}
                     {run.status} ({formatSpan(run.started_at, run.ended_at)})
                     {run.exit_code !== undefined && run.exit_code !== 0 ? ` · exit ${run.exit_code}` : ''} ·{' '}
-                    <Link href={`/runs/${encodeURIComponent(run.run_id)}`} className="text-blue-300 hover:underline">
+                    <Link href={`/runs/${encodeURIComponent(run.run_id)}`} className="text-link hover:underline">
                       run {shortRunId(run.run_id)}
                     </Link>
                   </span>
@@ -473,10 +473,10 @@ function ImportTab() {
           )}
         </div>
         {error && (
-          <p role="alert" className="mt-2 text-xs text-red-400">{error}</p>
+          <p role="alert" className="mt-2 text-xs text-danger-fg">{error}</p>
         )}
         {applied !== null && (
-          <p role="status" className="mt-2 flex items-center gap-1.5 text-xs text-green-400">
+          <p role="status" className="mt-2 flex items-center gap-1.5 text-xs text-ok-fg">
             <Icon name="circle-check" size={13} /> Applied {applied} definition{applied === 1 ? '' : 's'}.
           </p>
         )}

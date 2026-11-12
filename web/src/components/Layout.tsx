@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
-import { Icon, type IconName } from './Icon';
+import { Icon } from './Icon';
+import { IconButton, SearchField } from './ui';
 import { auth, useAuthState } from '../auth';
-import { daemonQuery, jobsQuery, runsQuery, RECENT_RUNS_LIMIT } from '../queries';
-import { RANGE_LABEL, useRange, type RangeKey } from '../lib/range';
-import { shortRunId } from '../lib/format';
+import { daemonQuery } from '../queries';
+import { useOverview } from '../lib/attention';
+import { isEmbedded } from '../lib/embed';
+import { formatUptime, shortRunId } from '../lib/format';
 import { jobPath } from '../lib/routes';
+
+export { PageHeader } from './ui';
 
 function currentTheme(): 'light' | 'dark' {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
@@ -20,53 +24,51 @@ function ThemeToggle() {
     localStorage.setItem('minicron_theme', next);
     setTheme(next);
   };
-  return (
-    <button type="button" className="btn-icon" onClick={toggle} aria-label="Toggle color theme" title="Toggle theme">
-      <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-    </button>
-  );
+  return <IconButton icon={theme === 'dark' ? 'sun' : 'moon'} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={toggle} />;
 }
 
-const NAV: { href: string; label: string; icon: IconName; match: (path: string) => boolean }[] = [
-  { href: '/jobs', label: 'Jobs & Workers', icon: 'list', match: p => p === '/' || p.startsWith('/jobs') },
-  { href: '/runs', label: 'Runs', icon: 'clock', match: p => p.startsWith('/runs') },
-  { href: '/metrics', label: 'Metrics', icon: 'trending-up', match: p => p === '/metrics' },
-  { href: '/monitor', label: 'Monitor', icon: 'activity', match: p => p === '/monitor' },
-  { href: '/settings', label: 'Settings', icon: 'settings', match: p => p === '/settings' },
+const NAV: { href: string; label: string; match: (path: string) => boolean; attention?: boolean }[] = [
+  { href: '/jobs', label: 'Jobs & workers', match: p => p === '/' || p.startsWith('/jobs'), attention: true },
+  { href: '/runs', label: 'Runs', match: p => p.startsWith('/runs') },
+  { href: '/metrics', label: 'Metrics', match: p => p === '/metrics' },
+  { href: '/monitor', label: 'Monitor', match: p => p === '/monitor' },
+  { href: '/settings', label: 'Settings', match: p => p === '/settings' },
 ];
 
-function NavLinks() {
+function NavTabs({ attentionCount }: { attentionCount: number }) {
   const [location] = useLocation();
   return (
-    <nav className="top-nav" aria-label="Primary">
+    <nav className="nav-tabs" aria-label="Primary">
       {NAV.map(item => (
-        <Link
-          key={item.href}
-          href={item.href}
-          className={`nav-link ${item.match(location) ? 'active' : ''}`}
-          title={item.label}
-        >
-          <Icon name={item.icon} size={15} />
-          <span className="nav-label">{item.label}</span>
+        <Link key={item.href} href={item.href} className="nav-tab" aria-current={item.match(location) ? 'page' : undefined}>
+          {item.label}
+          {item.attention && attentionCount > 0 && (
+            <span className="nav-count" title={`${attentionCount} need attention`}>
+              <span className="sr-only">, </span>
+              {attentionCount}
+              <span className="sr-only"> need attention</span>
+            </span>
+          )}
         </Link>
       ))}
     </nav>
   );
 }
 
-function GlobalSearch() {
+function GlobalSearch({ compact }: { compact: boolean }) {
   const [location, navigate] = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  const jobs = useQuery(jobsQuery());
-  const runs = useQuery(runsQuery('', RECENT_RUNS_LIMIT));
+  const [expanded, setExpanded] = useState(!compact);
+  const { definitions, runs } = useOverview();
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        inputRef.current?.focus();
+        setExpanded(true);
+        requestAnimationFrame(() => inputRef.current?.focus());
         setOpen(true);
       }
       if (event.key === 'Escape') setOpen(false);
@@ -78,15 +80,12 @@ function GlobalSearch() {
   useEffect(() => {
     setOpen(false);
     setQuery('');
-  }, [location]);
+    setExpanded(!compact);
+  }, [location, compact]);
 
   const q = query.trim().toLowerCase();
-  const jobHits = (jobs.data ?? []).filter(job => job.name.toLowerCase().includes(q)).slice(0, 5);
-  const runHits = q
-    ? (runs.data ?? [])
-        .filter(run => run.run_id.toLowerCase().includes(q) || run.job.toLowerCase().includes(q))
-        .slice(0, 5)
-    : [];
+  const jobHits = q ? definitions.filter(job => job.name.toLowerCase().includes(q)).slice(0, 6) : [];
+  const runHits = q ? (runs.data ?? []).filter(run => run.run_id.toLowerCase().includes(q) || run.job.toLowerCase().includes(q)).slice(0, 5) : [];
 
   const go = (path: string) => {
     setOpen(false);
@@ -94,58 +93,58 @@ function GlobalSearch() {
     void navigate(path);
   };
 
+  if (!expanded) {
+    return (
+      <IconButton
+        icon="search"
+        label="Search jobs, workers and runs"
+        outlined
+        onClick={() => {
+          setExpanded(true);
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+      />
+    );
+  }
+
   return (
     <div
-      className="relative min-w-0 flex-1 max-w-md"
+      className="relative"
       onBlur={event => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setOpen(false);
+        if (compact && !query) setExpanded(false);
       }}
     >
-      <div className="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-1.5">
-        <Icon name="search" size={15} className="shrink-0 faint" />
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={event => {
-            setQuery(event.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder="Search jobs, workers, runs…"
-          className="w-full bg-transparent text-sm outline-none placeholder:text-[color-mix(in_srgb,var(--color-base-content)_38%,transparent)]"
-          aria-label="Search"
-        />
-        <span className="kbd">⌘K</span>
-      </div>
-      {open && q && (jobHits.length > 0 || runHits.length > 0) && (
-        <div className="menu-pop left-0 right-0 top-full mt-1.5">
-          {jobHits.length > 0 && (
-            <div className="px-2 pb-1 pt-1.5 text-[0.68rem] font-semibold uppercase tracking-wide faint">Definitions</div>
-          )}
+      <SearchField
+        ref={inputRef}
+        value={query}
+        onChange={value => {
+          setQuery(value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        label="Search jobs, workers and runs"
+        placeholder="Search jobs, runs"
+        className={compact ? 'w-52' : 'w-60'}
+        hint={compact ? undefined : <span className="kbd">⌘K</span>}
+      />
+      {open && q && (
+        <div className="menu-pop right-0 top-full mt-1.5 w-80 max-w-[calc(100vw-2rem)]">
+          {jobHits.length === 0 && runHits.length === 0 && <p className="px-2 py-2 text-sm muted">No matches.</p>}
+          {jobHits.length > 0 && <div className="menu-label">Definitions</div>}
           {jobHits.map(job => (
-            <button
-              key={job.name}
-              type="button"
-              className="menu-item"
-              onClick={() => go(jobPath(job.name))}
-            >
-              <Icon name={job.kind === 'worker' ? 'terminal' : 'calendar'} size={14} className="muted" />
-              <span className="font-mono text-[0.8rem]">{job.name}</span>
+            <button key={job.name} type="button" className="menu-item" onClick={() => go(jobPath(job.name))}>
+              <Icon name={job.kind === 'worker' ? 'terminal' : 'calendar'} size={14} />
+              <span className="mono text-[0.8rem]">{job.name}</span>
             </button>
           ))}
-          {runHits.length > 0 && (
-            <div className="px-2 pb-1 pt-1.5 text-[0.68rem] font-semibold uppercase tracking-wide faint">Runs</div>
-          )}
+          {runHits.length > 0 && <div className="menu-label">Runs</div>}
           {runHits.map(run => (
-            <button
-              key={run.run_id}
-              type="button"
-              className="menu-item"
-              onClick={() => go(`/runs/${encodeURIComponent(run.run_id)}`)}
-            >
-              <Icon name="history" size={14} className="muted" />
-              <span className="font-mono text-[0.8rem]">#{shortRunId(run.run_id)}</span>
-              <span className="muted ml-auto text-xs">{run.job}</span>
+            <button key={run.run_id} type="button" className="menu-item" onClick={() => go(`/runs/${encodeURIComponent(run.run_id)}`)}>
+              <Icon name="history" size={14} />
+              <span className="mono text-[0.8rem]">#{shortRunId(run.run_id)}</span>
+              <span className="ml-auto text-xs muted">{run.job}</span>
             </button>
           ))}
         </div>
@@ -156,98 +155,67 @@ function GlobalSearch() {
 
 function LivePill() {
   const daemon = useQuery(daemonQuery());
-  const ok = daemon.isSuccess;
-  const connecting = daemon.isPending;
-  const version = daemon.data ? ` · v${daemon.data.version}` : '';
+  const state = daemon.isSuccess ? 'ok' : daemon.isPending ? 'pending' : 'error';
+  const title = daemon.data
+    ? `Daemon healthy · v${daemon.data.version} · up ${formatUptime(daemon.data.uptime_s)}`
+    : state === 'pending'
+      ? 'Checking daemon connection'
+      : 'Cannot reach the daemon API';
   return (
-    <span
-      className={`chip ${ok ? 'chip-success' : connecting ? 'chip-neutral' : 'chip-error'}`}
-      title={ok ? `Daemon healthy${version}` : connecting ? 'Checking daemon connection' : 'Cannot reach the daemon API'}
-    >
-      <span className={`dot ${ok ? 'dot-green dot-pulse' : connecting ? 'dot-gray' : 'dot-red'}`} />
-      {ok ? 'Live' : connecting ? 'Connecting' : 'Offline'}
+    <span className={`live-pill ${state}`} title={title}>
+      <span className={`dot ${state === 'ok' ? 'dot-green' : state === 'pending' ? 'dot-gray' : 'dot-red'}`} />
+      {state === 'ok' ? 'Live' : state === 'pending' ? 'Connecting' : 'Offline'}
+      <span className="sr-only">{title}</span>
     </span>
   );
 }
 
-function RangeSelect() {
-  const { range, setRange } = useRange();
-  return (
-    <label className="relative inline-flex items-center">
-      <span className="pointer-events-none absolute left-2.5 faint">
-        <Icon name="calendar" size={14} />
-      </span>
-      <select
-        value={range}
-        onChange={event => setRange(event.target.value as RangeKey)}
-        aria-label="Time range"
-        className="mc-select !w-auto !rounded-lg !py-1.5 !pl-8 !pr-8 !text-[0.8125rem]"
-      >
-        {(Object.keys(RANGE_LABEL) as RangeKey[]).map(key => (
-          <option key={key} value={key}>
-            {RANGE_LABEL[key]}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
+/** True below the phone breakpoint; the header then collapses search to an icon. */
+function useNarrow(): boolean {
+  const query = '(max-width: 720px)';
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setNarrow(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  return narrow;
+}
+
+/** Opens the current page as a top-level tab (embedded mode only). */
+function openStandalone() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('embed');
+  window.open(url.toString(), '_blank', 'noopener');
 }
 
 export default function Layout({ children }: { children: ReactNode }) {
   const { mode } = useAuthState();
+  const [location] = useLocation();
+  const { attention } = useOverview();
+  const narrow = useNarrow();
+  // The Runs workspace fills the area under the header edge to edge.
+  const flush = location === '/runs';
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <Link href="/jobs" className="brand">
+      <header className="app-header">
+        <Link href="/jobs" className="brand" aria-label="minicrond home">
           <span className="brand-mark">
-            <Icon name="terminal" size={14} strokeWidth={2.4} />
+            <Icon name="clock" size={15} strokeWidth={2.4} />
           </span>
-          <span className="brand-name">minicrond</span>
+          {!isEmbedded && <span className="brand-name">minicrond</span>}
         </Link>
-        <NavLinks />
-        <GlobalSearch />
-        <div className="topbar-actions">
+        <NavTabs attentionCount={attention.length} />
+        <div className="header-actions">
+          <GlobalSearch compact={isEmbedded || narrow} />
           <LivePill />
-          <RangeSelect />
           <ThemeToggle />
-          {mode === 'token' && <button
-            type="button"
-            className="btn-icon"
-            onClick={() => auth.logout()}
-            aria-label="Sign out"
-            title="Sign out (clears the token from this tab)"
-          >
-            <Icon name="log-out" size={16} />
-          </button>}
+          {isEmbedded && <IconButton icon="external-link" label="Open minicrond in a new tab" onClick={openStandalone} />}
+          {mode === 'token' && <IconButton icon="log-out" label="Sign out" title="Sign out (clears the token from this tab)" onClick={() => auth.logout()} />}
         </div>
       </header>
-      <main className="page">{children}</main>
-    </div>
-  );
-}
-
-/** Page heading block: title + optional subtitle + right-side actions. */
-export function PageHeader({
-  title,
-  subtitle,
-  badge,
-  actions,
-}: {
-  title: ReactNode;
-  subtitle?: ReactNode;
-  badge?: ReactNode;
-  actions?: ReactNode;
-}) {
-  return (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2.5">
-          <h1 className="text-[1.45rem] font-bold tracking-tight">{title}</h1>
-          {badge}
-        </div>
-        {subtitle && <p className="mt-0.5 text-sm muted">{subtitle}</p>}
-      </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      <main className={flush ? 'page-flush' : 'page'}>{children}</main>
     </div>
   );
 }

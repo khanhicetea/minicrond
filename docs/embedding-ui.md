@@ -43,6 +43,26 @@ rebuilding it: entries are sorted, timestamps are zero, numeric owner/group
 are zero, and gzip omits its filename/timestamp. Verify the checksum before
 vendoring, and obtain the archive/checksum from a trusted release source.
 
+## Embedded (iframe) layout
+
+The SPA switches to a compact layout when it runs inside another page's
+iframe (detected with `window.self !== window.top`) or when it is opened with
+`?embed=1` (remembered for the browser tab). It sets `data-embed="true"` on
+`<html>`: the header drops the product name and collapses search to an icon,
+gains an "Open in a new tab" button, and the three Runs panes narrow so the
+log keeps most of a ~1000 px frame. Nothing about the bundle contract or the
+API changes. Framing still needs the daemon/gateway to allow it
+(`frame-ancestors`, see below).
+
+## Theming
+
+Colors, radii, type sizes and control heights are CSS custom properties in
+`web/src/styles/tokens.css` (`--mc-*`, with dark and light sets). Components
+and pages use them through the shared classes in `web/src/index.css` and the
+Tailwind aliases declared there (`bg-surface`, `text-danger-fg`, …); reusable
+React pieces live in `web/src/components/ui/`. To rebrand, change the tokens
+and rebuild the bundle.
+
 ## API media types
 
 All `/api/v1/*` response bodies, including errors and router redirects, stay

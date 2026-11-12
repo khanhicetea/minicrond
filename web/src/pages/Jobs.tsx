@@ -1,33 +1,81 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useSearch } from 'wouter';
-import { useQuery } from '@tanstack/react-query';
-import { Icon } from '../components/Icon';
-import { PageHeader } from '../components/Layout';
 import { errorText } from '../api';
 import { useAuthState } from '../auth';
-import { jobsQuery, runsQuery, RECENT_RUNS_LIMIT, useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerStates } from '../queries';
+import { useDeleteJob, useSetJobEnabled, useTriggerJob, useWorkerAction } from '../queries';
 import { humanizeSchedule } from '../lib/cron';
 import { definitionToToml } from '../lib/toml';
 import { formatCountdown, formatDayTime, formatSpan } from '../lib/format';
 import { jobPath } from '../lib/routes';
 import { publicURL } from '../lib/base';
-import type { Definition, Run, WorkerState } from '../types';
-import { workerStatusLabel } from '../lib/worker-state';
+import { useOverview, workerNeedsAttention, type AttentionItem } from '../lib/attention';
+import { workerAttentionLabel, workerStatusLabel } from '../lib/worker-state';
+import {
+  ActionMenu,
+  Badge,
+  Button,
+  Callout,
+  EmptyState,
+  InlineAlert,
+  PageHeader,
+  RunStrip,
+  SearchField,
+  Segmented,
+  StatusLabel,
+  buttonClass,
+  failedCount,
+  isFailedStatus,
+  runStatusMeta,
+  type ActionItem,
+  type Tone,
+} from '../components/ui';
+import { isActiveRun, type Definition, type Run, type WorkerState } from '../types';
 
-type FilterKey = 'all' | 'jobs' | 'workers' | 'enabled' | 'attention' | 'disabled';
-type SortKey = 'name' | 'schedule' | 'next' | 'last';
+type FilterKey = 'all' | 'attention' | 'jobs' | 'workers' | 'enabled' | 'disabled';
+type SortKey = 'attention' | 'next' | 'last' | 'name';
+const FILTER_KEYS: FilterKey[] = ['all', 'attention', 'jobs', 'workers', 'enabled', 'disabled'];
+
+interface RowState {
+  tone: Tone;
+  label: string;
+  attention: boolean;
+}
+
+function rowState(definition: Definition, lastRun: Run | undefined, worker: WorkerState | undefined): RowState {
+  if (definition.enabled === false) return { tone: 'neutral', label: 'Disabled', attention: false };
+  if (definition.kind === 'worker') {
+    if (!worker) return { tone: 'neutral', label: '—', attention: false };
+    if (worker.status === 'exhausted') return { tone: 'danger', label: workerStatusLabel(worker), attention: true };
+    if (workerNeedsAttention(worker)) return { tone: 'warn', label: workerAttentionLabel(worker), attention: true };
+    if (worker.active) return { tone: 'ok', label: 'Healthy', attention: false };
+    return { tone: 'neutral', label: workerStatusLabel(worker), attention: false };
+  }
+  if (lastRun && isActiveRun(lastRun)) return { tone: 'info', label: runStatusMeta(lastRun.status).label, attention: false };
+  if (lastRun && isFailedStatus(lastRun.status)) return { tone: 'danger', label: runStatusMeta(lastRun.status).label, attention: true };
+  return { tone: 'ok', label: definition.run_on_start ? 'Startup init' : 'On schedule', attention: false };
+}
+
+function scheduleText(definition: Definition): { main: string; sub: string } {
+  if (definition.kind === 'worker') return { main: 'Continuous', sub: 'worker' };
+  if (definition.run_on_start) return { main: 'At startup', sub: 'run_on_start' };
+  const raw = definition.schedule ?? '';
+  return { main: humanizeSchedule(raw) || raw || '—', sub: raw };
+}
+
+function runDuration(run: Run): string {
+  return isActiveRun(run) ? formatSpan(run.started_at ?? run.queued_at) : formatSpan(run.started_at, run.ended_at);
+}
 
 export default function Jobs() {
   const { mode } = useAuthState();
   const [, navigate] = useLocation();
   const params = new URLSearchParams(useSearch());
-  const initialFilter = (params.get('filter') as FilterKey) || 'all';
+  const requested = params.get('filter') as FilterKey | null;
+  const initialFilter: FilterKey = requested && FILTER_KEYS.includes(requested) ? requested : 'all';
 
   const [filter, setFilter] = useState<FilterKey>(initialFilter);
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortAsc, setSortAsc] = useState(true);
+  const [sortKey, setSortKey] = useState<SortKey>('attention');
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -38,45 +86,27 @@ export default function Jobs() {
     return () => clearInterval(timer);
   }, []);
 
-  // Refresh the server-owned schedule/run state so the countdown never
-  // drifts from the scheduler when a fire occurs.
-  const jobs = useQuery({ ...jobsQuery(), refetchInterval: 15_000, refetchIntervalInBackground: false });
-  const runs = useQuery({ ...runsQuery('', RECENT_RUNS_LIMIT), refetchInterval: 5_000, refetchIntervalInBackground: false });
+  // Refresh server-owned schedule/run state so countdowns never drift from the scheduler.
+  const { jobs, runs, definitions, runsByJob, workerStates, attention } = useOverview({ poll: true });
   const trigger = useTriggerJob();
   const setEnabled = useSetJobEnabled();
   const remove = useDeleteJob();
+  const workerAction = useWorkerAction();
+  const busy = setEnabled.isPending || trigger.isPending || remove.isPending || workerAction.isPending;
 
-  const definitions = jobs.data ?? [];
-  const workerNames = definitions.filter(d => d.kind === 'worker').map(d => d.name);
-  const workerStates = useWorkerStates(workerNames);
-
-  // Latest run per definition.
-  const lastRun = new Map<string, Run>();
-  for (const run of runs.data ?? []) {
-    if (!lastRun.has(run.job)) lastRun.set(run.job, run);
-  }
-
-  const workerAttention = (definition: Definition): boolean => {
-    const state = workerStates[definition.name];
-    return (state?.failures ?? 0) > 0 || state?.held === true;
-  };
+  const states = new Map(definitions.map(definition => [definition.name, rowState(definition, runsByJob.get(definition.name)?.[0], workerStates[definition.name])]));
+  const running = (runs.data ?? []).filter(isActiveRun).length;
 
   const counts = {
     all: definitions.length,
+    attention: attention.length,
     jobs: definitions.filter(d => d.kind === 'job').length,
-    workers: workerNames.length,
-    enabled: definitions.filter(d => d.enabled !== false).length,
-    attention:
-      definitions.filter(
-        d =>
-          (d.kind === 'worker' && workerAttention(d)) ||
-          (d.kind === 'job' && d.enabled !== false && (lastRun.get(d.name)?.status === 'failed' || lastRun.get(d.name)?.status === 'timeout')),
-      ).length,
+    workers: definitions.filter(d => d.kind === 'worker').length,
     disabled: definitions.filter(d => d.enabled === false).length,
   };
 
   const q = query.trim().toLowerCase();
-  let filtered = definitions.filter(definition => {
+  const filtered = definitions.filter(definition => {
     if (q && !definition.name.toLowerCase().includes(q) && !(definition.labels?.description ?? '').toLowerCase().includes(q)) return false;
     switch (filter) {
       case 'jobs':
@@ -88,32 +118,33 @@ export default function Jobs() {
       case 'disabled':
         return definition.enabled === false;
       case 'attention':
-        return workerAttention(definition) || (definition.kind === 'job' && ['failed', 'timeout'].includes(lastRun.get(definition.name)?.status ?? ''));
+        return states.get(definition.name)?.attention === true;
       default:
         return true;
     }
   });
-  filtered = [...filtered].sort((a, b) => {
-      let cmp = 0;
-      if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
-      if (sortKey === 'schedule') cmp = (a.schedule ?? '').localeCompare(b.schedule ?? '');
-      if (sortKey === 'next') {
-        const nextOf = (d: Definition) => {
-          if (d.kind !== 'job' || d.enabled === false || !d.next_fire_at) return Number.MAX_SAFE_INTEGER;
-          const value = Date.parse(d.next_fire_at);
-          return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
-        };
-        cmp = nextOf(a) - nextOf(b);
-      }
-      if (sortKey === 'last') {
-        const lastOf = (d: Definition) => new Date(lastRun.get(d.name)?.queued_at ?? 0).getTime();
-        cmp = lastOf(b) - lastOf(a);
-      }
-      return sortAsc ? cmp : -cmp;
-    });
+
+  const nextOf = (d: Definition) => {
+    if (d.kind !== 'job' || d.enabled === false || !d.next_fire_at) return Number.MAX_SAFE_INTEGER;
+    const value = Date.parse(d.next_fire_at);
+    return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+  };
+  const lastOf = (d: Definition) => new Date(runsByJob.get(d.name)?.[0]?.queued_at ?? 0).getTime();
+  const rank = (d: Definition) => {
+    const state = states.get(d.name);
+    return state?.attention ? 0 : state?.tone === 'info' ? 1 : d.enabled === false ? 3 : 2;
+  };
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortKey === 'next') return nextOf(a) - nextOf(b) || a.name.localeCompare(b.name);
+    if (sortKey === 'last') return lastOf(b) - lastOf(a) || a.name.localeCompare(b.name);
+    if (sortKey === 'attention') return rank(a) - rank(b) || nextOf(a) - nextOf(b) || a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name);
+  });
+
+  const nextJob = definitions.filter(d => nextOf(d) !== Number.MAX_SAFE_INTEGER).sort((a, b) => nextOf(a) - nextOf(b))[0];
 
   const copyCurl = async () => {
-    const sample = filtered[0];
+    const sample = sorted[0];
     const lines = [
       '# minicrond REST API — replace $MINICROND_TOKEN (rotate locally if lost)',
       `BASE=${publicURL('/api/v1')}`,
@@ -144,133 +175,181 @@ export default function Jobs() {
     URL.revokeObjectURL(link.href);
   };
 
+  const runNow = (name: string) => {
+    setActionError('');
+    trigger.mutate(name, {
+      onSuccess: run => navigate(`/runs/${encodeURIComponent(run.run_id)}`),
+      onError: err => setActionError(errorText(err)),
+    });
+  };
+
+  const controlWorker = (name: string, action: 'start' | 'stop' | 'restart') => {
+    setActionError('');
+    workerAction.mutate({ name, action }, { onError: err => setActionError(errorText(err)) });
+  };
+
+  const menuFor = (definition: Definition): ActionItem[] => {
+    const configOwned = definition.source === 'config';
+    const enabled = definition.enabled !== false;
+    const worker = workerStates[definition.name];
+    const isWorker = definition.kind === 'worker';
+    return [
+      { label: 'Run now', icon: 'play', primary: true, hidden: isWorker || configOwned, disabled: !enabled || busy, onSelect: () => runNow(definition.name) },
+      { label: 'Restart worker', icon: 'rotate-ccw', primary: true, hidden: !isWorker || configOwned, disabled: !enabled || busy, onSelect: () => controlWorker(definition.name, 'restart') },
+      { label: worker?.active ? 'Stop worker' : 'Start worker', icon: worker?.active ? 'square' : 'play', hidden: !isWorker || configOwned, disabled: !enabled || busy, onSelect: () => controlWorker(definition.name, worker?.active ? 'stop' : 'start') },
+      { label: enabled ? 'Disable' : 'Enable', checked: enabled, hidden: configOwned, disabled: busy, onSelect: () => setEnabled.mutate({ name: definition.name, enabled: !enabled }, { onError: err => setActionError(errorText(err)) }) },
+      { label: configOwned ? 'View definition' : 'Edit definition', icon: configOwned ? 'eye' : 'pencil', separatorBefore: !configOwned, onSelect: () => navigate(jobPath(definition.name)) },
+      { label: 'Run history', icon: 'history', onSelect: () => navigate(`/runs?job=${encodeURIComponent(definition.name)}`) },
+      { label: 'Clone', icon: 'copy', onSelect: () => navigate(`/jobs/new?from=${encodeURIComponent(definition.name)}`) },
+      { label: 'Export TOML', icon: 'download', onSelect: () => exportOne(definition) },
+      {
+        label: 'Delete…',
+        icon: 'trash',
+        danger: true,
+        separatorBefore: true,
+        hidden: configOwned,
+        disabled: busy,
+        onSelect: () => {
+          if (window.confirm(`Delete definition "${definition.name}"? Past runs and logs are kept until retention cleans them.`)) {
+            remove.mutate(definition.name, { onError: err => setActionError(errorText(err)) });
+          }
+        },
+      },
+    ];
+  };
+
+  const subtitle = jobs.isSuccess ? (
+    <>
+      {counts.jobs} {counts.jobs === 1 ? 'job' : 'jobs'} and {counts.workers} {counts.workers === 1 ? 'worker' : 'workers'}
+      {running > 0 && ` · ${running} running now`}
+      {nextJob && (
+        <>
+          {' · next fire '}
+          <strong className="font-semibold text-fg">
+            {nextJob.name} in {formatCountdown(nextOf(nextJob), now)}
+          </strong>
+        </>
+      )}
+    </>
+  ) : undefined;
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <PageHeader
-        title="Jobs & Workers"
+        title="Jobs & workers"
+        subtitle={subtitle}
         actions={
           <>
-            <Link href="/settings?tab=import" className="btn-sub">
-              <Icon name="upload" size={14} />
-              Import
+            <Link href="/settings?tab=import" className={buttonClass('secondary')}>
+              Import TOML
             </Link>
-            <Link href="/jobs/new" className="btn-primary-x">
-              <Icon name="plus" size={14} />
+            <Link href="/jobs/new" className={buttonClass('primary')}>
               New definition
             </Link>
           </>
         }
       />
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex min-w-[13rem] flex-1 items-center gap-2 rounded-lg border border-base-300 bg-base-100 px-3 py-1.5 sm:max-w-xs">
-          <Icon name="search" size={14} className="faint shrink-0" />
-          <input
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Search definitions"
-            className="w-full bg-transparent text-sm outline-none placeholder:text-[color-mix(in_srgb,var(--color-base-content)_35%,transparent)]"
-            aria-label="Search definitions"
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <FilterPill label="All" count={counts.all} active={filter === 'all'} onClick={() => setFilter('all')} />
-          <FilterPill label="Jobs" count={counts.jobs} active={filter === 'jobs'} onClick={() => setFilter('jobs')} />
-          <FilterPill label="Workers" count={counts.workers} active={filter === 'workers'} onClick={() => setFilter('workers')} />
-          <button type="button" className={`pill ${filter === 'enabled' ? 'active' : ''}`} onClick={() => setFilter(filter === 'enabled' ? 'all' : 'enabled')}>
-            <span className="dot dot-green" /> Enabled
-          </button>
-          <button type="button" className={`pill ${filter === 'attention' ? 'active' : ''}`} onClick={() => setFilter(filter === 'attention' ? 'all' : 'attention')}>
-            <span className="dot dot-amber" /> Needs attention
-          </button>
-          {counts.disabled > 0 && <FilterPill label="Disabled" count={counts.disabled} active={filter === 'disabled'} onClick={() => setFilter('disabled')} />}
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs muted">
-            Sort by:
-            <select className="mc-select !w-auto !py-1 !text-xs" value={sortKey} onChange={event => setSortKey(event.target.value as SortKey)}>
-              <option value="name">Name</option>
-              <option value="schedule">Schedule</option>
-              <option value="next">Next fire</option>
-              <option value="last">Last run</option>
-            </select>
-          </label>
-          <button type="button" className="btn-icon border border-base-300" onClick={() => setSortAsc(value => !value)} aria-label="Toggle sort direction">
-            <Icon name="arrow-up-down" size={14} />
-          </button>
-        </div>
+      {attention.length > 0 && (
+        <Callout tone="danger" title={`${attention.length} need${attention.length === 1 ? 's' : ''} attention`} meta={attention.length < definitions.length ? 'Everything else is on schedule.' : undefined}>
+          <div className="attention-grid">
+            {attention.map(item => (
+              <AttentionRow key={item.definition.name} item={item} busy={busy} onRunNow={runNow} onRestart={name => controlWorker(name, 'restart')} />
+            ))}
+          </div>
+        </Callout>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Segmented<FilterKey>
+          label="Filter definitions"
+          value={filter}
+          onChange={setFilter}
+          options={[
+            { value: 'all', label: 'All', count: counts.all },
+            { value: 'attention', label: 'Needs attention', count: counts.attention, hidden: counts.attention === 0 && filter !== 'attention' },
+            { value: 'jobs', label: 'Jobs', count: counts.jobs },
+            { value: 'workers', label: 'Workers', count: counts.workers },
+            { value: 'disabled', label: 'Disabled', count: counts.disabled, hidden: counts.disabled === 0 && filter !== 'disabled' },
+          ]}
+        />
+        <SearchField value={query} onChange={setQuery} label="Search definitions" className="min-w-[12rem] flex-[0_1_16rem]" />
+        <label className="ml-auto flex items-center gap-2 text-sm muted">
+          Sort
+          <select className="mc-select !w-auto" value={sortKey} onChange={event => setSortKey(event.target.value as SortKey)}>
+            <option value="attention">Needs attention first</option>
+            <option value="next">Next fire</option>
+            <option value="last">Last run</option>
+            <option value="name">Name</option>
+          </select>
+        </label>
       </div>
 
-      {(actionError || trigger.error || remove.error || setEnabled.error) && (
-        <div role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
-          {actionError || errorText(trigger.error ?? remove.error ?? setEnabled.error)}
-        </div>
+      {(actionError || trigger.error || remove.error || setEnabled.error || workerAction.error) && (
+        <InlineAlert>{actionError || errorText(trigger.error ?? remove.error ?? setEnabled.error ?? workerAction.error)}</InlineAlert>
       )}
-
       {(jobs.isError || runs.isError) && (
-        <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+        <InlineAlert
+          tone="warn"
+          action={
+            <Button
+              size="sm"
+              onClick={() => {
+                void jobs.refetch();
+                void runs.refetch();
+              }}
+            >
+              Retry
+            </Button>
+          }
+        >
           {jobs.isError ? `Definitions could not be loaded: ${errorText(jobs.error)}.` : `Recent run status could not be loaded: ${errorText(runs.error)}.`}
           {jobs.data || runs.data ? ' Displayed data may be stale.' : ''}
-          <button type="button" className="ml-3 underline" onClick={() => { void jobs.refetch(); void runs.refetch(); }}>Retry</button>
-        </div>
+        </InlineAlert>
       )}
 
-      {/* Table */}
-      <div className="panel overflow-x-auto">
+      <div className="table-wrap">
         {jobs.isPending ? (
           <div className="skeleton m-4 h-64" />
         ) : jobs.isError && !jobs.data ? (
-          <p className="px-6 py-14 text-center text-sm muted">Definitions are unavailable. Retry the request above.</p>
-        ) : filtered.length === 0 ? (
-          <div className="px-6 py-14 text-center">
-            <Icon name="inbox" size={24} className="mx-auto faint" />
-            <p className="mt-2 text-sm muted">
-              {definitions.length === 0 ? 'No definitions yet. Create one or add jobs to your TOML config and reload.' : 'No definitions match the current filters.'}
-            </p>
+          <EmptyState icon="alert-circle" title="Definitions are unavailable.">
+            Retry the request above.
+          </EmptyState>
+        ) : sorted.length === 0 ? (
+          <EmptyState title={definitions.length === 0 ? 'No definitions yet.' : 'No definitions match the current filters.'}>
             {definitions.length === 0 && (
-              <Link href="/jobs/new" className="btn-primary-x mt-4 inline-flex">
-                <Icon name="plus" size={14} /> New definition
-              </Link>
+              <>
+                <p>Create one, or add jobs to your TOML config and reload.</p>
+                <Link href="/jobs/new" className={buttonClass('primary', 'md', 'mt-4')}>
+                  New definition
+                </Link>
+              </>
             )}
-          </div>
+          </EmptyState>
         ) : (
-          <table className="mc-table">
+          <table className="mc-table min-w-[52rem]">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Schedule / state</th>
-                <th>Next fire</th>
-                <th>Last run</th>
-                <th>Active</th>
-                <th>Enabled</th>
-                <th className="w-10" aria-label="Actions" />
+                <th scope="col">Definition</th>
+                <th scope="col">Status · last 20 runs</th>
+                <th scope="col">Schedule</th>
+                <th scope="col">Last run</th>
+                <th scope="col">Next</th>
+                <th scope="col" className="text-right">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map(definition => (
+              {sorted.map(definition => (
                 <Row
                   key={definition.name}
                   definition={definition}
-                  lastRun={lastRun.get(definition.name)}
-                  workerState={workerStates[definition.name]}
+                  runs={runsByJob.get(definition.name) ?? []}
+                  worker={workerStates[definition.name]}
+                  state={states.get(definition.name)!}
                   now={now}
-                  busy={setEnabled.isPending || trigger.isPending || remove.isPending}
-                  onTrigger={() =>
-                    trigger.mutate(definition.name, {
-                      onSuccess: run => navigate(`/runs/${run.run_id}`),
-                      onError: err => setActionError(errorText(err)),
-                    })
-                  }
-                  onToggle={checked => setEnabled.mutate({ name: definition.name, enabled: checked })}
-                  onExport={() => exportOne(definition)}
-                  onEdit={() => navigate(jobPath(definition.name))}
-                  onClone={() => navigate(`/jobs/new?from=${encodeURIComponent(definition.name)}`)}
-                  onDelete={() => {
-                    if (window.confirm(`Delete definition "${definition.name}"? Past runs and logs are kept until retention cleans them.`)) {
-                      remove.mutate(definition.name, { onError: err => setActionError(errorText(err)) });
-                    }
-                  }}
+                  actions={menuFor(definition)}
                 />
               ))}
             </tbody>
@@ -278,288 +357,162 @@ export default function Jobs() {
         )}
       </div>
 
-      {/* curl footer */}
-      <div className="panel flex flex-wrap items-center gap-3 px-4 py-3">
-        <Icon name="info" size={16} className="faint shrink-0" />
-        <p className="min-w-0 flex-1 text-sm muted">
-          {mode === 'token' ? 'All actions in this list (trigger, edit, export, delete) can be copied as curl commands.' : 'Use the local minicrond CLI to automate these actions.'}
-        </p>
-        {mode === 'token' && <button type="button" className="btn-sub" onClick={() => void copyCurl()}>
-          <Icon name="terminal" size={14} />
-          {copied ? 'Copied!' : 'Copy as curl'}
-        </button>}
+      <footer className="flex flex-wrap items-center gap-3 text-sm faint">
+        <span>
+          Showing {sorted.length} of {definitions.length} definitions
+        </span>
+        <span className="ml-auto inline-flex flex-wrap items-center gap-3 text-xs">
+          <Legend className="s-ok" label="succeeded" />
+          <Legend className="s-fail" label="failed / timeout" />
+          <Legend className="s-run" label="running" />
+        </span>
+        {mode === 'token' ? (
+          <Button size="sm" icon="terminal" onClick={() => void copyCurl()}>
+            {copied ? 'Copied!' : 'Copy as curl'}
+          </Button>
+        ) : (
+          <span className="text-xs">Use the local minicrond CLI to automate these actions.</span>
+        )}
+      </footer>
+    </div>
+  );
+}
+
+function Legend({ className, label }: { className: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="run-strip" aria-hidden="true">
+        <span className={className} style={{ height: 8 }} />
+      </span>
+      {label}
+    </span>
+  );
+}
+
+function AttentionRow({ item, busy, onRunNow, onRestart }: { item: AttentionItem; busy: boolean; onRunNow: (name: string) => void; onRestart: (name: string) => void }) {
+  const { definition, run, worker } = item;
+  const configOwned = definition.source === 'config';
+  let badge = 'Needs attention';
+  let detail = '';
+  let logRun = '';
+  if (run) {
+    badge = runStatusMeta(run.status).label;
+    detail = [run.exit_code !== undefined ? `Exit ${run.exit_code}` : '', `after ${runDuration(run)}`, run.attempt > 1 ? `attempt ${run.attempt}` : '', formatDayTime(run.ended_at ?? run.queued_at)].filter(Boolean).join(' · ');
+    logRun = run.run_id;
+  } else if (worker) {
+    badge = workerAttentionLabel(worker);
+    detail = worker.exhaustion?.reason ?? (worker.failures > 0 ? `${worker.failures} recent ${worker.failures === 1 ? 'failure' : 'failures'}` : 'Held by the restart policy');
+    logRun = worker.exhaustion?.last_run_id ?? '';
+  }
+  return (
+    <div className="attention-item">
+      <div className="min-w-0 flex-[1_1_14rem]">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link href={jobPath(definition.name)} className="mono font-medium text-fg hover:text-link">
+            {definition.name}
+          </Link>
+          <Badge tone={worker && !run ? 'warn' : 'danger'}>{badge}</Badge>
+        </div>
+        <div className="attention-detail">{detail}</div>
+      </div>
+      <div className="flex gap-2">
+        {logRun ? (
+          <Link href={`/runs/${encodeURIComponent(logRun)}`} className={buttonClass('secondary', 'sm')}>
+            View log
+          </Link>
+        ) : (
+          <Link href={`/runs?job=${encodeURIComponent(definition.name)}`} className={buttonClass('secondary', 'sm')}>
+            View runs
+          </Link>
+        )}
+        {!configOwned && run && (
+          <Button size="sm" variant="danger" icon="play" disabled={busy} onClick={() => onRunNow(definition.name)}>
+            Run again
+          </Button>
+        )}
+        {!configOwned && worker && !run && (
+          <Button size="sm" variant="danger" icon="rotate-ccw" disabled={busy} onClick={() => onRestart(definition.name)}>
+            Restart
+          </Button>
+        )}
       </div>
     </div>
   );
 }
 
-function FilterPill({ label, count, active, onClick }: { label: string; count: number; active: boolean; onClick: () => void }) {
-  return (
-    <button type="button" className={`pill ${active ? 'active' : ''}`} onClick={onClick}>
-      {label} <span className="count">{count}</span>
-    </button>
-  );
-}
-
-function Row({
-  definition,
-  lastRun,
-  workerState,
-  now,
-  busy,
-  onTrigger,
-  onToggle,
-  onExport,
-  onEdit,
-  onClone,
-  onDelete,
-}: {
-  definition: Definition;
-  lastRun?: Run;
-  workerState?: WorkerState;
-  now: number;
-  busy: boolean;
-  onTrigger: () => void;
-  onToggle: (checked: boolean) => void;
-  onExport: () => void;
-  onEdit: () => void;
-  onClone: () => void;
-  onDelete: () => void;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+function Row({ definition, runs, worker, state, now, actions }: { definition: Definition; runs: Run[]; worker?: WorkerState; state: RowState; now: number; actions: ActionItem[] }) {
   const isWorker = definition.kind === 'worker';
-  const enabled = definition.enabled !== false;
-
-  // Portal out of the table's overflow container, then fit to the viewport.
-  useLayoutEffect(() => {
-    if (!menuOpen || !buttonRef.current || !menuRef.current) return;
-    const anchor = buttonRef.current.getBoundingClientRect();
-    const menu = menuRef.current.getBoundingClientRect();
-    const margin = 8;
-    const below = anchor.bottom + 4;
-    setMenuPosition({
-      left: Math.max(margin, Math.min(anchor.right - menu.width, window.innerWidth - menu.width - margin)),
-      top: Math.max(margin, Math.min(
-        below + menu.height <= window.innerHeight - margin ? below : anchor.top - menu.height - 4,
-        window.innerHeight - menu.height - margin,
-      )),
-    });
-  }, [menuOpen]);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClick = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (!menuRef.current?.contains(target) && !buttonRef.current?.contains(target)) setMenuOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setMenuOpen(false);
-        buttonRef.current?.focus();
-      }
-    };
-    const onScroll = (event: Event) => {
-      if (!(event.target instanceof Node) || !menuRef.current?.contains(event.target)) setMenuOpen(false);
-    };
-    const close = () => setMenuOpen(false);
-    document.addEventListener('mousedown', onClick);
-    document.addEventListener('keydown', onKeyDown);
-    document.addEventListener('scroll', onScroll, true);
-    window.addEventListener('resize', close);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      document.removeEventListener('keydown', onKeyDown);
-      document.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('resize', close);
-    };
-  }, [menuOpen]);
-
-  const scheduleLine = isWorker ? 'Continuous' : definition.run_on_start ? 'Startup init' : humanizeSchedule(definition.schedule ?? '') || '—';
-  const attention = isWorker ? (workerState?.failures ?? 0) > 0 || workerState?.held === true : ['failed', 'timeout'].includes(lastRun?.status ?? '');
-  const stateLine = !enabled
-    ? { text: 'Disabled', dot: 'dot-gray' }
-    : isWorker
-      ? attention
-        ? { text: workerState ? workerStatusLabel(workerState) : 'Needs attention', dot: 'dot-amber' }
-        : workerState?.active
-          ? { text: 'Healthy', dot: 'dot-green' }
-          : { text: 'Stopped', dot: 'dot-gray' }
-      : { text: 'On schedule', dot: 'dot-green' };
-
-  const nextFireMs = !isWorker && enabled && definition.next_fire_at ? Date.parse(definition.next_fire_at) : null;
-  const activeCount = lastRun && (lastRun.status === 'running' || lastRun.status === 'pending' || lastRun.status === 'queued') ? 1 : 0;
+  const lastRun = runs[0];
+  const schedule = scheduleText(definition);
+  const failures = failedCount(runs);
+  const nextFireMs = !isWorker && definition.enabled !== false && definition.next_fire_at ? Date.parse(definition.next_fire_at) : null;
 
   return (
-    <tr>
+    <tr className={definition.enabled === false ? 'row-disabled' : state.attention ? 'row-attention' : ''}>
       <td>
         <div className="flex items-center gap-3">
-          <span className={`icon-badge ${isWorker ? 'icon-green' : 'icon-blue'} !h-9 !w-9`}>
-            <Icon name={isWorker ? 'terminal' : 'calendar'} size={16} />
+          <span className={`icon-badge ${isWorker ? 'icon-green' : 'icon-blue'} !h-[1.875rem] !w-[1.875rem]`} title={isWorker ? 'Worker' : 'Job'}>
+            {isWorker ? 'W' : 'J'}
+            <span className="sr-only">{isWorker ? ' worker' : ' job'}</span>
           </span>
           <div className="min-w-0">
-            <Link href={jobPath(definition.name)} className="block truncate font-mono text-[0.85rem] font-semibold hover:text-sky-300">
+            <Link href={jobPath(definition.name)} className="block truncate mono text-[0.84rem] font-medium text-fg-strong hover:text-link">
               {definition.name}
             </Link>
-			{definition.source === 'config' && <span className="text-xs muted">Config owned</span>}
-            <div className="truncate text-xs muted">{definition.labels?.description ?? definition.command ?? ((definition.argv ?? []).join(' ') || '—')}</div>
+            <div className="max-w-[18rem] truncate mono text-xs faint" title={definition.labels?.description ?? definition.command ?? (definition.argv ?? []).join(' ')}>
+              {definition.source === 'config' && <span className="mr-1.5 font-sans">Config owned ·</span>}
+              {definition.labels?.description ?? definition.command ?? ((definition.argv ?? []).join(' ') || '—')}
+            </div>
           </div>
         </div>
       </td>
-      <td>
-        <div className="whitespace-nowrap">{scheduleLine}</div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-xs muted">
-          <span className={`dot ${stateLine.dot}`} />
-          {stateLine.text}
-          {isWorker && workerState && !enabled && ' · worker'}
-          {isWorker && workerState && (workerState.failures ?? 0) > 0 && <span className="text-amber-400">· {workerState.failures} failures</span>}
+      <td className="whitespace-nowrap">
+        <div className="inline-flex flex-col gap-1.5">
+          <StatusLabel tone={state.tone}>{state.label}</StatusLabel>
+          {isWorker ? (
+            <span className="text-xs faint">
+              {worker?.active ? '1 / 1 active' : '0 / 1 active'}
+              {(worker?.failures ?? 0) > 0 && <span className="text-warn-fg"> · {worker?.failures} {worker?.failures === 1 ? 'failure' : 'failures'}</span>}
+            </span>
+          ) : (
+            <span className="flex items-center gap-2">
+              <RunStrip runs={runs} />
+              {failures > 0 && <span className="text-[0.72rem] text-danger-fg tabular">{failures} failed</span>}
+            </span>
+          )}
         </div>
       </td>
+      <td>
+        <div className="text-sm">{schedule.main}</div>
+        <div className="cell-sub mono">{schedule.sub}</div>
+      </td>
       <td className="whitespace-nowrap">
+        {lastRun ? (
+          <>
+            <Link href={`/runs/${encodeURIComponent(lastRun.run_id)}`} className="text-sm text-fg hover:text-link" aria-label={`Open last run ${lastRun.run_id}`}>
+              {isActiveRun(lastRun) ? 'Running now' : runStatusMeta(lastRun.status).label}
+              {lastRun.exit_code !== undefined && lastRun.exit_code !== 0 && ` · exit ${lastRun.exit_code}`}
+            </Link>
+            <div className="cell-sub">
+              {formatDayTime(lastRun.started_at ?? lastRun.queued_at)} · {runDuration(lastRun)}
+            </div>
+          </>
+        ) : (
+          <span className="faint">{isWorker ? '—' : 'No recent runs'}</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap tabular">
         {nextFireMs !== null && Number.isFinite(nextFireMs) ? (
           <>
-            <div className="num">
-              {nextFireMs > now ? `in ${formatCountdown(nextFireMs, now)}` : <span className="text-amber-400">Firing…</span>}
-            </div>
-            <div className="mt-0.5 text-xs muted">{formatDayTime(new Date(nextFireMs).toISOString())}</div>
+            <div className="text-sm">{nextFireMs > now ? `in ${formatCountdown(nextFireMs, now)}` : <span className="text-warn-fg">Firing…</span>}</div>
+            <div className="cell-sub">{formatDayTime(new Date(nextFireMs).toISOString())}</div>
           </>
         ) : (
           <span className="faint">—</span>
         )}
       </td>
-      <td className="whitespace-nowrap">
-        {lastRun ? (
-          <>
-            <div>
-              <Link
-                href={`/runs/${encodeURIComponent(lastRun.run_id)}`}
-                className="text-sky-300 hover:text-sky-200 hover:underline"
-                aria-label={`Open last run ${lastRun.run_id}`}
-              >
-                {lastRun.status === 'running' || lastRun.status === 'pending' || lastRun.status === 'queued' ? 'Now' : formatDayTime(lastRun.queued_at)}
-              </Link>
-            </div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-xs">
-              {lastRun.status === 'succeeded' ? (
-                <span className="inline-flex items-center gap-1 text-green-400">
-                  <Icon name="circle-check" size={12} /> {formatSpan(lastRun.started_at, lastRun.ended_at)}
-                </span>
-              ) : lastRun.status === 'failed' || lastRun.status === 'timeout' ? (
-                <span className="inline-flex items-center gap-1 text-red-400">
-                  <Icon name="circle-x" size={12} /> {formatSpan(lastRun.started_at, lastRun.ended_at)}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-blue-400 capitalize">
-                  <Icon name="loader" size={12} className="spin" /> {lastRun.status}
-                </span>
-              )}
-            </div>
-          </>
-        ) : (
-          <span className="faint">Never</span>
-        )}
-      </td>
-      <td>
-        {isWorker ? (
-          workerState ? (
-            <div>
-              <span className="num">{workerState.active ? '1 / 1' : '0 / 1'}</span>
-              <div className={`mt-0.5 text-xs ${workerState.failures > 0 ? 'text-red-400' : workerState.active ? 'text-green-400' : 'muted'}`}>
-                {workerStatusLabel(workerState)}
-              </div>
-              {workerState.exhaustion && <div className="mt-1 max-w-xs text-xs text-red-400">
-                <div>{workerState.exhaustion.reason}</div>
-                {workerState.exhaustion.last_run_id && <Link href={`/runs/${encodeURIComponent(workerState.exhaustion.last_run_id)}`} className="text-sky-300 hover:underline">Last run</Link>}
-              </div>}
-            </div>
-          ) : (
-            <span className="faint">—</span>
-          )
-        ) : activeCount ? (
-          <span className="chip chip-info !py-0.5">{activeCount}</span>
-        ) : (
-          <span className="num faint">0</span>
-        )}
-      </td>
-      <td>
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={busy || definition.source === 'config'}
-            onChange={event => onToggle(event.target.checked)}
-            aria-label={`Enable ${definition.name}`}
-          />
-          <span className="track" />
-        </label>
-      </td>
-      <td className="relative text-right">
-        <div className="inline-block">
-          <button ref={buttonRef} type="button" className="btn-icon" onClick={() => setMenuOpen(open => !open)} aria-label={`Actions for ${definition.name}`} aria-expanded={menuOpen}>
-            <Icon name="more-vertical" size={16} />
-          </button>
-          {menuOpen && createPortal(
-            <div ref={menuRef} className="menu-pop" style={{ position: 'fixed', ...menuPosition, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)', overflowY: 'auto' }}>
-              {!isWorker && definition.source !== 'config' && (
-                <button
-                  type="button"
-                  className="menu-item"
-                  disabled={!enabled || busy}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onTrigger();
-                  }}
-                >
-                  <Icon name="play" size={14} /> Trigger now
-                </button>
-              )}
-              {definition.source !== 'config' && <button
-                type="button"
-                className="menu-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onEdit();
-                }}
-              >
-                <Icon name="pencil" size={14} /> Edit
-              </button>}
-              <button
-                type="button"
-                className="menu-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onExport();
-                }}
-              >
-                <Icon name="download" size={14} /> Export
-              </button>
-              <button
-                type="button"
-                className="menu-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onClone();
-                }}
-              >
-                <Icon name="copy" size={14} /> Clone
-              </button>
-              {definition.source !== 'config' && <button
-                type="button"
-                className="menu-item danger"
-                disabled={busy}
-                onClick={() => {
-                  setMenuOpen(false);
-                  onDelete();
-                }}
-              >
-                <Icon name="trash" size={14} /> Delete
-              </button>}
-            </div>,
-            document.body,
-          )}
-        </div>
+      <td className="text-right">
+        <ActionMenu label={`Actions for ${definition.name}`} items={actions} />
       </td>
     </tr>
   );

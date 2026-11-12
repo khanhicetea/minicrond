@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { ApiError, api, errorText, streamRunLogs } from '../api';
 import { Icon } from './Icon';
+import { Badge, Button, SearchField, Segmented, type Tone } from './ui';
 import { decodePayload, parseAnsi } from '../lib/ansi';
 import { formatClock } from '../lib/format';
 import { STREAM_STDERR, STREAM_SYSTEM, type Frame } from '../types';
@@ -32,12 +33,19 @@ const STREAM_TAG: Record<number, { label: string; cls: string }> = {
   3: { label: 'system', cls: 'system' },
 };
 
+const TAIL_LINES = 3;
+const COPY_LINES = 20;
+
+function lineText(line: LogLine): string {
+  return line.segments.map(segment => segment.text).join('');
+}
+
 /**
  * Live log viewer backed by the daemon's resumable SSE stream, styled after
  * the reference run-output panel: stream filters, text search, wrap toggle,
  * line cap, and follow/pause controls.
  */
-export default function LogViewer({ runId, footer }: { runId: string; footer?: React.ReactNode }) {
+export default function LogViewer({ runId, footer, errorTail = false }: { runId: string; footer?: React.ReactNode; errorTail?: boolean }) {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
@@ -207,76 +215,93 @@ export default function LogViewer({ runId, footer }: { runId: string; footer?: R
 
   const phaseLabel =
     phase === 'loading'
-      ? 'loading…'
+      ? 'Loading…'
       : phase === 'backlog'
-        ? 'reconnecting…'
+        ? 'Reconnecting…'
         : phase === 'live'
-          ? 'live'
+          ? 'Live'
           : phase === 'done'
-            ? 'stream closed'
+            ? 'Complete'
             : phase === 'dropped'
-              ? 'frames dropped by retention'
-              : 'error';
+              ? 'Frames dropped by retention'
+              : 'Error';
+  const phaseTone: Tone = phase === 'live' ? 'ok' : phase === 'error' || phase === 'dropped' ? 'danger' : phase === 'done' ? 'neutral' : 'info';
 
-  const phaseCls =
-    phase === 'live'
-      ? 'chip-success'
-      : phase === 'error' || phase === 'dropped'
-        ? 'chip-error'
-        : phase === 'done'
-          ? 'chip-neutral'
-          : 'chip-info';
+  // Failed runs: surface the last stderr lines from the buffer, no extra request.
+  const finished = phase === 'done' || phase === 'dropped';
+  const stderrLines = errorTail && finished ? lines.filter(line => line.stream === STREAM_STDERR) : [];
+  const tail = stderrLines.slice(-TAIL_LINES);
+  const [copiedTail, setCopiedTail] = useState(false);
+  const [flashSeq, setFlashSeq] = useState<number | null>(null);
+
+  const jumpTo = (seq: number) => {
+    setStreamFilter('all');
+    setQuery('');
+    setSearch('');
+    setFollow(false);
+    stickRef.current = false;
+    // Find the page that holds the line (pages count back from the newest).
+    const index = lines.findIndex(line => line.seq === seq);
+    const scopedStart = Math.max(0, lines.length - limit);
+    if (index < scopedStart) setLimit(5000);
+    const fromEnd = lines.length - 1 - index;
+    setPage(Math.floor(fromEnd / PAGE_SIZE));
+    setFlashSeq(seq);
+    window.setTimeout(() => {
+      containerRef.current?.querySelector(`[data-seq="${seq}"]`)?.scrollIntoView({ block: 'center' });
+    }, 30);
+  };
+
+  const copyTail = async () => {
+    try {
+      await navigator.clipboard.writeText(stderrLines.slice(-COPY_LINES).map(lineText).join('\n').trim());
+      setCopiedTail(true);
+      window.setTimeout(() => setCopiedTail(false), 2000);
+    } catch {
+      setCopiedTail(false);
+    }
+  };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-base-300 px-3 py-2">
-        <div className="flex items-center gap-1">
-          {(['all', 'stdout', 'stderr', 'system'] as StreamFilter[]).map(filter => (
-            <button
-              key={filter}
-              type="button"
-              onClick={() => setStreamFilter(filter)}
-              className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
-                streamFilter === filter
-                  ? filter === 'stderr'
-                    ? 'border-red-500/50 bg-red-500/15 text-red-300'
-                    : filter === 'system'
-                      ? 'border-blue-500/50 bg-blue-500/15 text-blue-300'
-                      : filter === 'stdout'
-                        ? 'border-green-500/50 bg-green-500/15 text-green-300'
-                        : 'border-blue-500/50 bg-blue-500/15 text-blue-300'
-                  : 'border-transparent text-[color-mix(in_srgb,var(--color-base-content)_55%,transparent)] hover:bg-base-300/40'
-              }`}
-            >
-              {filter}
-            </button>
-          ))}
-        </div>
-        <div className="ml-1 flex min-w-[10rem] flex-1 items-center gap-1.5 rounded-lg border border-base-300 bg-base-200 px-2 py-1">
-          <Icon name="search" size={13} className="faint shrink-0" />
-          <input
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Search logs"
-            className="w-full bg-transparent font-mono text-xs outline-none placeholder:text-[color-mix(in_srgb,var(--color-base-content)_35%,transparent)]"
-            aria-label="Search logs"
-          />
-        </div>
-        <label className="flex items-center gap-1.5 text-xs muted" title="Wrap long lines">
-          <Icon name="wrap-text" size={14} />
-          Wrap
-          <span className="switch !h-[1.1rem] !w-[2rem]">
-            <input type="checkbox" checked={wrap} onChange={event => setWrap(event.target.checked)} />
-            <span className="track" />
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      {tail.length > 0 && (
+        <div className="error-tail" aria-label="Last stderr before exit">
+          <span className="text-xs font-semibold text-danger-fg">Last stderr before exit</span>
+          <span className="text-xs muted">
+            {tail.length} {tail.length === 1 ? 'line' : 'lines'} · from line {tail[0].seq}
           </span>
-        </label>
-        <select
-          value={limit}
-          onChange={event => setLimit(Number(event.target.value))}
-          aria-label="Line limit"
-          className="mc-select !w-auto !py-1 !text-xs"
-        >
+          <span className="ml-auto flex gap-2">
+            <Button size="sm" variant="ghost" icon={copiedTail ? 'check' : 'copy'} onClick={() => void copyTail()}>
+              {copiedTail ? 'Copied' : 'Copy last errors'}
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => jumpTo(tail[0].seq)}>
+              Jump to line {tail[0].seq}
+            </Button>
+          </span>
+          <pre>{tail.map(lineText).join('\n')}</pre>
+        </div>
+      )}
+
+      <div className="log-toolbar">
+        <SearchField size="sm" value={query} onChange={setQuery} label="Search logs" className="min-w-[9rem] flex-[1_1_10rem] max-w-[16rem]" />
+        <Segmented<StreamFilter>
+          size="sm"
+          label="Streams"
+          value={streamFilter}
+          onChange={setStreamFilter}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'stdout', label: 'stdout' },
+            { value: 'stderr', label: 'stderr' },
+            { value: 'system', label: 'system' },
+          ]}
+        />
+        <span className="ml-auto" />
+        <button type="button" className={`pill ${wrap ? 'active' : ''}`} aria-pressed={wrap} onClick={() => setWrap(value => !value)} title="Wrap long lines">
+          <Icon name="wrap-text" size={13} />
+          Wrap
+        </button>
+        <select value={limit} onChange={event => setLimit(Number(event.target.value))} aria-label="Line limit" className="mc-select !min-h-[1.875rem] !w-auto !py-0 !text-xs">
           {[500, 1000, 5000].map(value => (
             <option key={value} value={value}>
               {value} lines
@@ -285,58 +310,57 @@ export default function LogViewer({ runId, footer }: { runId: string; footer?: R
         </select>
         <button
           type="button"
+          className={`pill ${follow ? 'active' : ''}`}
+          aria-pressed={follow}
           onClick={() => (follow ? setFollow(false) : resumeFollow())}
-          className={`btn-sub !py-1 !px-2 !text-xs ${follow ? '!border-green-500/50 !text-green-300' : ''}`}
           title={follow ? 'Stop automatic scrolling' : 'Follow newest lines'}
         >
-          <span className={`dot ${follow ? 'dot-green dot-pulse' : 'dot-gray'}`} />
-          {follow ? 'Following' : 'Follow newest'}
+          <span className={`dot ${follow ? 'dot-blue dot-pulse' : 'dot-gray'}`} />
+          {follow ? 'Following' : 'Follow'}
         </button>
       </div>
 
-      {/* Status strip */}
-      <div className="flex items-center gap-2 border-b border-base-300 px-3 py-1.5 text-xs">
-        <span className={`chip ${phaseCls} !py-0.5`}>{phaseLabel}</span>
-        <span className="muted">
-          {`${visible.length} shown · ${filtered.length} matching · ${lines.length} buffered`}
-        </span>
+      <div className="flex flex-wrap items-center gap-2 border-b border-line-subtle px-4 py-1.5 text-xs">
+        <Badge tone={phaseTone}>{phaseLabel}</Badge>
+        <span className="faint">{`${visible.length} shown · ${filtered.length} matching · ${lines.length} buffered`}</span>
         {pageCount > 1 && (
           <div className="ml-auto flex items-center gap-2">
-            <button type="button" className="btn-sub !px-2 !py-0.5 !text-xs" disabled={safePage >= pageCount - 1} onClick={() => { setPage(safePage + 1); setFollow(false); stickRef.current = false; }}>
+            <Button
+              size="sm"
+              disabled={safePage >= pageCount - 1}
+              onClick={() => {
+                setPage(safePage + 1);
+                setFollow(false);
+                stickRef.current = false;
+              }}
+            >
               Older
-            </button>
-            <span className="muted">Page {pageCount - safePage} of {pageCount}</span>
-            <button type="button" className="btn-sub !px-2 !py-0.5 !text-xs" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
+            </Button>
+            <span className="muted">
+              Page {pageCount - safePage} of {pageCount}
+            </span>
+            <Button size="sm" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>
               Newer
-            </button>
+            </Button>
           </div>
         )}
-        {error && <span className="text-red-400">{error}</span>}
+        {error && <span className="text-danger-fg">{error}</span>}
       </div>
 
-      {/* Log body */}
-      <div
-        ref={containerRef}
-        onScroll={onScroll}
-        role="log"
-        aria-live="off"
-        className={`log-view min-h-[16rem] flex-1 overflow-auto py-2 ${wrap ? 'log-wrap' : ''}`}
-      >
-        {lines.length === 0 && (phase === 'loading' || phase === 'backlog') && (
-          <div className="px-3 py-6 text-center faint">waiting for log frames…</div>
-        )}
-        {lines.length > 0 && visible.length === 0 && (
-          <div className="px-3 py-6 text-center faint">no lines match the current filters</div>
-        )}
+      <div ref={containerRef} onScroll={onScroll} role="log" aria-live="off" className={`log-view min-h-[16rem] flex-1 overflow-auto py-2 ${wrap ? 'log-wrap' : ''}`}>
+        {lines.length === 0 && (phase === 'loading' || phase === 'backlog') && <div className="px-4 py-6 text-center faint">Waiting for log frames…</div>}
+        {lines.length === 0 && phase === 'done' && <div className="px-4 py-6 text-center faint">This run produced no output.</div>}
+        {lines.length > 0 && visible.length === 0 && <div className="px-4 py-6 text-center faint">No lines match the current filters.</div>}
         {visible.map(line => {
           const tag = STREAM_TAG[line.stream] ?? { label: String(line.stream), cls: '' };
           return (
             <div
               key={line.seq}
-              className={`log-row ${line.stream === STREAM_STDERR ? 'log-stderr' : line.stream === STREAM_SYSTEM ? 'log-system' : ''}`}
+              data-seq={line.seq}
+              className={`log-row ${line.stream === STREAM_STDERR ? 'log-stderr' : line.stream === STREAM_SYSTEM ? 'log-system' : ''} ${flashSeq === line.seq ? 'flash' : ''}`}
             >
-              <span className="log-num">{String(line.seq).padStart(4, '0')}</span>
-              <span className="log-ts">[{formatClock(line.ts)}]</span>
+              <span className="log-num">{line.seq}</span>
+              <span className="log-ts">{formatClock(line.ts)}</span>
               <span className={`log-kind ${tag.cls}`} role="img" aria-label={tag.label} title={tag.label} />
               <span className="log-text">
                 {line.segments.map((segment, index) =>
@@ -354,13 +378,11 @@ export default function LogViewer({ runId, footer }: { runId: string; footer?: R
         })}
       </div>
 
-      {/* Follow footer */}
-      {!follow && (
-        <div className="flex items-center justify-center gap-3 border-t border-base-300 py-2">
-          <button type="button" className="btn-sub !border-green-500/50 !text-green-300" onClick={resumeFollow}>
-            <Icon name="rotate-ccw" size={13} />
+      {!follow && phase === 'live' && (
+        <div className="flex flex-wrap items-center justify-center gap-3 border-t border-line-subtle py-2">
+          <Button size="sm" icon="rotate-ccw" onClick={resumeFollow}>
             Resume follow
-          </button>
+          </Button>
           <span className="text-xs muted">Automatic scrolling is off; new lines continue to arrive.</span>
         </div>
       )}

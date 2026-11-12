@@ -10,11 +10,8 @@ import { formatDurationMs, formatUptime } from '../lib/format';
 import { useRange, RANGE_MS, RANGE_LABEL, type RangeKey } from '../lib/range';
 import { jobPath } from '../lib/routes';
 import type { RunMetrics } from '../types';
+import { useChartColors } from '../lib/tokens';
 
-const BLUE = '#60a5fa';
-const GREEN = '#34d399';
-const RED = '#f87171';
-const AMBER = '#fbbf24';
 const BUCKETS = 48;
 
 const EMPTY_METRICS: RunMetrics = { total: 0, succeeded: 0, failed: 0, active: 0, queued: 0, jobs: [], buckets: [] };
@@ -33,6 +30,7 @@ function formatChartTimeLabel(time: number, range: RangeKey) {
 /** Metrics — run statistics computed from live history + daemon info. */
 export default function Metrics() {
   const { range, setRange } = useRange();
+  const { info: BLUE, ok: GREEN, danger: RED, warn: AMBER } = useChartColors();
   const daemon = useQuery(daemonQuery());
   const metrics = useQuery(runMetricsQuery(range, BUCKETS));
   const jobs = useQuery(jobsQuery());
@@ -97,7 +95,7 @@ export default function Metrics() {
     return (
       <div className="space-y-4">
         <PageHeader title="Metrics" />
-        <div role="alert" className="panel border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-300">
+        <div role="alert" className="panel border-danger/40 bg-danger/5 px-4 py-3 text-sm text-danger-fg">
           Metrics are unavailable: {errorText(metrics.error)}.
           <button type="button" className="ml-3 underline" onClick={() => void metrics.refetch()}>Retry</button>
         </div>
@@ -108,7 +106,7 @@ export default function Metrics() {
   return (
     <div className="space-y-4">
       {(metrics.isError || jobs.isError || daemon.isError) && (
-        <div role="alert" className="panel border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-300">
+        <div role="alert" className="panel border-warn/40 bg-warn/5 px-4 py-3 text-sm text-warn-fg">
           {metrics.isError ? 'Metrics' : jobs.isError ? 'Definitions' : 'Daemon status'} could not be refreshed. Displayed values may be stale.
           <button type="button" className="ml-3 underline" onClick={() => { void metrics.refetch(); void jobs.refetch(); void daemon.refetch(); }}>Retry</button>
         </div>
@@ -138,15 +136,15 @@ export default function Metrics() {
           icon="trending-up"
           label="Success rate"
           value={stats.rate === null ? '—' : `${stats.rate.toFixed(1)}%`}
-          valueClass="text-green-400"
+          valueClass="text-ok-fg"
           sub={
             <>
-              <span className="text-green-400">{stats.succeeded} succeeded</span> · <span className="text-red-400">{stats.failed} failed</span>
+              <span className="text-ok-fg">{stats.succeeded} succeeded</span> · <span className="text-danger-fg">{stats.failed} failed</span>
             </>
           }
         />
-        <StatCard icon="users" label="Active runs" value={String(stats.active)} valueClass={stats.active > 0 ? 'text-blue-400' : ''} sub="Currently executing" />
-        <StatCard icon="file-text" label="Daemon uptime" value={daemon.data ? formatUptime(daemon.data.uptime_s) : '—'} valueClass="text-amber-400" sub={daemon.data ? `v${daemon.data.version} · schema ${daemon.data.schema_version}` : daemon.isError ? 'unavailable' : 'connecting…'} />
+        <StatCard icon="users" label="Active runs" value={String(stats.active)} valueClass={stats.active > 0 ? 'text-link' : ''} sub="Currently executing" />
+        <StatCard icon="file-text" label="Daemon uptime" value={daemon.data ? formatUptime(daemon.data.uptime_s) : '—'} valueClass="text-warn-fg" sub={daemon.data ? `v${daemon.data.version} · schema ${daemon.data.schema_version}` : daemon.isError ? 'unavailable' : 'connecting…'} />
       </div>
 
       {/* Main 4/8 split */}
@@ -161,9 +159,9 @@ export default function Metrics() {
             </div>
             {workerRows.total > 0 && (
               <div className="mb-3 flex h-2 w-full overflow-hidden rounded-full bg-base-200" title="Healthy / needs attention / stopped">
-                <div className="bg-green-400" style={{ width: `${(workerRows.rows.healthy / workerRows.total) * 100}%` }} />
-                <div className="bg-amber-400" style={{ width: `${(workerRows.rows.attention / workerRows.total) * 100}%` }} />
-                <div className="bg-red-400" style={{ width: `${(workerRows.rows.stopped / workerRows.total) * 100}%` }} />
+                <div className="bg-ok" style={{ width: `${(workerRows.rows.healthy / workerRows.total) * 100}%` }} />
+                <div className="bg-warn" style={{ width: `${(workerRows.rows.attention / workerRows.total) * 100}%` }} />
+                <div className="bg-danger" style={{ width: `${(workerRows.rows.stopped / workerRows.total) * 100}%` }} />
               </div>
             )}
             <table className="mc-table">
@@ -175,9 +173,9 @@ export default function Metrics() {
                 </tr>
               </thead>
               <tbody>
-                <WorkerRow color="bg-green-400" label="Healthy" count={workerRows.rows.healthy} total={workerRows.total} />
-                <WorkerRow color="bg-amber-400" label="Needs attention" count={workerRows.rows.attention} total={workerRows.total} />
-                <WorkerRow color="bg-red-400" label="Stopped" count={workerRows.rows.stopped} total={workerRows.total} />
+                <WorkerRow color="bg-ok" label="Healthy" count={workerRows.rows.healthy} total={workerRows.total} />
+                <WorkerRow color="bg-warn" label="Needs attention" count={workerRows.rows.attention} total={workerRows.total} />
+                <WorkerRow color="bg-danger" label="Stopped" count={workerRows.rows.stopped} total={workerRows.total} />
               </tbody>
             </table>
             {workerRows.total === 0 && <p className="mt-3 text-xs faint">{jobs.isError ? 'Worker definitions are unavailable.' : jobs.isPending ? 'Loading workers…' : 'No workers defined.'}</p>}
@@ -188,9 +186,9 @@ export default function Metrics() {
             title="Active runs"
             right={
               <span className="num text-xs">
-                <span className="text-blue-400">Active {stats.active}</span>
+                <span className="text-link">Active {stats.active}</span>
                 <span className="mx-2 faint">·</span>
-                <span className="text-amber-400">Queued {stats.queued}</span>
+                <span className="text-warn-fg">Queued {stats.queued}</span>
               </span>
             }
             legend={
@@ -230,11 +228,11 @@ export default function Metrics() {
                 </tr>
                 <tr>
                   <td className="font-mono text-[0.8rem]">runs.succeeded</td>
-                  <td className="num text-right text-green-400">{stats.succeeded}</td>
+                  <td className="num text-right text-ok-fg">{stats.succeeded}</td>
                 </tr>
                 <tr>
                   <td className="font-mono text-[0.8rem]">runs.failed</td>
-                  <td className="num text-right text-red-400">{stats.failed}</td>
+                  <td className="num text-right text-danger-fg">{stats.failed}</td>
                 </tr>
                 <tr>
                   <td className="font-mono text-[0.8rem]">runs.duration_p50</td>
@@ -291,15 +289,15 @@ export default function Metrics() {
                     {jobStats.map(job => (
                       <tr key={job.name}>
                         <td className="max-w-[14rem] truncate">
-                          <Link href={jobPath(job.name)} className="flex items-center gap-2 font-medium hover:text-blue-400">
-                            <span className={`inline-block h-2 w-2 rounded-full ${job.failed > 0 ? 'bg-red-400' : 'bg-green-400'}`} />
+                          <Link href={jobPath(job.name)} className="flex items-center gap-2 font-medium hover:text-link-hover">
+                            <span className={`inline-block h-2 w-2 rounded-full ${job.failed > 0 ? 'bg-danger' : 'bg-ok'}`} />
                             {job.name}
                             {job.active > 0 && <span className="chip chip-info !px-1.5 !py-0 text-[0.65rem]">{job.active} active</span>}
                           </Link>
                         </td>
                         <td className="num text-right">{job.total}</td>
-                        <td className="num text-right text-green-400">{job.succeeded}</td>
-                        <td className="num text-right text-red-400">{job.failed}</td>
+                        <td className="num text-right text-ok-fg">{job.succeeded}</td>
+                        <td className="num text-right text-danger-fg">{job.failed}</td>
                         <td className="num text-right">{job.rate === null ? '—' : `${job.rate.toFixed(0)}%`}</td>
                         <td className="num text-right">{job.median === null ? '—' : formatDurationMs(job.median)}</td>
                         <td className="num text-right">{job.p95 === null ? '—' : formatDurationMs(job.p95)}</td>
@@ -320,9 +318,9 @@ export default function Metrics() {
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
                   <MiniStat label="Runs" value={String(selectedJob.total)} />
-                  <MiniStat label="Succeeded" value={String(selectedJob.succeeded)} valueClass="text-green-400" />
-                  <MiniStat label="Failed" value={String(selectedJob.failed)} valueClass="text-red-400" />
-                  <MiniStat label="Active" value={String(selectedJob.active)} valueClass={selectedJob.active > 0 ? 'text-blue-400' : ''} />
+                  <MiniStat label="Succeeded" value={String(selectedJob.succeeded)} valueClass="text-ok-fg" />
+                  <MiniStat label="Failed" value={String(selectedJob.failed)} valueClass="text-danger-fg" />
+                  <MiniStat label="Active" value={String(selectedJob.active)} valueClass={selectedJob.active > 0 ? 'text-link' : ''} />
                   <MiniStat label="Median" value={selectedJob.median === null ? '—' : formatDurationMs(selectedJob.median)} />
                   <MiniStat label="p95" value={selectedJob.p95 === null ? '—' : formatDurationMs(selectedJob.p95)} />
                 </div>
@@ -333,12 +331,12 @@ export default function Metrics() {
                       <span className="num font-medium text-base-content">{selectedJob.rate === null ? '—' : `${selectedJob.rate.toFixed(1)}%`}</span>
                     </span>
                     <span className="num">
-                      <span className="text-green-400">{selectedJob.succeeded}</span> / <span className="text-red-400">{selectedJob.failed}</span>
+                      <span className="text-ok-fg">{selectedJob.succeeded}</span> / <span className="text-danger-fg">{selectedJob.failed}</span>
                     </span>
                   </div>
                   <div className="flex h-2 w-full overflow-hidden rounded-full bg-base-200">
-                    <div className="bg-green-400" style={{ width: `${selectedJob.rate ?? 0}%` }} />
-                    <div className="bg-red-400" style={{ width: `${selectedJob.failed + selectedJob.succeeded > 0 ? 100 - (selectedJob.rate ?? 0) : 0}%` }} />
+                    <div className="bg-ok" style={{ width: `${selectedJob.rate ?? 0}%` }} />
+                    <div className="bg-danger" style={{ width: `${selectedJob.failed + selectedJob.succeeded > 0 ? 100 - (selectedJob.rate ?? 0) : 0}%` }} />
                   </div>
                 </div>
               </div>
@@ -353,9 +351,9 @@ export default function Metrics() {
               title="Run duration"
               right={
                 <span className="num text-xs">
-                  <span className="text-blue-400">p50</span> {stats.median === null ? '—' : formatDurationMs(stats.median)}
+                  <span className="text-link">p50</span> {stats.median === null ? '—' : formatDurationMs(stats.median)}
                   <span className="mx-2 faint">·</span>
-                  <span className="text-green-400">p95</span> {stats.p95 === null ? '—' : formatDurationMs(stats.p95)}
+                  <span className="text-ok-fg">p95</span> {stats.p95 === null ? '—' : formatDurationMs(stats.p95)}
                 </span>
               }
               legend={
@@ -403,7 +401,7 @@ function StatCard({ icon, label, value, sub, valueClass = '' }: { icon: 'activit
     <div className="stat-card">
       <div className="flex items-center justify-between">
         <span className="label">{label}</span>
-        <Icon name={icon} size={16} className="text-blue-400" />
+        <Icon name={icon} size={16} className="text-link" />
       </div>
       <div className={`text-[1.9rem] font-bold leading-tight ${valueClass}`}>{value}</div>
       {sub && <div className="text-xs muted">{sub}</div>}

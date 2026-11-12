@@ -86,7 +86,7 @@ export function AlertChannelsPanel() {
       </div>
       <p className="text-xs muted">Telegram settings and bot credentials are stored in the daemon database. Saved tokens are never returned to the browser. Up to 100 channels.</p>
       {channels.isPending && <p className="text-sm muted">Loading channels…</p>}
-      {channels.isError && <p role="alert" className="text-sm text-red-400">{errorText(channels.error)}</p>}
+      {channels.isError && <p role="alert" className="text-sm text-danger-fg">{errorText(channels.error)}</p>}
       {channels.data?.length === 0 && <p className="text-sm muted">No alert channels yet.</p>}
       <div className="space-y-2">
         {channels.data?.map(channel => (
@@ -155,8 +155,8 @@ export function AlertChannelsPanel() {
           </div>
         </div>
       )}
-      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-      {notice && <p role="status" className="text-sm text-green-400">{notice}</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
+      {notice && <p role="status" className="text-sm text-ok-fg">{notice}</p>}
     </section>
   );
 }
