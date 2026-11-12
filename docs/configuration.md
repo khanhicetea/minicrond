@@ -383,6 +383,33 @@ setting above or an absolute `argv[0]` for toolchains elsewhere. This lookup pol
 is not a sandbox: shell commands and programs' own child lookups still use their
 process environment.
 
+### Choosing a shell
+
+The shell matters little for cost. Measured on 2026-11-12 (Ubuntu 26.04, 8-vCPU
+VM, started the way minicrond starts jobs), `shell -c "<one command>"` took
+0.5–0.9 ms from spawn to exit for every common shell. A shell that stays
+alive while its job runs uses 0.3–1.7 MiB (PSS):
+
+| Shell | Start + one command | Memory while alive | Stays alive for a one-command job |
+|---|---|---|---|
+| mksh (static) | 0.48 ms | 0.3 MiB | no |
+| busybox ash (Alpine `/bin/sh`) | 0.53 ms | 1.0 MiB | no |
+| dash (Debian/Ubuntu `/bin/sh`) | 0.68 ms | 0.4 MiB | **yes** |
+| bash | 0.76 ms | 1.1 MiB | no |
+| zsh | 0.88 ms | 1.7 MiB | no |
+
+- **One program, no shell syntax:** use `argv` instead of `command`. Nothing
+  runs between minicrond and the program.
+- **dash keeps itself alive.** Most shells replace themselves with the last
+  command (`sh -c "python3 job.py"` leaves only `python3`). dash 0.5.12 does
+  not: the shell waits beside the job for its whole run. Write
+  `command = "exec python3 job.py"` to hand over explicitly. Timeouts and
+  stops are unaffected either way, because the stop signal goes to the
+  whole process group. The cost is one extra process per running job
+  (about 0.4 MiB), which adds up mainly for long-lived workers.
+- **Pick bash or zsh only when commands need their syntax** (arrays, `[[ ]]`,
+  `${var//a/b}` and so on). Otherwise `/bin/sh` is lighter.
+
 ### Alerts
 
 Manage channels in **Settings → Alert channels** or with
