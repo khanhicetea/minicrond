@@ -20,9 +20,11 @@ import (
 // smallFileChunks lowers the file-chunk threshold so tests stay small.
 func smallFileChunks(t *testing.T, min int64) {
 	t.Helper()
-	old := fileChunkMin
+	old, oldPlain := fileChunkMin, plainLimit
 	fileChunkMin = min
-	t.Cleanup(func() { fileChunkMin = old })
+	// File chunks hold compressed output: start every writer compressed.
+	plainLimit = 0
+	t.Cleanup(func() { fileChunkMin, plainLimit = old, oldPlain })
 }
 
 // randomLines returns n lines that barely compress.

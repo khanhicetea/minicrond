@@ -231,7 +231,7 @@ func (s *Store) archiveBatchLocked(ctx context.Context, w *Writer, through int) 
 			break
 		}
 		path := w.chunkPath(m.Number)
-		if m.Bytes >= fileChunkMin {
+		if !m.Plain && m.Bytes >= fileChunkMin {
 			pending = append(pending, logdb.Chunk{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, FileBytes: m.Bytes})
 			moves = append(moves, movedChunk{number: m.Number, src: path})
 			continue
@@ -243,6 +243,7 @@ func (s *Store) archiveBatchLocked(ctx context.Context, w *Writer, through int) 
 		if err != nil {
 			return false, err
 		}
+		blob = s.archiveBlob(m, blob)
 		pending = append(pending, logdb.Chunk{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
 		size += int64(len(blob))
 	}
@@ -372,7 +373,7 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		if err != nil {
 			return err
 		}
-		if m, ok := sealed[file.number]; ok && info.Size() >= fileChunkMin {
+		if m, ok := sealed[file.number]; ok && !m.Plain && info.Size() >= fileChunkMin {
 			if len(chunks) >= archiveBatchChunks {
 				if err := flush(); err != nil {
 					return err
@@ -394,7 +395,7 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		}
 		var c logdb.Chunk
 		if m, ok := sealed[file.number]; ok {
-			c = logdb.Chunk{Number: file.number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob}
+			c = logdb.Chunk{Number: file.number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: s.archiveBlob(m, blob)}
 		} else {
 			frames, salvageErr := salvageFrames(blob)
 			if len(frames) == 0 {

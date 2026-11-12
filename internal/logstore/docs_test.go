@@ -42,7 +42,7 @@ func TestCaptureFailureSkipsExactlyTheFailedSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	breakStorage(t, w)
-	if err := w.Pipe(Stdout, bytes.NewReader(manyLines(10))); err != nil { // 1 failed + 9 discarded
+	if err := w.Pipe(Stdout, bytes.NewReader(manyLines(10))); err != nil { // one failed write of 10 lines
 		t.Fatal(err)
 	}
 	w.mu.Lock()
@@ -58,15 +58,16 @@ func TestCaptureFailureSkipsExactlyTheFailedSequence(t *testing.T) {
 	if err != nil || len(frames) != 3 {
 		t.Fatalf("frames = %v, %v", frames, err)
 	}
-	// 1 (one), 2 (failed, consumed), 3 (summary), 4 (after) -> summary is 3.
-	if frames[1].Sequence != 3 || frames[2].Sequence != 4 {
-		t.Fatalf("sequences %d,%d: want the failed frame to be the only skipped number", frames[1].Sequence, frames[2].Sequence)
+	// 1 (one), 2-11 (one read, flushed together, failed: consumed),
+	// 12 (summary), 13 (after). Lines discarded later consume nothing.
+	if frames[1].Sequence != 12 || frames[2].Sequence != 13 {
+		t.Fatalf("sequences %d,%d: want only the failed write's frames to be skipped", frames[1].Sequence, frames[2].Sequence)
 	}
 }
 
 func TestDocsDescribeTheFailedFrameSequence(t *testing.T) {
-	docContains(t, "http-api.md", "consumed a sequence number but was not stored")
-	docContains(t, "operations.md", "the single frame whose write failed does")
+	docContains(t, "http-api.md", "consumed sequence numbers but were not stored")
+	docContains(t, "operations.md", "the frames of the one write that failed do")
 }
 
 // N2: the quarantine copy is named <run>-<chunk>.zst.corrupt (preserveCorrupt).

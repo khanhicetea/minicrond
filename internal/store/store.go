@@ -43,6 +43,8 @@ type Store struct {
 	// syncFull: the writer commits with synchronous=FULL, so writes that only
 	// need to survive a daemon crash can be relaxed (relaxed.go).
 	syncFull bool
+	// stmts caches the per-run writes (run row, terminal transition).
+	stmts *sqlite.StmtCache
 }
 
 type RunMetrics struct {
@@ -88,7 +90,7 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
-	s := &Store{db: db, syncFull: sqlite.SyncFull(opt...)}
+	s := &Store{db: db, syncFull: sqlite.SyncFull(opt...), stmts: sqlite.NewStmtCache(db)}
 	if err := s.initSchema(ctx); err != nil {
 		if errors.Is(err, sqlite.ErrUnsupportedSchema) {
 			return nil, errors.Join(fmt.Errorf("prepare metadata database: %w", err), db.Close())
@@ -130,7 +132,7 @@ func openReadOnly(ctx context.Context, path string, cause error) (*Store, error)
 		return nil, errors.Join(cause, fmt.Errorf("read-only fallback: %w", err), db.Close())
 	}
 	slog.Warn("metadata database opened read-only: it cannot be opened for writing (read-only or full volume); jobs and workers run, history is not stored until a restart", "path", path, "cause", cause)
-	return &Store{db: db, rdb: db, readOnly: true}, nil
+	return &Store{db: db, rdb: db, readOnly: true, stmts: sqlite.NewStmtCache(db)}, nil
 }
 
 // makePrivate removes group and other permissions. It never adds owner
@@ -149,10 +151,11 @@ func makePrivate(path string) error {
 }
 
 func (s *Store) Close() error {
+	stmtErr := s.stmts.Close()
 	if s.readOnly {
-		return s.db.Close()
+		return errors.Join(stmtErr, s.db.Close())
 	}
-	return errors.Join(s.rdb.Close(), s.db.Close())
+	return errors.Join(stmtErr, s.rdb.Close(), s.db.Close())
 }
 
 // ReadOnly reports that the metadata database was opened read-only because
@@ -647,7 +650,7 @@ func (s *Store) SaveIdempotency(ctx context.Context, principal, operation, key, 
 }
 
 func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
-	_, err := s.db.ExecContext(ctx, createRunSQL, runArgs(r)...)
+	_, err := s.stmts.Exec(ctx, createRunSQL, runArgs(r)...)
 	if err != nil {
 		return fmt.Errorf("create run %s: %w", r.ID, err)
 	}
@@ -731,7 +734,7 @@ func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason strin
 	if usage != nil {
 		user, system, rss = usage.UserCPUUS, usage.SystemCPUUS, usage.PeakRSSBytes
 	}
-	res, err := s.db.ExecContext(ctx, "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=?,user_cpu_us=?,system_cpu_us=?,peak_rss_bytes=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)", status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, user, system, rss, id, status)
+	res, err := s.stmts.Exec(ctx, finishRunSQL, status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, user, system, rss, id, status)
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", id, err)
 	}
@@ -744,6 +747,9 @@ func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason strin
 	}
 	return nil
 }
+
+const finishRunSQL = "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=?,user_cpu_us=?,system_cpu_us=?,peak_rss_bytes=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)"
+
 func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT run_id,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,'') FROM runs WHERE status IN ('pending','running')`)
 	if err != nil {

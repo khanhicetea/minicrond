@@ -1,0 +1,7 @@
+Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64
+8
+model name	: QEMU Virtual CPU version 2.5+
+go version go1.27.4 linux/amd64
+/dev/sda2      ext4 152621584 91277912  53518112  64% /
+daemon: scripts/bench-5a/run-profile.sh defaults (DAEMON_CPU=0); CHILD_CPUS=2-6 SAMPLER_CPU=7 BLKDEV=sda DURATION=120 WARMUP=20 STRACE=0
+build: CGO_ENABLED=0 go build -trimpath (base 5058f20; hot = base + hot-path patch; adapt = hot + adaptive capture)

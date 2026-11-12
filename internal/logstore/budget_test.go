@@ -589,7 +589,7 @@ func TestPressureHookFiresOnRotateSealAndCaptureFailure(t *testing.T) {
 		t.Fatal("chunk rotation raised no hint")
 	}
 	breakStorage(t, w)
-	w.capture(Stdout, []byte("lost"), 0)
+	w.capture(Stdout, []byte("lost"), 0, true)
 	failed := hints
 	if failed <= rotated {
 		t.Fatal("capture failure raised no hint")

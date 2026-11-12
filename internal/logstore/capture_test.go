@@ -214,7 +214,7 @@ func TestCaptureRetryIsBoundedAndBacksOff(t *testing.T) {
 	}
 	start := time.Now()
 	for time.Since(start) < 400*time.Millisecond {
-		if err := w.capture(Stdout, []byte("x"), 0); err != nil {
+		if err := w.capture(Stdout, []byte("x"), 0, true); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -51,6 +51,9 @@ type LogDB struct {
 	db, rdb *sql.DB
 	path    string // the database file, for on-disk size accounting
 	files   string // directory of file chunks: <files>/<run_id>/<number>.zst
+	// stmts holds the archive upserts, prepared at Open so transactions on
+	// the single writer connection can reuse them (see putChunks).
+	stmts *sqlite.StmtCache
 }
 
 // FilesDirName is the directory next to minicron-logs.db that holds archived
@@ -67,9 +70,13 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open log database: %w", err)
 	}
-	l := &LogDB{db: db, path: path, files: filepath.Join(dataDir, FilesDirName)}
+	l := &LogDB{db: db, path: path, files: filepath.Join(dataDir, FilesDirName), stmts: sqlite.NewStmtCache(db)}
 	if err := l.initSchema(context.Background()); err != nil {
 		return nil, errors.Join(fmt.Errorf("prepare log database: %w", err), db.Close())
+	}
+	// A failed prepare is not fatal: putChunks then parses the SQL each time.
+	for _, q := range []string{putRunSQL, putChunkSQL} {
+		_, _ = l.stmts.Prepare(context.Background(), q)
 	}
 	if l.rdb, err = sqlite.OpenReader(path); err != nil {
 		return nil, errors.Join(fmt.Errorf("open log database read pool: %w", err), db.Close())
@@ -82,7 +89,7 @@ func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	return l, nil
 }
 
-func (l *LogDB) Close() error { return errors.Join(l.rdb.Close(), l.db.Close()) }
+func (l *LogDB) Close() error { return errors.Join(l.stmts.Close(), l.rdb.Close(), l.db.Close()) }
 
 // FilesDir is the directory that holds archived file chunks.
 func (l *LogDB) FilesDir() string { return l.files }
@@ -190,7 +197,7 @@ func (l *LogDB) PutChunks(ctx context.Context, runID, job, kind string, at time.
 	if len(chunks) == 0 {
 		return nil
 	}
-	return l.writeTx(ctx, func(tx *sql.Tx) error { return putChunks(ctx, tx, runID, job, kind, at, chunks) })
+	return l.writeTx(ctx, func(tx *sql.Tx) error { return l.putChunks(ctx, tx, runID, job, kind, at, chunks) })
 }
 
 // PutRuns archives several runs in one transaction, so a burst of short runs
@@ -201,7 +208,7 @@ func (l *LogDB) PutRuns(ctx context.Context, at time.Time, runs []RunChunks) err
 			if len(r.Chunks) == 0 {
 				continue
 			}
-			if err := putChunks(ctx, tx, r.RunID, r.Job, r.Kind, at, r.Chunks); err != nil {
+			if err := l.putChunks(ctx, tx, r.RunID, r.Job, r.Kind, at, r.Chunks); err != nil {
 				return err
 			}
 		}
@@ -209,35 +216,41 @@ func (l *LogDB) PutRuns(ctx context.Context, at time.Time, runs []RunChunks) err
 	})
 }
 
-func putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time.Time, chunks []Chunk) error {
-	now := at.UnixMicro()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
+const (
+	putRunSQL = `INSERT INTO log_runs(run_id,job,kind,created_us,updated_us) VALUES(?,?,?,?,?)
 		ON CONFLICT(run_id) DO UPDATE SET job=COALESCE(NULLIF(excluded.job,''),log_runs.job),
-		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`, runID, job, kind, now, now); err != nil {
+		kind=COALESCE(NULLIF(excluded.kind,''),log_runs.kind), updated_us=excluded.updated_us`
+	putChunkSQL = `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob,file_bytes) VALUES(?,?,?,?,?,?,?,?)
+		ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob,file_bytes=excluded.file_bytes`
+)
+
+// txStmt binds a statement prepared at Open to tx, so the SQL is parsed once
+// per connection rather than once per run; database/sql prepares it once on a
+// replacement connection. Without a cached statement it prepares query in tx.
+func (l *LogDB) txStmt(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {
+	if stmt := l.stmts.Lookup(query); stmt != nil {
+		return tx.StmtContext(ctx, stmt), nil
+	}
+	return tx.PrepareContext(ctx, query)
+}
+
+func (l *LogDB) putChunks(ctx context.Context, tx *sql.Tx, runID, job, kind string, at time.Time, chunks []Chunk) error {
+	now := at.UnixMicro()
+	runStmt, err := l.txStmt(ctx, tx, putRunSQL)
+	if err != nil {
 		return err
 	}
-	const putChunk = `INSERT INTO log_chunks(run_id,number,first_seq,last_seq,raw_bytes,archived_us,blob,file_bytes) VALUES(?,?,?,?,?,?,?,?)
-		ON CONFLICT(run_id,number) DO UPDATE SET first_seq=excluded.first_seq,last_seq=excluded.last_seq,raw_bytes=excluded.raw_bytes,blob=excluded.blob,file_bytes=excluded.file_bytes`
-	// Preparing once per multi-chunk batch avoids repeated SQLite parsing while
-	// keeping statement lifetime and memory bounded by this transaction.
-	if len(chunks) > 1 {
-		stmt, err := tx.PrepareContext(ctx, putChunk)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
-		for _, c := range chunks {
-			if _, err := stmt.ExecContext(ctx, runID, c.Number, c.First, c.Last, c.RawBytes, now, blobArg(c), c.FileBytes); err != nil {
-				return err
-			}
-		}
-		if err := stmt.Close(); err != nil {
-			return err
-		}
-	} else {
-		c := chunks[0]
-		if _, err := tx.ExecContext(ctx, putChunk,
-			runID, c.Number, c.First, c.Last, c.RawBytes, now, blobArg(c), c.FileBytes); err != nil {
+	defer runStmt.Close()
+	if _, err := runStmt.ExecContext(ctx, runID, job, kind, now, now); err != nil {
+		return err
+	}
+	stmt, err := l.txStmt(ctx, tx, putChunkSQL)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, c := range chunks {
+		if _, err := stmt.ExecContext(ctx, runID, c.Number, c.First, c.Last, c.RawBytes, now, blobArg(c), c.FileBytes); err != nil {
 			return err
 		}
 	}

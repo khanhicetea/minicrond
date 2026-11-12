@@ -21,6 +21,8 @@
 
 7. **Log archive write path (ADR-20, 2026-10-25):** in batch durability, seal and pipe EOF fsyncs join the group sync (a finished run's last ~2 s can be lost on OS crash, like a running run's). Chunks ≥ 64 KiB compressed are archived as files under `log-archive/` referenced by their row (commit before rename), not copied into SQLite. Short runs are archived in multi-run transactions.
 
+8. **Adaptive log capture (ADR-21, 2026-11-12):** frames are written through once per pipe read (≤ 16 KiB or `sync_max_dirty`), not per frame. A run's first chunk is plain (raw zstd blocks, no encoder); past 16 KiB it is promoted to compressed chunks, and worker checkpoints release the encoder. Plain chunks are compressed once at archive time by one shared encoder; small sealed runs are handed to the archiver in memory (≤ 8 MiB). Do not reintroduce a per-run encoder for runs that never pass the plain limit.
+
 Chosen defaults are in ADR-8 and ADR-9/10/11/16; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
 
 ## System design defaults

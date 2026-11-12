@@ -89,7 +89,7 @@ func TestDiagnosticsReportCaptureFailures(t *testing.T) {
 	}
 	breakStorage(t, broken)
 	for range 5 {
-		broken.capture(Stdout, []byte("lost line"), 0)
+		broken.capture(Stdout, []byte("lost line"), 0, true)
 	}
 	c := s.CaptureDiagnostics()
 	if c.FailuresTotal != 1 || c.ActiveWriters != 2 || c.Degraded != 1 || len(c.DegradedRuns) != 1 {

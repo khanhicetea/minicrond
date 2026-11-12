@@ -39,6 +39,27 @@ const chunkLimit = 1 << 20
 // compression. A frame larger than the window still encodes; matches just
 // cannot reach further back.
 const encoderWindow = 128 << 10
+
+// Adaptive capture. A run's output starts in a plain chunk: a standard zstd
+// frame made of raw (stored) blocks, written without an encoder. Most runs
+// print less than plainLimit, and an encoder costs about 630 KB of allocation
+// and 110 µs to create, while a one-line run does not shrink when compressed.
+// A writer whose output reaches plainLimit is promoted: it seals the plain
+// chunk and continues in compressed chunks until the next worker checkpoint,
+// which releases the encoder again. Plain chunks are compressed once, when
+// archived, by the store's shared archive encoder. Every chunk is valid zstd,
+// so readers and crash salvage treat both kinds alike.
+var plainLimit = 16 << 10 // a variable only so tests can change it
+
+// plainFrameHeader opens a plain chunk: zstd magic, a frame header descriptor
+// without content size, checksum or dictionary, and a 128 KiB window, which
+// bounds raw blocks (each at most plainLimit plus one frame) well below the
+// 128 KiB block limit.
+var plainFrameHeader = []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00, 7 << 3}
+
+// maxSealedImages bounds the plain chunk images handed from sealed writers to
+// the archiver so it can skip reading them back from disk.
+const maxSealedImages = 8 << 20
 const maxFramePayload = 16 << 20
 
 // In batch durability mode (ADR-8 1B) every accepted frame is written through
@@ -104,6 +125,9 @@ type chunkMeta struct {
 	Bytes    int64  `json:"bytes"`
 	Raw      int64  `json:"raw"`
 	Archived bool   `json:"archived,omitempty"`
+	// Plain marks a chunk stored as raw zstd blocks (adaptive capture): the
+	// archive compresses it once, with the shared archive encoder.
+	Plain bool `json:"plain,omitempty"`
 }
 type index struct {
 	Job       string      `json:"job,omitempty"`
@@ -172,6 +196,13 @@ type Store struct {
 	syncFile        func(*os.File) error
 	captureFailures atomic.Int64 // writers that entered degraded capture
 	archiver        archiver
+	// archiveEnc compresses plain chunks once, at archive time (EncodeAll is
+	// safe for concurrent use by the archive workers).
+	archiveEncOnce sync.Once
+	archiveEnc     *zstd.Encoder
+	// archivedFromImage counts runs archived from their handed-over plain
+	// chunk image, without reading the buffer back.
+	archivedFromImage atomic.Int64
 
 	// Observability and disk budget (see budget.go and diagnostics.go).
 	disk                    diskState
@@ -219,6 +250,20 @@ type archiver struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	workers sync.WaitGroup
+	// sealed holds the plain chunk images of queued small runs, so the
+	// archiver need not read them back from disk; sealedBytes is bounded by
+	// maxSealedImages. Entries are dropped when taken.
+	sealed      map[string]*sealedRun
+	sealedBytes int64
+}
+
+// sealedRun is a sealed run whose only unarchived chunk is plain, with the
+// chunk's file image. The buffer on disk stays the durable record; the image
+// is a copy taken after the writer closed, so it never changes.
+type sealedRun struct {
+	job, kind string
+	meta      chunkMeta
+	image     []byte
 }
 
 func New(root string) (*Store, error) {
@@ -350,6 +395,10 @@ func (s *Store) finalize(runID string, async bool) error {
 	// here on. Failed finalization leaves a durable buffer for the next
 	// orphan sweep.
 	err := w.Close()
+	var sealed *sealedRun
+	if err == nil {
+		sealed = w.sealedPlain()
+	}
 	lock := s.lockRun(runID, true)
 	s.mu.Lock()
 	delete(s.writers, runID)
@@ -361,7 +410,7 @@ func (s *Store) finalize(runID string, async bool) error {
 	if err != nil || s.db == nil {
 		return err
 	}
-	if async && s.enqueue(runID) {
+	if async && s.enqueueSealed(runID, sealed) {
 		return nil
 	}
 	s.claimWait(runID)
@@ -492,6 +541,8 @@ func (s *Store) StopArchiver(ctx context.Context) error {
 	}
 	a.running = false
 	close(a.stop)
+	clear(a.sealed) // queued runs not archived now are found by the next sweep
+	a.sealedBytes = 0
 	s.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -585,19 +636,70 @@ func (s *Store) ArchiveStats() ArchiveStats {
 	return st
 }
 
-// enqueue hands a sealed run to the archiver. It reports false when the
-// archiver is not running.
-func (s *Store) enqueue(runID string) bool {
+// enqueueSealed is enqueue that also hands over the run's plain chunk image,
+// while maxSealedImages allows. An image is kept only for a run that is
+// actually queued: the queue is always drained through takeSealed, and
+// stopping the archiver clears what is left.
+func (s *Store) enqueueSealed(runID string, r *sealedRun) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := &s.archiver
 	if !a.running {
 		return false
 	}
+	if s.enqueueLocked(runID) && r != nil && a.sealed[runID] == nil &&
+		a.sealedBytes+int64(len(r.image)) <= maxSealedImages {
+		if a.sealed == nil {
+			a.sealed = make(map[string]*sealedRun)
+		}
+		a.sealed[runID] = r
+		a.sealedBytes += int64(len(r.image))
+	}
+	return true
+}
+
+// takeSealed removes and returns a queued run's plain chunk image, if any.
+func (s *Store) takeSealed(runID string) *sealedRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := &s.archiver
+	r := a.sealed[runID]
+	if r != nil {
+		delete(a.sealed, runID)
+		a.sealedBytes -= int64(len(r.image))
+	}
+	return r
+}
+
+func (s *Store) hasSealed(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.archiver.sealed[runID] != nil
+}
+
+// enqueue hands a sealed run to the archiver. It reports false when the
+// archiver is not running.
+func (s *Store) enqueue(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.archiver.running {
+		return false
+	}
+	s.enqueueLocked(runID)
+	return true
+}
+
+// enqueueLocked queues runID on the running archiver and wakes it. It reports
+// whether the run is in the queue; false means the queue overflowed and the
+// next discovery sweep will find the run. Callers hold s.mu.
+func (s *Store) enqueueLocked(runID string) bool {
+	a := &s.archiver
+	queued := true
 	if !a.queued[runID] {
 		if len(a.queue) >= maxArchiveQueue {
 			a.overflow = true
 			a.overflowTotal++
+			queued = false
 		} else {
 			a.queued[runID] = true
 			a.queue = append(a.queue, runID)
@@ -607,7 +709,7 @@ func (s *Store) enqueue(runID string) bool {
 	case a.wake <- struct{}{}:
 	default:
 	}
-	return true
+	return queued
 }
 
 func (s *Store) archiveLoop() {
@@ -685,7 +787,7 @@ func (s *Store) archiveSealedBatch(ctx context.Context, ids []string) {
 		}
 	}()
 	rest := owned
-	if len(owned) > 1 {
+	if len(owned) > 1 || (len(owned) == 1 && s.hasSealed(owned[0])) {
 		rest = s.archiveShortRuns(ctx, owned)
 	}
 	for _, id := range rest {
@@ -731,11 +833,21 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 	chunks := 0
 	for _, id := range ids {
 		lock := s.lockRun(id, true)
+		sealed := s.takeSealed(id)
 		if s.Active(id) != nil {
 			s.unlockRun(id, lock, true)
 			continue // reopened: no longer sealed
 		}
-		r, size, ok := loadShortRun(filepath.Join(s.root, id))
+		dir := filepath.Join(s.root, id)
+		var r logdb.RunChunks
+		var size int64
+		ok := false
+		if sealed != nil {
+			r, size, ok = s.sealedShortRun(dir, sealed)
+		}
+		if !ok {
+			r, size, ok = s.loadShortRun(dir)
+		}
 		if !ok || (len(batch) > 0 && (bytes+size > archiveBatchBytes || chunks+len(r.Chunks) > archiveBatchChunks)) {
 			s.unlockRun(id, lock, true)
 			rest = append(rest, id)
@@ -773,10 +885,26 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 	return rest
 }
 
+// sealedShortRun builds a run's archive rows from its handed-over plain chunk
+// image instead of reading the buffer back. The caller owns the run (as every
+// deleter must), so a buffer that still exists cannot vanish meanwhile; one
+// that is gone was deleted while queued and is not archived.
+func (s *Store) sealedShortRun(dir string, sealed *sealedRun) (r logdb.RunChunks, size int64, ok bool) {
+	if _, err := os.Stat(dir); err != nil {
+		return r, 0, false
+	}
+	m := sealed.meta
+	blob := s.archiveBlob(m, sealed.image)
+	r.Job, r.Kind = sealed.job, sealed.kind
+	r.Chunks = []logdb.Chunk{{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob}}
+	s.archivedFromImage.Add(1)
+	return r, int64(len(blob)), true
+}
+
 // loadShortRun reads a sealed buffer for a multi-run transaction. ok is false
 // for anything the one-by-one path must handle: no or invalid index, chunks
 // that are not indexed (salvage) or indexed but missing, and file chunks.
-func loadShortRun(dir string) (r logdb.RunChunks, size int64, ok bool) {
+func (s *Store) loadShortRun(dir string) (r logdb.RunChunks, size int64, ok bool) {
 	idx, sealed, err := readOrphanIndex(dir)
 	if err != nil || len(sealed) == 0 {
 		return r, 0, false
@@ -794,6 +922,7 @@ func loadShortRun(dir string) (r logdb.RunChunks, size int64, ok bool) {
 		if err != nil || int64(len(blob)) >= fileChunkMin {
 			return r, 0, false
 		}
+		blob = s.archiveBlob(m, blob)
 		r.Chunks = append(r.Chunks, logdb.Chunk{Number: f.number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob})
 		size += int64(len(blob))
 	}
@@ -934,20 +1063,36 @@ type Writer struct {
 	chunkFirst uint64
 	seq        uint64
 	lastStored uint64 // sequence of the last frame written to a chunk file
-	total      int64  // accepted raw bytes, less output evicted before archival
-	buffered   int64  // raw bytes still occupying the file buffer
-	maxBytes   int64
-	maxLine    int
-	dropNew    bool
-	frameSync  bool
-	unsynced   int // bytes written to the hot chunk since its last fsync
-	syncs      atomic.Int64
-	truncated  bool
-	idx        index
-	header     [24]byte
-	closed     bool
-	closeErr   error
-	chunkErr   error // finalization failures leave the stream unusable until recovered
+	// Frames handed to the encoder by Pipe but not yet flushed to the file.
+	// Pipe flushes once per read from the child instead of once per line, so
+	// these never outlive the processing of one read buffer (see Pipe).
+	pendFrames int64
+	pendRaw    int
+	// Plain chunk state (adaptive capture). plainImg is the chunk's whole
+	// file image (frame header, then blocks); plainOut bytes of it are in the
+	// file and plainBlk is the offset of the open block's header, or -1. The
+	// image doubles as the archiver's copy of a small sealed run.
+	plain    bool
+	plainImg []byte
+	plainOut int
+	plainBlk int
+	// promoted: output outgrew plainLimit, so new chunks are compressed until
+	// the next checkpoint.
+	promoted  bool
+	total     int64 // accepted raw bytes, less output evicted before archival
+	buffered  int64 // raw bytes still occupying the file buffer
+	maxBytes  int64
+	maxLine   int
+	dropNew   bool
+	frameSync bool
+	unsynced  int // bytes written to the hot chunk since its last fsync
+	syncs     atomic.Int64
+	truncated bool
+	idx       index
+	header    [24]byte
+	closed    bool
+	closeErr  error
+	chunkErr  error // finalization failures leave the stream unusable until recovered
 	// chunkIndexOnly marks a chunkErr that is only a failed index install: the
 	// chunk itself is sealed and retrying the index can clear the error.
 	chunkIndexOnly bool
@@ -999,10 +1144,16 @@ func (w *Writer) sealForArchive() (int, error) {
 	if w.closed || w.store.db == nil {
 		return 0, nil
 	}
+	// A checkpoint re-decides the capture mode: the next chunk starts plain
+	// and the encoder is released, so a worker that has gone quiet stops
+	// holding one. A still-chatty worker is promoted again after plainLimit.
+	w.promoted = false
 	if w.chunkRaw > 0 {
 		if err := w.rotate(); err != nil {
 			return 0, err
 		}
+	} else if w.file != nil && !w.plain {
+		_ = w.startChunk(w.file, false) // the open chunk is empty: switch in place
 	}
 	return w.chunk - 1, nil
 }
@@ -1019,32 +1170,20 @@ func (w *Writer) rotate() error {
 	if err != nil {
 		return fmt.Errorf("open log chunk %d: %w", next, err)
 	}
-	// A nil file with an encoder means the previous chunk was abandoned after
-	// a storage failure; it stays on disk, unindexed, for the orphan sweep.
-	if w.enc != nil && w.file != nil {
+	// A nil file means the previous chunk was abandoned after a storage
+	// failure (or none exists yet); an abandoned chunk stays on disk,
+	// unindexed, for the orphan sweep.
+	if w.file != nil {
 		if err := w.finishChunk(); err != nil {
 			w.chunkErr = errors.Join(err, f.Close(), os.Remove(path))
 			return w.chunkErr
 		}
 	}
-	enc := w.enc
-	if enc == nil {
-		enc, err = zstd.NewWriter(f,
-			zstd.WithEncoderLevel(zstd.SpeedFastest),
-			zstd.WithEncoderConcurrency(1),
-			zstd.WithWindowSize(encoderWindow),
-			zstd.WithLowerEncoderMem(true),
-		)
-		if err != nil {
-			return errors.Join(fmt.Errorf("create log encoder: %w", err), f.Close(), os.Remove(path))
-		}
-	} else {
-		// Close seals the old stream; Reset starts an independent chunk while
-		// retaining the encoder's match window and compression buffers.
-		enc.Reset(f)
+	if err := w.startChunk(f, w.promoted); err != nil {
+		return errors.Join(err, f.Close(), os.Remove(path))
 	}
 	w.chunk = next
-	w.file, w.enc, w.chunkRaw, w.chunkFirst = f, enc, 0, w.seq+1
+	w.file, w.chunkRaw, w.chunkFirst = f, 0, w.seq+1
 	// finishChunk synced everything written to the previous chunk.
 	w.unsynced = 0
 	// A rotation sealed a chunk and started a file: the cheap moment to ask
@@ -1052,9 +1191,72 @@ func (w *Writer) rotate() error {
 	w.store.signalPressure()
 	return nil
 }
+
+// startChunk prepares the stream of a new chunk file f: plain, releasing any
+// encoder, or compressed, reusing the encoder's buffers when it has one.
+func (w *Writer) startChunk(f *os.File, compressed bool) error {
+	if !compressed {
+		w.enc = nil
+		w.plain = true
+		w.plainImg = append(w.plainImg[:0], plainFrameHeader...)
+		w.plainOut, w.plainBlk = 0, -1
+		return nil
+	}
+	w.plain, w.plainImg, w.plainOut, w.plainBlk = false, nil, 0, -1
+	if w.enc != nil {
+		// Close sealed the old stream; Reset starts an independent chunk while
+		// retaining the encoder's match window and compression buffers.
+		w.enc.Reset(f)
+		return nil
+	}
+	enc, err := zstd.NewWriter(f,
+		zstd.WithEncoderLevel(zstd.SpeedFastest),
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(encoderWindow),
+		zstd.WithLowerEncoderMem(true),
+	)
+	if err != nil {
+		return fmt.Errorf("create log encoder: %w", err)
+	}
+	w.enc = enc
+	return nil
+}
+
+// flushPlain writes the plain chunk's open block, and with last the end of
+// its zstd frame. A chunk that never received a frame stays an empty file.
+func (w *Writer) flushPlain(last bool) error {
+	if w.plainBlk >= 0 {
+		putRawBlockHeader(w.plainImg[w.plainBlk:], len(w.plainImg)-w.plainBlk-3, false)
+		w.plainBlk = -1
+	}
+	if last {
+		if len(w.plainImg) == len(plainFrameHeader) {
+			return nil
+		}
+		w.plainImg = append(w.plainImg, 1, 0, 0) // empty last raw block
+	}
+	if w.plainOut == len(w.plainImg) {
+		return nil
+	}
+	if _, err := w.file.Write(w.plainImg[w.plainOut:]); err != nil {
+		return err
+	}
+	w.plainOut = len(w.plainImg)
+	return nil
+}
+
+// putRawBlockHeader writes a zstd block header for a raw block of size bytes.
+func putRawBlockHeader(dst []byte, size int, last bool) {
+	v := uint32(size) << 3
+	if last {
+		v |= 1
+	}
+	dst[0], dst[1], dst[2] = byte(v), byte(v>>8), byte(v>>16)
+}
+
 func (w *Writer) finishChunk() error {
 	if w.file == nil {
-		if w.chunkErr == nil && w.enc != nil {
+		if w.chunkErr == nil && w.chunk > 0 {
 			// The chunk was abandoned after a storage failure: still record the
 			// final index so truncation and drop evidence reaches disk.
 			if err := w.writeIndex(); err != nil {
@@ -1064,7 +1266,12 @@ func (w *Writer) finishChunk() error {
 		}
 		return w.chunkErr
 	}
-	encErr := w.enc.Close()
+	var encErr error
+	if w.plain {
+		encErr = w.flushPlain(true)
+	} else {
+		encErr = w.enc.Close()
+	}
 	// Batch durability defers the seal's fsyncs to the group sync (ADR-20);
 	// strict per-frame durability, or a full deferral list, syncs now.
 	deferred := !w.frameSync && w.store.deferSealRoom()
@@ -1080,8 +1287,11 @@ func (w *Writer) finishChunk() error {
 		w.chunkIndexOnly = false
 		return w.chunkErr
 	}
+	// Closing wrote any frames Pipe left pending in the stream.
+	w.lastStored = w.seq
+	w.pendFrames, w.pendRaw = 0, 0
 	if w.seq >= w.chunkFirst {
-		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.seq, info.Size(), int64(w.chunkRaw), false})
+		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{Number: w.chunk, First: w.chunkFirst, Last: w.seq, Bytes: info.Size(), Raw: int64(w.chunkRaw), Plain: w.plain})
 	}
 	indexErr := w.writeIndexSync(!deferred)
 	if deferred {
@@ -1143,7 +1353,7 @@ func (w *Writer) writeIndexSync(sync bool) error {
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	lock := w.store.lockRunTimed(w.runID)
 	w.lockTimed()
-	needSync, err := w.writeLocked(stream, payload, flags)
+	needSync, err := w.writeLocked(stream, payload, flags, true)
 	w.mu.Unlock()
 	w.store.unlockRun(w.runID, lock, true)
 	if needSync {
@@ -1157,10 +1367,10 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 // capture stores one line of child output for Pipe. Storage failures never
 // reach the pump: capture degrades, discards, and recovers (ADR-8 2A). Only a
 // closed writer is reported.
-func (w *Writer) capture(stream Stream, payload []byte, flags Flags) error {
+func (w *Writer) capture(stream Stream, payload []byte, flags Flags, flush bool) error {
 	lock := w.store.lockRunTimed(w.runID)
 	w.lockTimed()
-	needSync, err := w.captureLocked(stream, payload, flags)
+	needSync, err := w.captureLocked(stream, payload, flags, flush)
 	w.mu.Unlock()
 	w.store.unlockRun(w.runID, lock, true)
 	if needSync {
@@ -1169,7 +1379,7 @@ func (w *Writer) capture(stream Stream, payload []byte, flags Flags) error {
 	return err
 }
 
-func (w *Writer) captureLocked(stream Stream, payload []byte, flags Flags) (bool, error) {
+func (w *Writer) captureLocked(stream Stream, payload []byte, flags Flags, flush bool) (bool, error) {
 	if w.closed {
 		return false, errWriterClosed
 	}
@@ -1180,7 +1390,7 @@ func (w *Writer) captureLocked(stream Stream, payload []byte, flags Flags) (bool
 			return false, nil
 		}
 	}
-	needSync, err := w.writeLocked(stream, payload, flags)
+	needSync, err := w.writeLocked(stream, payload, flags, flush)
 	if err != nil {
 		w.enterDegraded(err)
 		w.discard(len(payload))
@@ -1190,15 +1400,53 @@ func (w *Writer) captureLocked(stream Stream, payload []byte, flags Flags) (bool
 }
 
 // discard counts output that could not be stored. Callers hold w.mu.
-func (w *Writer) discard(payload int) {
-	size := int64(payload + 24)
-	w.droppedFrames++
+func (w *Writer) discard(payload int) { w.discardFrames(1, int64(payload+24)) }
+
+func (w *Writer) discardFrames(frames, size int64) {
+	w.droppedFrames += frames
 	w.droppedBytes += size
-	w.episodeFrames++
+	w.episodeFrames += frames
 	w.episodeBytes += size
 	w.truncated = true
-	w.store.droppedFrames.Add(1)
+	w.store.droppedFrames.Add(frames)
 	w.store.droppedBytes.Add(size)
+}
+
+// dropPending accounts for frames that were handed to the encoder but never
+// reached the file because a later encode, flush or rotation failed. Callers
+// hold w.mu.
+func (w *Writer) dropPending() {
+	if w.pendFrames > 0 {
+		w.discardFrames(w.pendFrames, int64(w.pendRaw))
+		w.chunkRaw -= w.pendRaw
+		w.total -= int64(w.pendRaw)
+		w.buffered -= int64(w.pendRaw)
+	}
+	w.pendFrames, w.pendRaw = 0, 0
+	if w.plain {
+		w.plainImg = w.plainImg[:max(w.plainOut, len(plainFrameHeader))]
+		w.plainBlk = -1
+	}
+}
+
+// flushPending writes frames Pipe left in the encoder to the file. Pipe calls
+// it when it stops early; the normal path flushes with the last line of each
+// read.
+func (w *Writer) flushPending() {
+	lock := w.store.lockRunTimed(w.runID)
+	w.lockTimed()
+	var needSync bool
+	if w.pendFrames > 0 && !w.closed {
+		var err error
+		if needSync, err = w.flushLocked(0); err != nil {
+			w.enterDegraded(err)
+		}
+	}
+	w.mu.Unlock()
+	w.store.unlockRun(w.runID, lock, true)
+	if needSync {
+		_ = w.Sync()
+	}
 }
 
 // enterDegraded records a storage failure and schedules the next recovery
@@ -1230,7 +1478,7 @@ func (w *Writer) recoverLocked(now time.Time) bool {
 		return false
 	}
 	summary := fmt.Sprintf("log capture recovered: %d lines (%d bytes) of output were not stored: %v", w.episodeFrames, w.episodeBytes, w.degradedErr)
-	if _, err := w.writeLocked(System, []byte(summary), FlagTruncated); err != nil {
+	if _, err := w.writeLocked(System, []byte(summary), FlagTruncated, true); err != nil {
 		w.enterDegraded(err)
 		return false
 	}
@@ -1273,7 +1521,7 @@ func (w *Writer) reopenChunk() error {
 // and removed with the run, instead of lingering unindexed until the run ends.
 // Callers hold w.mu; the chunk's file is already closed.
 func (w *Writer) indexAbandonedChunk() {
-	if w.enc == nil || w.chunkRaw == 0 || w.lastStored < w.chunkFirst {
+	if w.chunk == 0 || w.chunkRaw == 0 || w.lastStored < w.chunkFirst {
 		return
 	}
 	if n := len(w.idx.Chunks); n > 0 && w.idx.Chunks[n-1].Number == w.chunk {
@@ -1283,23 +1531,27 @@ func (w *Writer) indexAbandonedChunk() {
 	if info, err := os.Stat(w.chunkPath(w.chunk)); err == nil {
 		size = info.Size()
 	}
-	w.idx.Chunks = append(w.idx.Chunks, chunkMeta{w.chunk, w.chunkFirst, w.lastStored, size, int64(w.chunkRaw), false})
+	w.idx.Chunks = append(w.idx.Chunks, chunkMeta{Number: w.chunk, First: w.chunkFirst, Last: w.lastStored, Bytes: size, Raw: int64(w.chunkRaw), Plain: w.plain})
 	w.chunkRaw = 0 // the next rotate starts a fresh chunk; keep a retry from re-indexing this one
 }
 
-// writeLocked appends one frame. The frame always reaches the chunk file
-// before it returns, so a daemon crash cannot lose it. It reports whether the
+// writeLocked appends one frame. With flush (always in "frame" durability)
+// the frame and any frames Pipe left pending reach the chunk file before it
+// returns, so a daemon crash cannot lose them. Without flush the frame stays
+// in the encoder until the caller's next flushing write; only Pipe does that,
+// for lines it already holds in its read buffer. It reports whether the
 // writer should fsync now (strict mode, or the dirty-byte limit was reached);
 // otherwise the shared timer syncs it. The caller syncs after unlocking.
+// On error, pending frames other than this one are counted as discarded.
 // Callers hold the run lock and w.mu.
-func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, error) {
+func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags, flush bool) (bool, error) {
 	if w.closed {
 		return false, errWriterClosed
 	}
 	if w.chunkErr != nil {
 		return false, w.chunkErr
 	}
-	if w.file == nil || w.enc == nil {
+	if w.file == nil || (!w.plain && w.enc == nil) {
 		// No open chunk: a writer opened degraded, or a reopen that failed.
 		return false, ErrNoChunk
 	}
@@ -1336,27 +1588,66 @@ func (w *Writer) writeLocked(stream Stream, payload []byte, flags Flags) (bool, 
 			w.idx.Chunks = w.idx.Chunks[1:]
 		}
 	}
+	if w.plain && w.chunkRaw+frameSize > plainLimit {
+		// Promote: this run's output outgrew a plain chunk. An empty chunk
+		// switches in place (nothing is in its file yet).
+		w.promoted = true
+		if w.chunkRaw > 0 {
+			if err := w.rotate(); err != nil {
+				w.dropPending()
+				return false, err
+			}
+		} else if err := w.startChunk(w.file, true); err != nil {
+			return false, err
+		}
+	}
 	if w.chunkRaw+frameSize > chunkLimit && w.chunkRaw > 0 {
 		if err := w.rotate(); err != nil {
+			w.dropPending()
 			return false, err
 		}
 	}
 	w.seq++
 	f := Frame{w.seq, time.Now().UTC(), stream, flags, payload}
-	if err := encodeWithHeader(w.enc, f, w.header[:]); err != nil {
+	if w.plain {
+		if w.plainBlk < 0 {
+			w.plainBlk = len(w.plainImg)
+			w.plainImg = append(w.plainImg, 0, 0, 0)
+		}
+		w.plainImg = appendFrame(w.plainImg, f)
+	} else if err := encodeWithHeader(w.enc, f, w.header[:]); err != nil {
+		w.dropPending()
 		return false, err
 	}
-	// Flush compressed bytes to the file on every frame so a daemon crash
-	// cannot lose accepted output. Readers see it through the page cache.
-	if err := w.enc.Flush(); err != nil {
+	w.chunkRaw += frameSize
+	w.total += int64(frameSize)
+	w.buffered += int64(frameSize)
+	if !flush && !w.frameSync {
+		w.pendFrames++
+		w.pendRaw += frameSize
+		return false, nil
+	}
+	return w.flushLocked(frameSize)
+}
+
+// flushLocked writes the encoder's pending blocks to the chunk file, so a
+// daemon crash cannot lose accepted output; readers see it through the page
+// cache. frameSize is the frame just encoded, not counted in pendRaw.
+func (w *Writer) flushLocked(frameSize int) (bool, error) {
+	var err error
+	if w.plain {
+		err = w.flushPlain(false)
+	} else {
+		err = w.enc.Flush()
+	}
+	if err != nil {
+		w.dropPending()
 		return false, err
 	}
 	w.lastStored = w.seq
 	before := w.unsynced
-	w.unsynced += frameSize
-	w.chunkRaw += frameSize
-	w.total += int64(frameSize)
-	w.buffered += int64(frameSize)
+	w.unsynced += w.pendRaw + frameSize
+	w.pendFrames, w.pendRaw = 0, 0
 	if w.frameSync {
 		return true, nil
 	}
@@ -1602,19 +1893,49 @@ func (w *Writer) Sync() error {
 // retried lazily. Storage failures are therefore never returned; Pipe returns
 // only read errors and a closed writer. Output is synced as a group (see
 // SetGroupSync); the end of r joins the group too (ADR-20).
+//
+// Lines are compressed one by one but flushed to the chunk file once per read
+// from r: when the read buffer holds no further bytes, after pipeReadBuffer
+// bytes of frames (or the dirty-byte sync limit, if smaller), at EOF, or on a read error. A burst of short lines
+// therefore costs one zstd block and one write(2) instead of one per line. No
+// output waits for more input: the last line of every read is flushed before
+// Pipe blocks on r again.
 func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	limit := w.maxLine
 	if limit <= 0 || limit > maxFramePayload {
 		limit = maxFramePayload
 	}
-	br := bufio.NewReaderSize(r, min(limit+1, 64<<10))
-	line := make([]byte, 0, min(limit, 64<<10))
+	br := bufio.NewReaderSize(r, min(limit+1, pipeReadBuffer))
+	// line holds a line that spans more than one read buffer; it is allocated
+	// on first use, so most runs never allocate it.
+	var line []byte
 	truncated := false
+	batched := 0 // frame bytes captured since the last flush
+	flushNow := func(n int) bool {
+		batched += n + 24
+		// The dirty-byte limit (logs.sync_max_dirty, possibly below the read
+		// size) also bounds a batch, so it keeps its byte granularity.
+		if br.Buffered() == 0 || batched >= min(pipeReadBuffer, int(w.store.syncMaxDirty.Load())) {
+			batched = 0
+			return true
+		}
+		return false
+	}
+	defer w.flushPending()
 	for {
 		fragment, err := br.ReadSlice('\n')
 		hasNewline := len(fragment) > 0 && fragment[len(fragment)-1] == '\n'
 		if hasNewline {
 			fragment = fragment[:len(fragment)-1]
+		}
+		if hasNewline && len(line) == 0 && !truncated && len(fragment) <= limit {
+			// The whole line is in the read buffer (ReadSlice found the
+			// newline, so err is nil): capture it in place. The encoder copies
+			// it before ReadSlice reuses the buffer.
+			if writeErr := w.captureLine(stream, fragment, flushNow(len(fragment))); writeErr != nil {
+				return writeErr
+			}
+			continue
 		}
 		if !truncated {
 			remaining := limit - len(line)
@@ -1637,10 +1958,13 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			if !utf8.Valid(line) {
 				flags |= FlagInvalidUTF8
 			}
-			if writeErr := w.capture(stream, line, flags); writeErr != nil {
+			if writeErr := w.capture(stream, line, flags, flushNow(len(line)) || err != nil); writeErr != nil {
 				return writeErr
 			}
 			line = line[:0]
+			if cap(line) > pipeReadBuffer {
+				line = nil // do not keep a long line's buffer for the run's lifetime
+			}
 			truncated = false
 		}
 		// The end of a stream does not sync on its own (ADR-20): the bytes are
@@ -1653,6 +1977,21 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 			return err
 		}
 	}
+}
+
+// pipeReadBuffer is the read size of each output pipe pump. A typical run
+// prints a few hundred bytes; 16 KiB still takes a 500-line burst in a few
+// reads. Longer lines are assembled across reads up to the line limit.
+const pipeReadBuffer = 16 << 10
+
+// captureLine stores one complete line held in the read buffer.
+func (w *Writer) captureLine(stream Stream, line []byte, flush bool) error {
+	line = bytes.TrimSuffix(line, []byte{'\r'})
+	flags := Flags(0)
+	if !utf8.Valid(line) {
+		flags |= FlagInvalidUTF8
+	}
+	return w.capture(stream, line, flags, flush)
 }
 
 // Sequence returns the sequence of the last accepted frame (0 if none). It is
@@ -1706,10 +2045,34 @@ func (w *Writer) Close() error {
 	return w.closeErr
 }
 
+// sealedPlain returns the closed writer's archive handoff: its only
+// unarchived chunk when that chunk is plain and complete on disk, else nil.
+func (w *Writer) sealedPlain() *sealedRun {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.closed || w.closeErr != nil || w.degraded || w.droppedFrames > 0 || len(w.idx.Chunks) != 1 {
+		return nil
+	}
+	m := w.idx.Chunks[0]
+	if !m.Plain || m.Number != w.chunk || w.plainOut != len(w.plainImg) {
+		return nil
+	}
+	return &sealedRun{job: w.job, kind: w.kind, meta: m, image: w.plainImg}
+}
+
 func (w *Writer) Stats() (int64, bool) { w.mu.Lock(); defer w.mu.Unlock(); return w.total, w.truncated }
 func encode(dst io.Writer, f Frame) error {
 	var h [24]byte
 	return encodeWithHeader(dst, f, h[:])
+}
+
+// appendFrame appends f in the record format encode writes.
+func appendFrame(dst []byte, f Frame) []byte {
+	dst = append(dst, Version, byte(f.Stream), byte(f.Flags), 0)
+	dst = binary.BigEndian.AppendUint64(dst, f.Sequence)
+	dst = binary.BigEndian.AppendUint64(dst, uint64(f.Timestamp.UnixMicro()))
+	dst = binary.BigEndian.AppendUint32(dst, uint32(len(f.Payload)))
+	return append(dst, f.Payload...)
 }
 
 func encodeWithHeader(dst io.Writer, f Frame, h []byte) error {
@@ -1793,6 +2156,64 @@ func salvageFrames(blob []byte) ([]Frame, error) {
 		}
 		frames = append(frames, f)
 	}
+}
+
+// archiveEncoder returns the store's shared encoder for archive-time
+// compression of plain chunks.
+func (s *Store) archiveEncoder() *zstd.Encoder {
+	s.archiveEncOnce.Do(func() {
+		s.archiveEnc, _ = zstd.NewWriter(nil,
+			zstd.WithEncoderLevel(zstd.SpeedFastest),
+			zstd.WithEncoderConcurrency(archiveWorkers),
+			zstd.WithWindowSize(encoderWindow),
+			zstd.WithLowerEncoderMem(true),
+		)
+	})
+	return s.archiveEnc
+}
+
+// archiveBlob returns what the archive stores for a sealed chunk: a plain
+// chunk compressed in one pass when that is smaller, otherwise the chunk as
+// it is (a plain chunk is valid zstd as well).
+func (s *Store) archiveBlob(m chunkMeta, blob []byte) []byte {
+	if !m.Plain {
+		return blob
+	}
+	records, err := plainRecords(blob)
+	if err != nil || len(records) == 0 {
+		return blob
+	}
+	out := s.archiveEncoder().EncodeAll(records, make([]byte, 0, len(records)/2+64))
+	if len(out) >= len(blob) {
+		return blob
+	}
+	return out
+}
+
+// plainRecords returns the frame records of a complete plain chunk: the
+// payloads of its raw blocks, through the last block.
+func plainRecords(chunk []byte) ([]byte, error) {
+	if !bytes.HasPrefix(chunk, plainFrameHeader) {
+		return nil, errors.New("not a plain log chunk")
+	}
+	rest := chunk[len(plainFrameHeader):]
+	var out []byte
+	for len(rest) >= 3 {
+		v := uint32(rest[0]) | uint32(rest[1])<<8 | uint32(rest[2])<<16
+		size := int(v >> 3)
+		if (v>>1)&3 != 0 || len(rest) < 3+size {
+			return nil, errors.New("malformed plain log chunk")
+		}
+		out = append(out, rest[3:3+size]...)
+		rest = rest[3+size:]
+		if v&1 == 1 {
+			if len(rest) != 0 {
+				return nil, errors.New("data after the end of a plain log chunk")
+			}
+			return out, nil
+		}
+	}
+	return nil, errors.New("plain log chunk without its last block")
 }
 
 func encodeFrames(frames []Frame) ([]byte, error) {

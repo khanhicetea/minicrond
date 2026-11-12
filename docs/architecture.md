@@ -30,7 +30,7 @@ directory (enforced by an flock on `minicron.lock`).
 | `internal/executor` | Process spawning (clean/inherit env, secrets, run_as), process-group control, timeout/grace kill |
 | `internal/supervisor` | Worker supervision: autostart, restart policies, healthy_after |
 | `internal/store` | SQLite registry + run history + audit (guarded state transitions) |
-| `internal/logstore` | Live-tier tagged, zstd-compressed chunk files with fsync-before-ack |
+| `internal/logstore` | Live-tier tagged zstd chunk files (plain, then compressed), grouped fsync, background archiver |
 | `internal/logdb` | Archive tier: separate SQLite log database, retention sweeps |
 | `internal/api` | HTTP API, SSE streaming, embedded SPA assets, auth (bearer + unix peer) |
 | `internal/sqlite` | Shared SQLite connection setup (writer + read pool) and schema identity checks |
@@ -187,15 +187,21 @@ Each database has one writer connection (transactions use `BEGIN IMMEDIATE`)
 and a small read-only pool. Run listings, metrics and log reads use the pool,
 so they never queue behind run transitions or archival.
 
-Live logs take the fast path: every accepted frame is a tagged, zstd-
-compressed chunk file write before the next line is read (daemon-crash-safe);
-fsyncs are grouped on a shared timer (`logs.sync_interval` /
+Live logs take the fast path: accepted frames reach the run's chunk file once
+per read from the child's pipe, before the next read (daemon-crash-safe), at
+most 16 KiB or `logs.sync_max_dirty` per write. Each run starts with a plain
+chunk, a zstd frame of uncompressed blocks that needs no encoder; output past
+16 KiB promotes the run to compressed chunks, and a worker checkpoint releases
+the encoder again ([ADR-21](adr/0021-adaptive-log-capture.md)). Fsyncs are grouped on a shared timer (`logs.sync_interval` /
 `logs.sync_max_dirty`) unless `logs.durability = "frame"`, seals and pipe EOF
 included. Finished runs are sealed and archived into the
 log DB in the background, off the completion path, and buffers are deleted; workers
 checkpoint every `logs.worker_flush_interval`. Small chunks become blobs, short
 runs are committed in batches, and chunks of 64 KiB or more are renamed into
-`log-archive/` with a row pointing to them instead of being copied (ADR-20). Crash-orphaned buffers are
+`log-archive/` with a row pointing to them instead of being copied (ADR-20).
+Plain chunks are compressed once, at archive time, by one shared encoder; a
+small sealed run is handed to the archiver in memory, so its buffer is not
+read back (ADR-21). Crash-orphaned buffers are
 salvaged at startup up to the last intact frame. Reads merge the archive and
 the buffer files; no payload is kept in memory for viewers (ADR-6, ADR-8).
 Archive cursor reads seek by frame sequence. Log disk use is bounded by a
@@ -215,7 +221,7 @@ authorization. See [ADR-7](adr/0007-unix-only-and-proxy-ui.md).
 
 ## Design records
 
-All accepted decisions are in [`adr/`](adr/) (ADR-5 to ADR-20; earlier numbers
+All accepted decisions are in [`adr/`](adr/) (ADR-5 to ADR-21; earlier numbers
 were retired drafts). Start with:
 
 - [ADR-5: foundations](adr/0005-v01-foundations.md) — stack, SQLite
@@ -225,4 +231,5 @@ were retired drafts). Start with:
 - [ADR-8: background-first trade-offs](adr/0008-background-first-trade-offs.md) — batched fsync, capture failure, disk budget, durable queue, small-server tuning
 - [ADR-16: execution first](adr/0016-execution-first.md) — runs never wait for history storage; PID 1 init
 - [ADR-20: log archive write path](adr/0020-log-archive-write-path.md) — file chunks, batched archive commits, deferred seal syncs
+- [ADR-21: adaptive log capture](adr/0021-adaptive-log-capture.md) — one flush per pipe read, plain first chunks, compression at archive time
 - [`releases/`](releases/) — release notes

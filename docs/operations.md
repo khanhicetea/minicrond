@@ -13,7 +13,7 @@ data/
 ├── minicron.db          # definitions + run history + audit (SQLite, WAL)
 ├── minicron-logs.db     # log archive (SQLite, WAL) — separate database
 ├── log-archive/<run_id>/ # archived large log chunks (files the log archive references)
-├── logs/<run_id>/       # live run log buffers (compressed zstd chunks)
+├── logs/<run_id>/       # live run log buffers (zstd chunks: plain, then compressed)
 ├── minicron.sock        # mode-0600 Unix socket (local CLI)
 ├── minicron.lock        # instance lock (flock + pid)
 └── initial-token        # one-time initial bearer token (mode 0600)
@@ -92,7 +92,7 @@ between batches. `GET /api/v1/daemon` reports the archive backlog under
 bottleneck.
 Reads synchronize with archival (a chunk moving from buffer to archive) and share one page budget across the
 database and the buffer files (the active chunk included, since it is written
-through on every frame). The daemon keeps **no in-memory payload tail or
+through on every read from the child). The daemon keeps **no in-memory payload tail or
 per-viewer queue**: a log viewer reads stored chunks on demand, so an
 unwatched run costs nothing extra and a stalled viewer holds no memory.
 
@@ -128,8 +128,9 @@ index records `dropped_frames`/`dropped_bytes`/`sync_failures`. Capture retries
 on a fresh chunk with a growing delay (1 s up to 30 s, evaluated when the next
 line arrives) and, once storage works again, writes a `system` line stating how
 many lines were not stored. Lines discarded while capture is down do not
-consume sequence numbers, but the single frame whose write failed does (it may
-be partly on disk), so a failure shows up as one skipped sequence — which an
+consume sequence numbers, but the frames of the one write that failed do (at
+most one read of the child's output, up to 16 KiB; they may be partly on disk),
+so a failure shows up as a short run of skipped sequences — which an
 SSE `gap` event can report — plus the `system` line. Timeouts and stop requests
 are unaffected, and so is the final status: if closing the log fails when a run
 ends, the run keeps its real status (for example `succeeded`) and is marked

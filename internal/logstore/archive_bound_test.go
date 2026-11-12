@@ -41,6 +41,15 @@ func TestArchiveQueueIsBoundedAndOverflowIsRediscovered(t *testing.T) {
 	if backlog := s.ArchiveBacklog(); backlog > maxArchiveQueue {
 		t.Fatalf("archive queue grew to %d, cap %d", backlog, maxArchiveQueue)
 	}
+	// Plain-chunk images are handed over only with a queued run: the
+	// overflowed runs (the last ones sealed) must not leave theirs in memory.
+	s.mu.Lock()
+	images := len(s.archiver.sealed)
+	_, lastKept := s.archiver.sealed[fmt.Sprintf("run%02d", runs-1)]
+	s.mu.Unlock()
+	if images == 0 || images >= runs || lastKept {
+		t.Fatalf("%d sealed images for %d runs (overflowed run kept: %v)", images, runs, lastKept)
+	}
 	st := s.ArchiveStats()
 	if !st.Overflow || st.OverflowTotal == 0 || st.SealedRuns != runs || st.SealedBytes <= 0 || st.Queued > maxArchiveQueue {
 		t.Fatalf("stats while blocked = %+v", st)

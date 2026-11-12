@@ -13,7 +13,7 @@ embedded web UI. Linux is the supported platform.
 | [embedding-ui.md](embedding-ui.md) | Vendoring the UI behind a gateway: bundle contract, BASE_PATH rewrites, media types, untrusted API data |
 | [operations.md](operations.md) | Runbook: data layout, hybrid log storage, backup/restore, retention, tokens, security, troubleshooting |
 | [architecture.md](architecture.md) | Components, run lifecycle, storage design, design decisions |
-| [adr/](adr/) | Accepted architecture decision records (ADR-5 to ADR-20). Key ones: [ADR-8](adr/0008-background-first-trade-offs.md) background-first trade-offs, [ADR-9](adr/0009-durable-execution-queue.md) durable execution queue, [ADR-10](adr/0010-log-disk-budget.md) log disk budget, [ADR-16](adr/0016-execution-first.md) execution first, [ADR-20](adr/0020-log-archive-write-path.md) log archive write path |
+| [adr/](adr/) | Accepted architecture decision records (ADR-5 to ADR-21). Key ones: [ADR-8](adr/0008-background-first-trade-offs.md) background-first trade-offs, [ADR-9](adr/0009-durable-execution-queue.md) durable execution queue, [ADR-10](adr/0010-log-disk-budget.md) log disk budget, [ADR-16](adr/0016-execution-first.md) execution first, [ADR-20](adr/0020-log-archive-write-path.md) log archive write path, [ADR-21](adr/0021-adaptive-log-capture.md) adaptive log capture |
 | [benchmarks/](benchmarks/) | Measured results; start with [workload tiers](benchmarks/2026-10-25-workload-tiers/README.md) (CPU, memory and I/O for tiny, small, normal and large setups) and [memory and commit costs](benchmarks/2026-10-25-memory-and-commits/README.md) |
 | [releases/](releases/) | Release notes, starting with [0.6.0](releases/v0.6.0.md) |
 

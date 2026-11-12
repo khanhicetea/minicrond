@@ -22,7 +22,8 @@ database or log storage fails ([ADR-16](docs/adr/0016-execution-first.md)).
 - **Durable history.** Every run is recorded — status, exit code, timing,
   trigger, attempt — in SQLite with guarded state transitions.
 - **Tagged, compressed, crash-safe logs.** Live runs write fsynced zstd
-  chunk files; finished runs archive into a separate SQLite log database.
+  chunk files, compressing only once output outgrows 16 KiB; finished runs
+  archive, compressed, into a separate SQLite log database.
   Streams survive crashes; buffers orphaned mid-write are salvaged at boot.
 - **Jobs *and* workers.** Cron jobs with catch-up and overlap policies,
   plus long-running supervised processes with restart policies.
