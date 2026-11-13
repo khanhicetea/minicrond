@@ -91,7 +91,7 @@ func (s *Store) syncMoves(moves []movedChunk) error {
 	}
 	var mu sync.Mutex
 	var errs []error
-	parallelSync(paths, func(path string) {
+	parallelDo(paths, func(path string) {
 		f, err := os.Open(path)
 		if err == nil {
 			err = errors.Join(s.fsync(f), f.Close())

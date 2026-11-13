@@ -189,7 +189,16 @@ func (s *Store) initSchema(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	return sqlite.EnsureSchema(ctx, s.db, "metadata", ApplicationID, SchemaVersion, schema)
+	if err := sqlite.EnsureSchema(ctx, s.db, "metadata", ApplicationID, SchemaVersion, schema); err != nil {
+		return err
+	}
+	// idx_runs_definition_terminal was created by earlier builds and is used
+	// by no query; every run insert and terminal update maintained it. Best
+	// effort: a database that cannot be written now keeps it until it can.
+	if _, err := s.db.ExecContext(ctx, "DROP INDEX IF EXISTS idx_runs_definition_terminal"); err != nil {
+		slog.Warn("dropping an unused metadata index failed; it is retried at the next start", "error", err)
+	}
+	return nil
 }
 
 // ApplicationID is stored in the SQLite header of minicron.db ("MCRN").
@@ -224,7 +233,6 @@ CREATE TABLE runs (
 CREATE INDEX idx_runs_job_time ON runs(job, queued_us DESC);
 CREATE INDEX idx_runs_time ON runs(queued_us DESC);
 CREATE INDEX idx_runs_end_time ON runs(ended_us DESC);
-CREATE INDEX idx_runs_definition_terminal ON runs(definition_id, ended_us DESC);
 CREATE INDEX idx_runs_retention ON runs(definition_id, COALESCE(ended_us,queued_us) DESC, run_id DESC) WHERE status IN ('succeeded','failed','timeout','stopped','interrupted','skipped','missed');
 CREATE INDEX idx_runs_active ON runs(status) WHERE status IN ('queued','pending','running');
 CREATE UNIQUE INDEX idx_runs_schedule_occurrence ON runs(definition_id, scheduled_for_us) WHERE trigger='schedule' AND scheduled_for_us IS NOT NULL;
@@ -711,7 +719,7 @@ func (s *Store) StartRun(ctx context.Context, id string, pid, pgid int, startID 
 	// Relaxed (ADR-18): the process identity is only used to stop orphans
 	// after a daemon crash in the same boot, and recovery treats a pending run
 	// like a running one.
-	res, err := s.execRelaxed(ctx, "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'", pid, pgid, startID, at.UnixMicro(), id)
+	res, err := s.execRelaxedPrepared(ctx, startRunSQL, pid, pgid, startID, at.UnixMicro(), id)
 	if err != nil {
 		return fmt.Errorf("start run %s: %w", id, err)
 	}
@@ -748,10 +756,16 @@ func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason strin
 	return nil
 }
 
+const startRunSQL = "UPDATE runs SET status='running',pid=?,pgid=?,process_start_id=?,started_us=? WHERE run_id=? AND status='pending'"
+
 const finishRunSQL = "UPDATE runs SET status=?,end_reason=?,exit_code=?,signal=?,ended_us=?,log_bytes=?,log_truncated=?,user_cpu_us=?,system_cpu_us=?,peak_rss_bytes=? WHERE run_id=? AND (status IN ('pending','running') OR status=?)"
 
+// Recoverable and Recover repeat the predicate of the partial index
+// idx_runs_active word for word: SQLite uses a partial index only when the
+// query's WHERE clause contains its condition, and otherwise scans the whole
+// run history at every start.
 func (s *Store) Recoverable(ctx context.Context) ([]model.Run, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,'') FROM runs WHERE status IN ('pending','running')`)
+	rows, err := s.db.QueryContext(ctx, `SELECT run_id,COALESCE(boot_id,''),COALESCE(pid,0),COALESCE(pgid,0),COALESCE(process_start_id,'') FROM runs WHERE status IN ('queued','pending','running') AND status<>'queued'`)
 	if err != nil {
 		return nil, err
 	}
@@ -771,7 +785,7 @@ func (s *Store) Recover(ctx context.Context) error {
 	// A queued run without a queue row can never drain or expire (impossible by
 	// construction; repaired here so it cannot stay active forever).
 	_, err := s.db.ExecContext(ctx, `UPDATE runs SET status='interrupted',end_reason='crash_recovery',ended_us=?
-		WHERE status IN ('pending','running') OR (status='queued' AND run_id NOT IN (SELECT run_id FROM exec_queue))`, now)
+		WHERE status IN ('queued','pending','running') AND (status<>'queued' OR run_id NOT IN (SELECT run_id FROM exec_queue))`, now)
 	return err
 }
 func (s *Store) Runs(ctx context.Context, job string, limit int) ([]model.Run, error) {

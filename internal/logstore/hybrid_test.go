@@ -249,8 +249,16 @@ func TestReadPinsRunDuringCheckpoint(t *testing.T) {
 	if last != 20 {
 		t.Fatalf("last sequence = %d, want 20", last)
 	}
-	if len(s.runLocks) != 0 {
+	// The open writer keeps its own reference on its run lock (Writer.lockRef)
+	// until it is closed; nothing else may remain.
+	if lock := s.runLocks["run"]; len(s.runLocks) != 1 || lock == nil || lock.refs != 1 {
 		t.Fatal("idle run locks were not released")
+	}
+	if err := s.Close("run"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.runLocks) != 0 {
+		t.Fatal("the closed writer's run lock was not released")
 	}
 }
 

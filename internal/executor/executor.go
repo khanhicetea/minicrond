@@ -607,11 +607,20 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	// /proc/PID/stat. An exited child retains its procfs entry until reaped.
 	startID := processIdentity(cmd.Process.Pid)
 	wait := make(chan error, 1)
-	go func() { wait <- cmd.Wait() }()
+	watch := exitWatch(cmd.Process.Pid)
+	go func() {
+		if watch != nil {
+			awaitExit(watch)
+		}
+		wait <- cmd.Wait()
+	}()
 	leaderDone := false
+	// groupGone is set once the group was probed (and killed if needed) after
+	// the pipes were drained, so the deferred cleanup does not probe it again.
+	groupGone := false
 	defer func() {
 		// Recovery must clean up descendants even if the leader has exited.
-		if !leaderDone || groupAlive(cmd.Process.Pid) {
+		if !leaderDone || (!groupGone && groupAlive(cmd.Process.Pid)) {
 			killGroup(cmd.Process.Pid, syscall.SIGKILL)
 		}
 		if !leaderDone {
@@ -738,6 +747,7 @@ func (s *Service) executeRun(ctx context.Context, r model.Run, d model.Definitio
 	if groupAlive(pgid) {
 		killGroup(pgid, syscall.SIGKILL)
 	}
+	groupGone = true
 	status, reason, code, signal := classify(waitErr, cause, d.SuccessCodes)
 	if startErr != nil {
 		logFailure("starting run failed", startErr, "run", r.ID, "job", d.Name)
@@ -924,7 +934,12 @@ func (s *Service) finishRun(id, status, reason string, code *int, signal string,
 func (s *Service) notifyFinished(r model.Run, d model.Definition) {
 	if s.onFinished != nil {
 		if err := fault.Call(func() error {
-			s.onFinished(r.Clone(), d.Clone())
+			// A definition without alert channels is not retained by the
+			// dispatcher, so it needs no private copy.
+			if len(d.Alerts) > 0 {
+				d = d.Clone()
+			}
+			s.onFinished(r.Clone(), d)
 			return nil
 		}); err != nil {
 			logFailure("run completion callback panicked", err, "run", r.ID, "job", d.Name)

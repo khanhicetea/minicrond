@@ -341,6 +341,8 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 	}
 	s.mu.Lock()
 	s.writers[runID] = w
+	lock.refs++ // the writer's own reference, released by Close (see capture)
+	w.lockRef = lock
 	s.mu.Unlock()
 	return w, nil
 }
@@ -360,6 +362,8 @@ func (s *Store) OpenDegraded(runID, job, kind string, opt WriterOptions, cause e
 	w.mu.Unlock()
 	s.mu.Lock()
 	s.writers[runID] = w
+	lock.refs++
+	w.lockRef = lock
 	s.mu.Unlock()
 	return w
 }
@@ -399,6 +403,11 @@ func (s *Store) finalize(runID string, async bool) error {
 	if err == nil {
 		sealed = w.sealedPlain()
 	}
+	// A closed writer has nothing left for the group sync: its last chunk is
+	// queued as a deferred seal (or was synced inline).
+	s.syncMu.Lock()
+	delete(s.dirty, w)
+	s.syncMu.Unlock()
 	lock := s.lockRun(runID, true)
 	s.mu.Lock()
 	delete(s.writers, runID)
@@ -766,6 +775,25 @@ func (s *Store) archiveLoop() {
 	}
 }
 
+// dropSeals forgets the deferred seals of buffers the archiver has committed
+// and removed, so the group sync does not try to open them.
+func (s *Store) dropSeals(dirs map[string]bool) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	kept := s.sealed[:0]
+	for _, c := range s.sealed {
+		if dirs[c.dir] {
+			if c.number > 0 {
+				delete(s.unsyncedSeals, c.path())
+			}
+			continue
+		}
+		kept = append(kept, c)
+	}
+	clear(s.sealed[len(kept):])
+	s.sealed = kept
+}
+
 // archiveSealedBatch archives queued runs: the short ones together in one
 // transaction, the rest one by one. Runs owned by a worker flush or a
 // deletion are deferred until that owner releases them.
@@ -803,6 +831,9 @@ func (s *Store) archiveSealedBatch(ctx context.Context, ids []string) {
 type shortRun struct {
 	id   string
 	lock *runLock
+	// image: archived from the handed-over image of a buffer that holds one
+	// chunk file and its index.
+	image bool
 	logdb.RunChunks
 }
 
@@ -841,9 +872,10 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 		dir := filepath.Join(s.root, id)
 		var r logdb.RunChunks
 		var size int64
-		ok := false
+		ok, fromImage := false, false
 		if sealed != nil {
 			r, size, ok = s.sealedShortRun(dir, sealed)
+			fromImage = ok
 		}
 		if !ok {
 			r, size, ok = s.loadShortRun(dir)
@@ -854,7 +886,7 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 			continue
 		}
 		r.RunID = id
-		batch = append(batch, shortRun{id: id, lock: lock, RunChunks: r})
+		batch = append(batch, shortRun{id: id, lock: lock, image: fromImage, RunChunks: r})
 		bytes += size
 		chunks += len(r.Chunks)
 	}
@@ -875,14 +907,34 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 		}
 		return rest
 	}
+	removed := make(map[string]bool, len(batch))
 	for _, r := range batch {
-		err := os.RemoveAll(filepath.Join(s.root, r.id))
+		dir := filepath.Join(s.root, r.id)
+		err := removeBuffer(dir, r)
 		if err != nil {
 			slog.Error("removing an archived log buffer failed; the orphan sweep will retry", "run", r.id, "error", err)
+		} else {
+			removed[dir] = true
 		}
 		results[r.id] = err
 	}
+	s.dropSeals(removed)
 	return rest
+}
+
+// removeBuffer deletes an archived run's buffer directory. A run archived
+// from its image holds one chunk file and its index, so they are
+// unlinked by name; anything else, or a surprise in the directory, takes the
+// directory walk.
+func removeBuffer(dir string, r shortRun) error {
+	if r.image {
+		_ = os.Remove(filepath.Join(dir, fmt.Sprintf("%06d.zst", r.Chunks[0].Number)))
+		_ = os.Remove(filepath.Join(dir, "index.json"))
+		if os.Remove(dir) == nil {
+			return nil
+		}
+	}
+	return os.RemoveAll(dir)
 }
 
 // sealedShortRun builds a run's archive rows from its handed-over plain chunk
@@ -1096,6 +1148,11 @@ type Writer struct {
 	// chunkIndexOnly marks a chunkErr that is only a failed index install: the
 	// chunk itself is sealed and retrying the index can clear the error.
 	chunkIndexOnly bool
+	// lockRef is the writer's own reference on its run lock, held from Open
+	// to Close. Capturing a line then takes the lock without a lookup in the
+	// store's lock table (two acquisitions of the store-wide mutex and, for a
+	// run nothing else touches, an allocation per line).
+	lockRef *runLock
 
 	// Degraded capture (ADR-8 2A). While log storage fails the pipe pumps keep
 	// draining the child's output and discard it; recovery is attempted lazily
@@ -1198,6 +1255,10 @@ func (w *Writer) startChunk(f *os.File, compressed bool) error {
 	if !compressed {
 		w.enc = nil
 		w.plain = true
+		if w.plainImg == nil {
+			// Room for a typical short run, so its few frames do not regrow it.
+			w.plainImg = make([]byte, 0, 1024)
+		}
 		w.plainImg = append(w.plainImg[:0], plainFrameHeader...)
 		w.plainOut, w.plainBlk = 0, -1
 		return nil
@@ -1279,7 +1340,15 @@ func (w *Writer) finishChunk() error {
 	if !deferred {
 		syncErr = w.file.Sync()
 	}
-	info, statErr := w.file.Stat()
+	// A plain chunk's size is its image; a compressed one is asked for.
+	size := int64(w.plainOut)
+	var statErr error
+	if !w.plain {
+		var info os.FileInfo
+		if info, statErr = w.file.Stat(); statErr == nil {
+			size = info.Size()
+		}
+	}
 	closeErr := w.file.Close()
 	w.file = nil
 	if err := errors.Join(encErr, syncErr, statErr, closeErr); err != nil {
@@ -1291,7 +1360,7 @@ func (w *Writer) finishChunk() error {
 	w.lastStored = w.seq
 	w.pendFrames, w.pendRaw = 0, 0
 	if w.seq >= w.chunkFirst {
-		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{Number: w.chunk, First: w.chunkFirst, Last: w.seq, Bytes: info.Size(), Raw: int64(w.chunkRaw), Plain: w.plain})
+		w.idx.Chunks = append(w.idx.Chunks, chunkMeta{Number: w.chunk, First: w.chunkFirst, Last: w.seq, Bytes: size, Raw: int64(w.chunkRaw), Plain: w.plain})
 	}
 	indexErr := w.writeIndexSync(!deferred)
 	if deferred {
@@ -1351,11 +1420,11 @@ func (w *Writer) writeIndexSync(sync bool) error {
 // reached the chunk file (daemon-crash safe) but is fsynced with the next
 // group; with strict "frame" durability a successful Write is synced.
 func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
-	lock := w.store.lockRunTimed(w.runID)
+	lock, own := w.lockRunTimed()
 	w.lockTimed()
 	needSync, err := w.writeLocked(stream, payload, flags, true)
 	w.mu.Unlock()
-	w.store.unlockRun(w.runID, lock, true)
+	w.unlockRun(lock, own)
 	if needSync {
 		if syncErr := w.Sync(); syncErr != nil && err == nil && w.frameSync {
 			err = syncErr
@@ -1364,15 +1433,41 @@ func (w *Writer) Write(stream Stream, payload []byte, flags Flags) error {
 	return err
 }
 
+// lockRunTimed takes the run lock exclusively for a write: through the
+// writer's own reference when it has one (own), else through the store's lock
+// table. The reference is dropped by Close, which holds the lock exclusively;
+// a write that arrives later may therefore hold a lock object the table no
+// longer knows, which is harmless because it only finds the writer closed.
+func (w *Writer) lockRunTimed() (lock *runLock, own bool) {
+	lock = w.lockRef
+	if lock == nil {
+		return w.store.lockRunTimed(w.runID), false
+	}
+	if !lock.mu.TryLock() {
+		start := time.Now()
+		lock.mu.Lock()
+		w.store.lockWaits.observe(time.Since(start))
+	}
+	return lock, true
+}
+
+func (w *Writer) unlockRun(lock *runLock, own bool) {
+	if own {
+		lock.mu.Unlock()
+		return
+	}
+	w.store.unlockRun(w.runID, lock, true)
+}
+
 // capture stores one line of child output for Pipe. Storage failures never
 // reach the pump: capture degrades, discards, and recovers (ADR-8 2A). Only a
 // closed writer is reported.
 func (w *Writer) capture(stream Stream, payload []byte, flags Flags, flush bool) error {
-	lock := w.store.lockRunTimed(w.runID)
+	lock, own := w.lockRunTimed()
 	w.lockTimed()
 	needSync, err := w.captureLocked(stream, payload, flags, flush)
 	w.mu.Unlock()
-	w.store.unlockRun(w.runID, lock, true)
+	w.unlockRun(lock, own)
 	if needSync {
 		_ = w.Sync() // a failure is recorded as capture evidence
 	}
@@ -1733,9 +1828,10 @@ func (s *Store) flushDirtyLocked() {
 	sealed := s.sealed
 	s.sealed = nil
 	s.syncMu.Unlock()
-	for _, w := range batch {
-		_ = w.Sync() // failures are recorded on the writer
-	}
+	// A few at a time, like the sealed chunks below, so the filesystem can
+	// share journal commits between writers. Failures are recorded on the
+	// writer.
+	parallelDo(batch, func(w *Writer) { _ = w.Sync() })
 	s.syncSealed(sealed)
 }
 
@@ -1789,14 +1885,14 @@ func (s *Store) syncSealed(sealed []sealedChunk) {
 			files = append(files, filepath.Join(c.dir, "index.json"))
 		}
 	}
-	parallelSync(files, func(path string) {
+	parallelDo(files, func(path string) {
 		if syncFile(path) {
 			dirsMu.Lock()
 			dirs[filepath.Dir(path)] = true
 			dirsMu.Unlock()
 		}
 	})
-	parallelSync(slices.Collect(maps.Keys(dirs)), func(dir string) {
+	parallelDo(slices.Collect(maps.Keys(dirs)), func(dir string) {
 		if err := syncDir(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			fail(err)
 		}
@@ -1809,16 +1905,16 @@ func (s *Store) syncSealed(sealed []sealedChunk) {
 // sealSyncWorkers bounds the concurrent fsyncs of one group sync pass.
 const sealSyncWorkers = 8
 
-// parallelSync runs fn over paths with at most sealSyncWorkers goroutines,
+// parallelDo runs fn over items with at most sealSyncWorkers goroutines,
 // which exit when the pass ends.
-func parallelSync(paths []string, fn func(string)) {
+func parallelDo[T any](paths []T, fn func(T)) {
 	if len(paths) <= 1 {
 		for _, p := range paths {
 			fn(p)
 		}
 		return
 	}
-	next := make(chan string)
+	next := make(chan T)
 	var wg sync.WaitGroup
 	for range min(sealSyncWorkers, len(paths)) {
 		wg.Go(func() {
@@ -1905,7 +2001,19 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 	if limit <= 0 || limit > maxFramePayload {
 		limit = maxFramePayload
 	}
-	br := bufio.NewReaderSize(r, min(limit+1, pipeReadBuffer))
+	// Each run has two pumps and most runs print little or nothing: the read
+	// buffers are pooled instead of allocated (32 KiB per run otherwise).
+	var br *bufio.Reader
+	if limit+1 >= pipeReadBuffer {
+		br = pipeReaders.Get().(*bufio.Reader)
+		br.Reset(r)
+		defer func() {
+			br.Reset(nil)
+			pipeReaders.Put(br)
+		}()
+	} else {
+		br = bufio.NewReaderSize(r, limit+1)
+	}
 	// line holds a line that spans more than one read buffer; it is allocated
 	// on first use, so most runs never allocate it.
 	var line []byte
@@ -1984,6 +2092,8 @@ func (w *Writer) Pipe(stream Stream, r io.Reader) error {
 // reads. Longer lines are assembled across reads up to the line limit.
 const pipeReadBuffer = 16 << 10
 
+var pipeReaders = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, pipeReadBuffer) }}
+
 // captureLine stores one complete line held in the read buffer.
 func (w *Writer) captureLine(stream Stream, line []byte, flush bool) error {
 	line = bytes.TrimSuffix(line, []byte{'\r'})
@@ -2042,6 +2152,12 @@ func (w *Writer) Close() error {
 	w.closed = true
 	w.idx.Final = true
 	w.closeErr = w.finishChunk()
+	if w.lockRef != nil {
+		// Drop the writer's reference; this call still holds its own.
+		w.store.mu.Lock()
+		w.lockRef.refs--
+		w.store.mu.Unlock()
+	}
 	return w.closeErr
 }
 

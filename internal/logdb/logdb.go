@@ -156,7 +156,15 @@ func (l *LogDB) initSchema(ctx context.Context) error {
 	if _, err := l.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	return sqlite.EnsureSchema(ctx, l.db, "log", ApplicationID, SchemaVersion, schema)
+	if err := sqlite.EnsureSchema(ctx, l.db, "log", ApplicationID, SchemaVersion, schema); err != nil {
+		return err
+	}
+	// idx_log_runs_time was created by earlier builds and is used by no query;
+	// every archived run maintained it. Best effort, retried at the next start.
+	if _, err := l.db.ExecContext(ctx, "DROP INDEX IF EXISTS idx_log_runs_time"); err != nil {
+		slog.Warn("dropping an unused log database index failed; it is retried at the next start", "error", err)
+	}
+	return nil
 }
 
 // ApplicationID is stored in the SQLite header of minicron-logs.db ("MCRL").
@@ -184,7 +192,6 @@ CREATE TABLE log_chunks (
  file_bytes INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(run_id, number)
 );
-CREATE INDEX idx_log_runs_time ON log_runs(created_us);
 CREATE INDEX idx_log_chunks_seq ON log_chunks(run_id, last_seq);
 CREATE INDEX idx_log_chunks_archived ON log_chunks(archived_us);
 CREATE INDEX idx_log_chunks_files ON log_chunks(run_id, number, file_bytes) WHERE file_bytes>0;`
