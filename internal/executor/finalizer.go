@@ -191,6 +191,7 @@ type finalItemView struct {
 	item          *finalItem
 	r             model.Run
 	create, start bool
+	synced        bool // historySynced(item.d)
 	started       startInfo
 	done          bool
 	t             terminal
@@ -205,7 +206,7 @@ func (s *Service) finalizePass() (failedEarly bool) {
 	views := make([]finalItemView, 0, len(s.finalizing))
 	for _, it := range s.finalizing {
 		if !it.nextTry.After(now) {
-			views = append(views, finalItemView{item: it, r: it.r, create: it.create, start: it.start, started: it.started, done: it.done, t: it.t})
+			views = append(views, finalItemView{item: it, r: it.r, synced: historySynced(it.d), create: it.create, start: it.start, started: it.started, done: it.done, t: it.t})
 		}
 	}
 	s.mu.Unlock()
@@ -249,7 +250,11 @@ func (s *Service) writeHistory(v finalItemView) error {
 	ctx, cancel := context.WithTimeout(s.stopCtx, historyWriteTimeout)
 	defer cancel()
 	if v.create {
-		if err := s.store.CreateRun(ctx, v.r); err != nil {
+		create := s.store.CreateRun
+		if v.synced {
+			create = s.store.CreateRunSynced
+		}
+		if err := create(ctx, v.r); err != nil {
 			if !sqlite.IsConstraint(err) {
 				return err
 			}
@@ -285,7 +290,11 @@ func (s *Service) writeHistory(v finalItemView) error {
 				return err
 			}
 		}
-		if err := s.store.FinishRunWithUsage(ctx, v.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage); err != nil {
+		finish := s.store.FinishRunWithUsage
+		if v.synced {
+			finish = s.store.FinishRunSynced
+		}
+		if err := finish(ctx, v.r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage); err != nil {
 			return err
 		}
 		slog.Info("persisted terminal run state after retry", "run", v.r.ID, "status", t.status)

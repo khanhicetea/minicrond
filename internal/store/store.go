@@ -45,6 +45,8 @@ type Store struct {
 	syncFull bool
 	// stmts caches the per-run writes (run row, terminal transition).
 	stmts *sqlite.StmtCache
+	// history defers the fsync of run rows and terminal states (X1, relaxed.go).
+	history historySync
 }
 
 type RunMetrics struct {
@@ -91,6 +93,7 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 	s := &Store{db: db, syncFull: sqlite.SyncFull(opt...), stmts: sqlite.NewStmtCache(db)}
+	s.history = newHistorySync(s.syncFull, false)
 	if err := s.initSchema(ctx); err != nil {
 		if errors.Is(err, sqlite.ErrUnsupportedSchema) {
 			return nil, errors.Join(fmt.Errorf("prepare metadata database: %w", err), db.Close())
@@ -151,7 +154,8 @@ func makePrivate(path string) error {
 }
 
 func (s *Store) Close() error {
-	stmtErr := s.stmts.Close()
+	syncErr := s.closeHistory()
+	stmtErr := errors.Join(syncErr, s.stmts.Close())
 	if s.readOnly {
 		return errors.Join(stmtErr, s.db.Close())
 	}
@@ -657,8 +661,21 @@ func (s *Store) SaveIdempotency(ctx context.Context, principal, operation, key, 
 	return nil
 }
 
+// CreateRun stores a new run row. Under deferred history sync (X1, ADR-23)
+// it is committed relaxed: it survives a daemon crash at once and a power
+// loss after the next sync, about 2 s later.
 func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
-	_, err := s.stmts.Exec(ctx, createRunSQL, runArgs(r)...)
+	return s.createRun(ctx, r, false)
+}
+
+// CreateRunSynced stores a new run row with the configured durability, for
+// on_history_unavailable = "skip" jobs (ADR-19 promises them a durable row).
+func (s *Store) CreateRunSynced(ctx context.Context, r model.Run) error {
+	return s.createRun(ctx, r, true)
+}
+
+func (s *Store) createRun(ctx context.Context, r model.Run, synced bool) error {
+	_, err := s.execHistory(ctx, synced, createRunSQL, runArgs(r)...)
 	if err != nil {
 		return fmt.Errorf("create run %s: %w", r.ID, err)
 	}
@@ -737,12 +754,24 @@ func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *
 }
 
 // FinishRunWithUsage commits accounting atomically with the terminal state.
+// Under deferred history sync (X1, ADR-23) it is committed relaxed, like
+// CreateRun.
 func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
+	return s.finishRun(ctx, false, id, status, reason, code, signal, at, bytes, truncated, usage)
+}
+
+// FinishRunSynced is FinishRunWithUsage with the configured durability, for
+// on_history_unavailable = "skip" jobs.
+func (s *Store) FinishRunSynced(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
+	return s.finishRun(ctx, true, id, status, reason, code, signal, at, bytes, truncated, usage)
+}
+
+func (s *Store) finishRun(ctx context.Context, synced bool, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
 	var user, system, rss any
 	if usage != nil {
 		user, system, rss = usage.UserCPUUS, usage.SystemCPUUS, usage.PeakRSSBytes
 	}
-	res, err := s.stmts.Exec(ctx, finishRunSQL, status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, user, system, rss, id, status)
+	res, err := s.execHistory(ctx, synced, finishRunSQL, status, reason, code, nullString(signal), at.UnixMicro(), bytes, truncated, user, system, rss, id, status)
 	if err != nil {
 		return fmt.Errorf("finish run %s: %w", id, err)
 	}

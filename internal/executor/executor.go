@@ -331,7 +331,7 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 		failedStart, err = s.launch(r, d, true)
 		return r, false, err
 	}
-	recorded, err := s.admitRow(ctx, r)
+	recorded, err := s.admitRow(ctx, r, historySynced(d))
 	if err != nil {
 		releaseCapacity()
 		if trigger == "schedule" && scheduled != nil {
@@ -368,12 +368,19 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 // executes the run and defers its history. While storage is known to be
 // failing and history is already waiting, it does not try the database at all,
 // so a dead or locked disk adds no latency to launches.
-func (s *Service) admitRow(ctx context.Context, r model.Run) (recorded bool, err error) {
+//
+// synced selects per-write FULL durability under deferred history sync (X1,
+// ADR-23); see historySynced.
+func (s *Service) admitRow(ctx context.Context, r model.Run, synced bool) (recorded bool, err error) {
 	if s.health.down.Load() && s.historyPending() {
 		return false, ctx.Err()
 	}
 	wctx, cancel := context.WithTimeout(ctx, createRunTimeout)
-	err = s.store.CreateRun(wctx, r)
+	if synced {
+		err = s.store.CreateRunSynced(wctx, r)
+	} else {
+		err = s.store.CreateRun(wctx, r)
+	}
 	cancel()
 	switch {
 	case err == nil:
@@ -433,7 +440,7 @@ func (s *Service) launch(r model.Run, d model.Definition, recorded bool) (failed
 			releaseCapacity()
 			return nil, ErrShutdown
 		}
-		if finishErr := s.finishRun(r.ID, "failed", "start_error", nil, "", time.Now().UTC(), 0, false, nil); finishErr != nil {
+		if finishErr := s.finishRun(r.ID, historySynced(d), "failed", "start_error", nil, "", time.Now().UTC(), 0, false, nil); finishErr != nil {
 			logFailure("persisting refused run failed; recovery will mark it interrupted", finishErr, "run", r.ID)
 		}
 		releaseCapacity()
@@ -470,7 +477,7 @@ func (s *Service) recordSkipped(ctx context.Context, d model.Definition, hash, t
 		s.notifyFinished(r, d)
 		return r, false, nil
 	}
-	recorded, err := s.admitRow(ctx, r)
+	recorded, err := s.admitRow(ctx, r, historySynced(d))
 	if err != nil && trigger == "schedule" && scheduled != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, *scheduled); lookupErr == nil {
 			return existing, true, nil
@@ -517,7 +524,7 @@ func (s *Service) RecordMissed(ctx context.Context, d model.Definition, hash str
 	id := uuid.NewV7()
 	now := time.Now().UTC()
 	r := model.Run{ID: id.String(), DefinitionID: d.ID, Job: d.Name, Kind: d.Kind, Revision: d.Revision, DefinitionHash: hash, Status: "missed", EndReason: "crash_recovery", Trigger: "schedule", Attempt: 1, ScheduledFor: &scheduled, MissedCount: count, BootID: s.bootID, QueuedAt: now, EndedAt: &now}
-	recorded, err := s.admitRow(ctx, r)
+	recorded, err := s.admitRow(ctx, r, historySynced(d))
 	if err != nil {
 		if existing, lookupErr := s.store.ScheduledRun(ctx, d.ID, scheduled); lookupErr == nil {
 			return existing, nil
@@ -840,7 +847,7 @@ func (s *Service) complete(r model.Run, d model.Definition, a *activeRun, t term
 	case s.spooled(r.ID, setTerminal):
 		// The row (or its running state) is still waiting: keep the order.
 	case !s.health.down.Load():
-		err := s.finishRun(r.ID, t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
+		err := s.finishRun(r.ID, historySynced(d), t.status, t.reason, t.code, t.signal, t.ended, t.bytes, t.truncated, t.usage)
 		if err == nil {
 			s.storageRecovered()
 			s.persistLag.observe(t.ended)
@@ -901,7 +908,15 @@ func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
 	}
 }
 
-func (s *Service) finishRun(id, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
+// historySynced reports whether d's run rows and terminal states keep
+// per-write FULL durability under deferred history sync (X1, ADR-23). An
+// on_history_unavailable = "skip" job only runs after its pending row was
+// committed durably (ADR-19), so its history is never deferred.
+func historySynced(d model.Definition) bool {
+	return d.Kind == model.KindJob && d.OnHistoryUnavailable == "skip"
+}
+
+func (s *Service) finishRun(id string, synced bool, status, reason string, code *int, signal string, ended time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
 	if s.finishHook != nil {
 		if err := s.finishHook(id); err != nil {
 			return fmt.Errorf("persist terminal run state: %w", err)
@@ -911,7 +926,11 @@ func (s *Service) finishRun(id, status, reason string, code *int, signal string,
 	defer cancel()
 	var err error
 	for attempt := range 5 {
-		err = s.store.FinishRunWithUsage(ctx, id, status, reason, code, signal, ended, bytes, truncated, usage)
+		if synced {
+			err = s.store.FinishRunSynced(ctx, id, status, reason, code, signal, ended, bytes, truncated, usage)
+		} else {
+			err = s.store.FinishRunWithUsage(ctx, id, status, reason, code, signal, ended, bytes, truncated, usage)
+		}
 		if err == nil {
 			return nil
 		}
