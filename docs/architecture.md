@@ -197,7 +197,8 @@ the encoder again ([ADR-21](adr/0021-adaptive-log-capture.md)). Fsyncs are group
 included. Finished runs are sealed and archived into the
 log DB in the background, off the completion path, and buffers are deleted; workers
 checkpoint every `logs.worker_flush_interval`. Small chunks become blobs, short
-runs are committed in batches, and chunks of 64 KiB or more are renamed into
+runs wait for the next group-sync pass and are committed in batches
+([ADR-22](adr/0022-archive-on-group-sync.md)), and chunks of 64 KiB or more are renamed into
 `log-archive/` with a row pointing to them instead of being copied (ADR-20).
 Plain chunks are compressed once, at archive time, by one shared encoder; a
 small sealed run is handed to the archiver in memory, so its buffer is not

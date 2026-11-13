@@ -23,6 +23,10 @@
 
 8. **Adaptive log capture (ADR-21, 2026-11-12):** frames are written through once per pipe read (≤ 16 KiB or `sync_max_dirty`), not per frame. A run's first chunk is plain (raw zstd blocks, no encoder); past 16 KiB it is promoted to compressed chunks, and worker checkpoints release the encoder. Plain chunks are compressed once at archive time by one shared encoder; small sealed runs are handed to the archiver in memory (≤ 8 MiB). Do not reintroduce a per-run encoder for runs that never pass the plain limit.
 
+9. **Archive on the group-sync pass (ADR-22, 2026-11-13):** queued short runs wait for the next group-sync pass (or a full batch of 32) and share one archive transaction; the pass asks the archiver first and never fsyncs a buffer it removed. Not in `"frame"` durability.
+
+**Tried and not adopted (2026-11-13):** skipping `index.json` for in-memory handoffs, releasing the concurrency slot before the terminal commit, `wal_autocheckpoint` 4000, dropping the per-fire `schedule_state` write, and releasing the admission lock before the run-row insert (this one collapses the large tier into the queue). Measurements and reasons are in [docs/benchmarks/2026-11-13-happy-path](docs/benchmarks/2026-11-13-happy-path/README.md); read it before proposing them again. Deferred history sync (X1) and lazy running state (X5) are described there and still need an owner decision.
+
 Chosen defaults are in ADR-8 and ADR-9/10/11/16; they are not capacity guarantees. Still unmeasured: the 5A small-server profile, power-loss behavior of batched fsync, and numerical log-volume targets. The earlier 5 GiB disk example is not a selected default.
 
 ## System design defaults

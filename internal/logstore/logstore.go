@@ -255,7 +255,21 @@ type archiver struct {
 	// maxSealedImages. Entries are dropped when taken.
 	sealed      map[string]*sealedRun
 	sealedBytes int64
+	// Lingering: queued short runs wait for the next group sync pass (or a
+	// full batch) so they share one archive transaction. oldest is when the
+	// queue last became non-empty; flush is set by the pass and makes the
+	// workers take what is queued at once; busy counts batches in progress;
+	// idle holds the waiters to release when the queue has drained.
+	oldest time.Time
+	flush  bool
+	busy   int
+	idle   []chan struct{}
 }
+
+// archiveFlushWait bounds how long a group sync pass waits for the archiver
+// to commit and remove the short runs queued before it. Past it the pass
+// syncs their buffers like any other sealed chunk.
+const archiveFlushWait = 500 * time.Millisecond
 
 // sealedRun is a sealed run whose only unarchived chunk is plain, with the
 // chunk's file image. The buffer on disk stays the durable record; the image
@@ -711,6 +725,9 @@ func (s *Store) enqueueLocked(runID string) bool {
 			queued = false
 		} else {
 			a.queued[runID] = true
+			if len(a.queue) == 0 {
+				a.oldest = time.Now()
+			}
 			a.queue = append(a.queue, runID)
 		}
 	}
@@ -728,15 +745,27 @@ func (s *Store) archiveLoop() {
 		var batch []string
 		var sweep bool
 		ctx := a.ctx
-		if len(a.queue) > 0 && ctx.Err() == nil {
-			// Take what is queued, up to a batch: under load one transaction
-			// archives many short runs; a lone run is archived alone, at once.
-			n := min(len(a.queue), archiveRunBatch)
-			batch = slices.Clone(a.queue[:n])
-			clear(a.queue[:n])
-			a.queue = a.queue[n:]
-			for _, id := range batch {
-				delete(a.queued, id)
+		var linger time.Duration
+		if n := len(a.queue); n > 0 && ctx.Err() == nil {
+			// Fewer runs than a batch wait for the next group sync pass, which
+			// asks for them (flushArchive) before it syncs sealed buffers: on a
+			// quiet daemon the runs of one sync interval then share one archive
+			// transaction and its fsync instead of paying one each, and their
+			// buffers are removed before anything fsyncs them. The timer is only
+			// a fallback for when no pass comes.
+			if a.running && !a.flush && n < archiveRunBatch {
+				linger = s.archiveLinger() - time.Since(a.oldest)
+			}
+			if linger <= 0 {
+				n = min(n, archiveRunBatch)
+				batch = slices.Clone(a.queue[:n])
+				clear(a.queue[:n])
+				a.queue = a.queue[n:]
+				a.oldest = time.Now()
+				a.busy++
+				for _, id := range batch {
+					delete(a.queued, id)
+				}
 			}
 		} else if a.overflow && !a.sweeping && ctx.Err() == nil && a.running {
 			// Idle with deferred ids: rediscover them from the directory.
@@ -752,6 +781,16 @@ func (s *Store) archiveLoop() {
 			if err != nil && ctx.Err() == nil {
 				slog.Error("log archive sweep after queue overflow failed; the periodic sweep will retry", "error", err)
 			}
+			continue
+		}
+		if linger > 0 {
+			timer := time.NewTimer(linger)
+			select {
+			case <-a.wake:
+			case <-timer.C:
+			case <-stop:
+			}
+			timer.Stop()
 			continue
 		}
 		if len(batch) == 0 {
@@ -772,6 +811,57 @@ func (s *Store) archiveLoop() {
 		if err := fault.Call(func() error { s.archiveSealedBatch(ctx, batch); return nil }); err != nil {
 			slog.Error("log archival failed; the orphan sweep will retry", "runs", len(batch), "error", err)
 		}
+		s.mu.Lock()
+		a.busy--
+		if len(a.queue) == 0 && a.busy == 0 {
+			a.flush = false
+			for _, done := range a.idle {
+				close(done)
+			}
+			a.idle = nil
+		}
+		s.mu.Unlock()
+	}
+}
+
+// archiveLinger is how long queued short runs may wait for a group sync pass
+// to collect them. Strict per-frame durability has no such pass, so nothing
+// waits there.
+func (s *Store) archiveLinger() time.Duration {
+	if s.frameSync.Load() {
+		return 0
+	}
+	return 2 * time.Duration(s.syncInterval.Load())
+}
+
+// flushArchive makes the archiver take its queued runs now and, with wait,
+// waits up to archiveFlushWait until they are committed and their buffers
+// removed.
+func (s *Store) flushArchive(wait bool) {
+	s.mu.Lock()
+	a := &s.archiver
+	if !a.running || (len(a.queue) == 0 && a.busy == 0) {
+		s.mu.Unlock()
+		return
+	}
+	a.flush = true
+	done := make(chan struct{})
+	if wait {
+		a.idle = append(a.idle, done)
+	}
+	select {
+	case a.wake <- struct{}{}:
+	default:
+	}
+	s.mu.Unlock()
+	if !wait {
+		return
+	}
+	timer := time.NewTimer(archiveFlushWait)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
 }
 
@@ -1779,7 +1869,7 @@ func (s *Store) timerFlush() {
 		return
 	}
 	defer s.flushMu.Unlock()
-	s.flushDirtyLocked()
+	s.flushDirtyLocked(true)
 }
 
 // deferSealRoom reports whether the next group sync can take another sealed
@@ -1814,10 +1904,18 @@ func (s *Store) deferSealLocked(c sealedChunk) {
 func (s *Store) flushDirty() {
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
-	s.flushDirtyLocked()
+	s.flushDirtyLocked(false)
 }
 
-func (s *Store) flushDirtyLocked() {
+// flushDirtyLocked runs one pass. waitArchive is set by the timer: the pass
+// then gives the archiver a moment to remove what it can first. SyncAll does
+// not wait: at shutdown runs are still being sealed, the queue does not
+// settle, and StopArchiver drains it right after (measured 2026-11-13: the
+// wait added up to 2 s to shutdown).
+func (s *Store) flushDirtyLocked(waitArchive bool) {
+	// First let the archiver commit and remove the short runs sealed since
+	// the last pass: what it removes needs no fsync at all (ADR-20).
+	s.flushArchive(waitArchive)
 	s.syncMu.Lock()
 	if s.syncTimer != nil {
 		s.syncTimer.Stop()
