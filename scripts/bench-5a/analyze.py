@@ -129,7 +129,11 @@ try:
     db = sqlite3.connect(os.path.join(tmp, "minicron.db"))
     w0 = int(float(meta["window_start"]) * 1e6); w1 = int(float(meta["window_end"]) * 1e6)
     rs = db.execute("select run_id, job, kind, status, trigger, scheduled_for_us, queued_us, started_us, ended_us, log_bytes, end_reason "
-                    "from runs where queued_us >= ? and queued_us < ? order by queued_us", (w0, w1)).fetchall()
+                    "from runs where coalesce(scheduled_for_us, queued_us) >= ? and coalesce(scheduled_for_us, queued_us) < ? "
+                    "order by queued_us", (w0, w1)).fetchall()
+    # A scheduled run belongs to the window its occurrence falls in, not the one
+    # its row was queued in: a tick just before the window start would otherwise
+    # be counted for a build with more queue lag and not for a faster one.
     by = {}
     for r in rs:
         by.setdefault(r[1], {}).setdefault(r[3], 0)

@@ -1,12 +1,12 @@
-# ADR-23: Deferred history sync (experiment X1)
+# ADR-23: Deferred history sync
 
-- Status: proposed (experiment, owner decision pending)
+- Status: accepted (owner decision 2026-11-13, after the measurements below)
 - Date: 2026-11-13
-- Amends, if adopted: [ADR-18](0018-relaxed-commits.md) (which kept the run
+- Amends: [ADR-18](0018-relaxed-commits.md) (which kept the run
   row and terminal state fully synced)
 - Related: [ADR-16](0016-execution-first.md), [ADR-19](0019-history-unavailable-policy.md),
   [ADR-8](0008-background-first-trade-offs.md) 1B,
-  [happy-path benchmark](../benchmarks/2026-11-13-happy-path/README.md) ("Not built: X1")
+  [happy-path benchmark](../benchmarks/2026-11-13-happy-path/README.md) (audit item X1)
 
 ## Context
 
@@ -23,7 +23,7 @@ boundaries, nobody reading logs. The cost is per run, independent of viewers.
 
 ## Decision
 
-Experiment, on only when `synchronous = "full"` is configured and the store is
+On only when `synchronous = "full"` is configured and the store is
 writable:
 
 1. **The run row and the terminal state are committed relaxed** with the
@@ -38,7 +38,7 @@ writable:
    `synchronous=FULL` commit on the writer: an upsert of the `meta` key
    `history_synced_us`. A transaction that changes no page does not fsync, so
    it is a real write. Its WAL fsync covers every frame written before it, so
-   all earlier relaxed commits become durable at once. Once X1 is on, the
+   all earlier relaxed commits become durable at once. Once this is on, the
    ADR-18 relaxed writes (`StartRun`, schedule state) mark the store dirty
    too, so they are now also durable within the interval.
 3. **Per-write FULL stays** for:
@@ -73,13 +73,13 @@ the background history writer).
   committer goroutine, per-caller cancellation rules (a caller that timed out
   after its statement ran) and handling of a transaction SQLite rolled back on
   its own. It also does not help a lone run: one run still pays two fsyncs.
-  Not chosen for the experiment; it remains the option that keeps the
-  AGENTS.md durability rule without an exception.
+  Not chosen; it remains the option that keeps every history write synced
+  if the exception below is ever withdrawn.
 - **Write-behind by default** (queue history in memory and write it from the
   background history writer, like ADR-16's degraded mode): removes the commit
   from the launch path entirely, but buffers accepted state only in RAM, so a
   daemon crash loses it, and recovery cannot mark the run `interrupted`
-  because it has no row. Rejected: X1 keeps daemon-crash durability.
+  because it has no row. Rejected: this change keeps daemon-crash durability.
 - **`synchronous=normal` for everything:** measured in ADR-17, not proposed;
   it would also weaken queue and definition durability.
 - **A ticker:** rejected; the timer exists only while dirty, so an idle
@@ -136,9 +136,9 @@ alert, skip-job history) makes every earlier frame durable, so after a power
 loss the database is a prefix of the committed history; an alert or queue
 row never survives without the run row committed before it.
 
-This is an exception to AGENTS.md ("display lag alone does not permit ...
-incorrect final state"), which is why it needs an owner decision. ADR-8 1B
-already accepts a ~1–3 s loss window for log output after an OS crash; X1
+This is an explicit owner-approved exception to AGENTS.md ("display lag
+alone does not permit ... incorrect final state"), recorded there as item 10. ADR-8 1B
+already accepts a ~1–3 s loss window for log output after an OS crash; this ADR
 applies the same window to run history. Background execution benefits by
 removing two fsyncs from each run's launch and completion path and from the
 shared writer.
@@ -175,19 +175,40 @@ No power-loss test was run (same gap as ADR-8 1B and ADR-18).
 
 ## Measurements
 
-Pending.
+Main `785c54c` against this change, `run-profile.sh`, 120 s windows after a
+20 s warm-up, ext4 on a real disk, zero viewers, interleaved, 2 runs per cell
+(median). No WARN or ERROR line in any of the 12 daemon logs. Full table:
+[`raw/x1-vs-main.txt`](../benchmarks/2026-11-13-happy-path/raw/x1-vs-main.txt).
+
+| metric | 5A small | normal | large |
+|---|---|---|---|
+| block flushes/s | 11.95 → 5.9 | 15.0 → 9.3 | 90.2 → 33.5 |
+| block write IOs/s | 52.4 → 34.0 | 61.5 → 41.6 | 327.6 → 162.7 |
+| daemon CPU ms/s | 10.0 → 9.5 | 15.2 → 13.3 | 92.5 → 74.7 |
+| bytes written | −6% | −8% | −6% |
+| fire→child p50 ms | 20.4 → 9.7 | 72.5 → 24.5 | 297.6 → 109.3 |
+| fire→child p95 ms | 39.3 → 17.4 | 207.6 → 64.0 | 1041 → 366 |
+| overlap skips | 0 → 0 | 0 → 0 | 55.5 → 0 |
+| median RSS MiB | 24.3 → 25.2 | 31.9 → 33.1 | 76.8 → 78.2 |
+| shutdown s | 0.09 → 0.07 | 0.17 → 0.08 | 0.44 → 0.21 |
+
+The ranges of the two builds do not overlap for flushes, write IOs, CPU on
+normal and large, and fire→child. Exit→ended p95 on the large tier was
+1.6 → 2.1 ms with overlapping ranges.
+
+The normal tier showed 344 succeeded runs against 354.5. That was the
+harness, not lost work: it counted a run by the time its row was queued, the
+window opened 26–70 ms after a 10 s tick, and only main's slower admission
+pushed 8–9 rows of that tick into the window. Counted by scheduled time the
+10 s jobs succeeded 224 and 223 times on main and 224 and 224 with this
+change. `analyze.py` now counts by scheduled time.
 
 ## Open items
 
-- Benchmark against main on real storage (fsync count, fire→child and
-  exit→ended latency, CPU), A/B with `MINICROND_HISTORY_SYNC=commit`.
-- Owner decision on the AGENTS.md exception (finished run recorded as
-  `interrupted`, duplicate scheduled occurrence under `catch_up` after a power
-  loss). If adopted, AGENTS.md and the operations/configuration docs must
-  state the new window; if rejected, consider group commit instead.
+- `HistorySyncStats` is not exported as a metric.
+- Power-loss test on physical storage (same gap as ADR-8 1B and ADR-18).
+- Each relaxed write still switches `synchronous` twice on the pinned
+  writer. A writer that stays at NORMAL between syncs was not tried.
 - Whether a pending sync should be skipped when another FULL commit happened
   in between (not built: syncs are at most one per 2 s, so the saving is
   small).
-- `HistorySyncStats` is not exported as a metric; add one if the experiment
-  is adopted.
-- Power-loss test on physical storage.

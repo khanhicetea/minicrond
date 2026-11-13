@@ -7,7 +7,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/model"
 )
 
-// X1 / ADR-23: an on_history_unavailable = "skip" job's run row and terminal
+// ADR-23: an on_history_unavailable = "skip" job's run row and terminal
 // state keep per-write FULL commits; other jobs' history is committed relaxed
 // and synced on the cadence.
 func TestSkipJobHistoryIsCommittedFull(t *testing.T) {

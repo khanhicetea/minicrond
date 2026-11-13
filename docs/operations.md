@@ -65,7 +65,9 @@ Log storage is two-tier (ADR-6):
    has already committed the run and removed its buffer; orderly shutdown
    always syncs. An **OS crash or power loss can lose output newer than the
    last sync**, a finished run's last output included (nominally the sync
-   interval, longer if the disk stalls); a daemon crash loses nothing. `"frame"` is the strict mode: every line is fsynced before the next
+   interval, longer if the disk stalls); a daemon crash loses nothing. Run history has the same
+   window ([ADR-23](adr/0023-deferred-history-sync.md)): after a power loss a run that
+   finished in the last ~2 s can read `interrupted` or be missing. `"frame"` is the strict mode: every line is fsynced before the next
    is read. `log_max` defaults to `100MiB` and bounds raw frame bytes
    in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
    archive. Successful archival frees buffer capacity for either policy.

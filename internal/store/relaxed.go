@@ -95,7 +95,7 @@ func (s *Store) execRelaxed(ctx context.Context, query string, args ...any) (sql
 	return res, err
 }
 
-// Deferred history sync (X1, ADR-23, experiment). With synchronous=FULL the
+// Deferred history sync (ADR-23). With synchronous=FULL the
 // run row (CreateRun) and the terminal state (FinishRunWithUsage) are also
 // committed relaxed, like the ADR-18 writes, and made durable on a cadence:
 // while any relaxed commit is not yet covered by a synced one, a single
@@ -109,7 +109,7 @@ func (s *Store) execRelaxed(ctx context.Context, query string, args ...any) (sql
 // queue, idempotent admissions, worker state) and for history written with
 // CreateRunSynced / FinishRunSynced (on_history_unavailable = "skip" jobs).
 // A store configured with synchronous=NORMAL, a read-only store and
-// MINICROND_HISTORY_SYNC=commit keep today's behavior.
+// MINICROND_HISTORY_SYNC=commit keep per-write FULL history commits.
 
 // historySyncInterval is how long a relaxed history commit may stay
 // unsynced (plus the duration of the sync itself and storage stalls).
@@ -121,7 +121,7 @@ const historySyncTimeout = 5 * time.Second
 
 // historySyncEnv selects the history durability mode at store open. The only
 // recognized value is "commit": per-write FULL for run rows and terminal
-// states, as before X1. It is an escape hatch for A/B measurements.
+// states, as before ADR-23. It is an escape hatch for A/B measurements.
 const historySyncEnv = "MINICROND_HISTORY_SYNC"
 
 // historySyncSQL is the sync write. It must change a page: SQLite does not
@@ -131,7 +131,7 @@ const historySyncSQL = `INSERT INTO meta(key,value) VALUES('history_synced_us',?
 // historySync tracks relaxed commits that are not yet covered by a synced
 // one. The zero value is disabled.
 type historySync struct {
-	deferred bool          // X1 is on: history writes are relaxed
+	deferred bool          // deferred history sync is on: history writes are relaxed
 	interval time.Duration // historySyncInterval; tests shorten it
 
 	// syncMu serializes sync writes with Close, so a timer callback never
@@ -149,7 +149,7 @@ type historySync struct {
 
 // HistorySyncStats is a snapshot of the deferred history sync counters.
 type HistorySyncStats struct {
-	Deferred      bool   // X1 is on
+	Deferred      bool   // deferred history sync is on
 	Dirty, Armed  bool   // unsynced relaxed commits exist; the timer is armed
 	RelaxedWrites uint64 // run rows and terminal states committed relaxed
 	Syncs         uint64 // successful sync commits

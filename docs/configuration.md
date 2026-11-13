@@ -232,11 +232,17 @@ and `max_concurrent_runs` are unitless.
   `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
   the most recent commits on power loss. Requires a daemon restart. With
-  `"full"`, two metadata writes per run are still committed without their own
-  fsync (ADR-18): the `running` transition and the schedule's last/next fire.
-  Both survive a daemon crash and become durable with the next full commit;
-  after a power loss the scheduler takes the last fire from the run rows, which
-  are always fully synced.
+  `"full"`, a run's metadata writes are still committed without their own
+  fsync: the `running` transition and the schedule's last/next fire (ADR-18),
+  and the run row and terminal state
+  ([ADR-23](adr/0023-deferred-history-sync.md)). All survive a daemon crash
+  and become durable with the next full commit, at most about 2 s later.
+  After an OS crash or power loss the last ~2 s of run history can be missing:
+  a finished run can read `interrupted`, a fired run can have no row, and under
+  `catch_up` its occurrence can run again. A job with
+  `on_history_unavailable = "skip"` keeps a synced commit for its run row and
+  terminal state. Definitions, the durable queue and idempotent triggers are
+  always fully synced.
 - `[defaults]` fills omitted common fields when a job or worker is created/updated through the API
   or imported. Explicit definition values take precedence; bundle `[defaults]` takes
   precedence over bootstrap `[defaults]`. Values are persisted in the registry;

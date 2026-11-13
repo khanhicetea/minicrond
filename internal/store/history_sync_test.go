@@ -13,7 +13,7 @@ import (
 	"github.com/khanhicetea/minicrond/internal/sqlite"
 )
 
-// X1 / ADR-23: deferred history sync.
+// ADR-23: deferred history sync.
 
 func openHistoryStore(t *testing.T, dir string, opt ...sqlite.Options) (*Store, model.Definition) {
 	t.Helper()

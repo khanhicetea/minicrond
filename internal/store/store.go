@@ -45,7 +45,7 @@ type Store struct {
 	syncFull bool
 	// stmts caches the per-run writes (run row, terminal transition).
 	stmts *sqlite.StmtCache
-	// history defers the fsync of run rows and terminal states (X1, relaxed.go).
+	// history defers the fsync of run rows and terminal states (ADR-23, relaxed.go).
 	history historySync
 }
 
@@ -661,7 +661,7 @@ func (s *Store) SaveIdempotency(ctx context.Context, principal, operation, key, 
 	return nil
 }
 
-// CreateRun stores a new run row. Under deferred history sync (X1, ADR-23)
+// CreateRun stores a new run row. Under deferred history sync (ADR-23)
 // it is committed relaxed: it survives a daemon crash at once and a power
 // loss after the next sync, about 2 s later.
 func (s *Store) CreateRun(ctx context.Context, r model.Run) error {
@@ -754,7 +754,7 @@ func (s *Store) FinishRun(ctx context.Context, id, status, reason string, code *
 }
 
 // FinishRunWithUsage commits accounting atomically with the terminal state.
-// Under deferred history sync (X1, ADR-23) it is committed relaxed, like
+// Under deferred history sync (ADR-23) it is committed relaxed, like
 // CreateRun.
 func (s *Store) FinishRunWithUsage(ctx context.Context, id, status, reason string, code *int, signal string, at time.Time, bytes int64, truncated bool, usage *model.ResourceUsage) error {
 	return s.finishRun(ctx, false, id, status, reason, code, signal, at, bytes, truncated, usage)

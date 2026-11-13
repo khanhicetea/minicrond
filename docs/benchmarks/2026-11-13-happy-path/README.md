@@ -23,10 +23,12 @@ contested ones alone. **Read this before re-proposing any of them.**
 |---|---|---|
 | No-trade set: pidfd wait, indexed recovery query, two unused indexes dropped, prepared `StartRun`, pooled pipe buffers, held run-lock reference, parallel writer fsync, fewer seal and cleanup syscalls | commit `379bfef` | part of the batch result below; not measured alone |
 | Archive queued short runs on the group-sync pass | [ADR-22](../../adr/0022-archive-on-group-sync.md) | −21% bytes written on every tier, large-tier fire→child p50 364 → 294 ms |
+| Deferred history sync (audit item X1): run row and terminal state committed without their own fsync, synced within 2 s | [ADR-23](../../adr/0023-deferred-history-sync.md) | against main `785c54c`: block flushes −38 to −63%, CPU −5 to −19%, fire→child p50 and p95 cut by half to two thirds on every tier, no large-tier overlap skips. Costs the last ~2 s of run history on power loss (owner-approved) |
 
 ## What was tried and not adopted
 
-Each was measured alone against main `379bfef` (3 tiers, 2 runs per cell).
+Each was measured alone against main `379bfef` (lazy running state against
+`785c54c`), 3 tiers, 2 runs per cell.
 "Noise" means the min–max ranges of the two builds overlap. Full tables:
 [`raw/`](raw/).
 
@@ -36,6 +38,7 @@ Each was measured alone against main `379bfef` (3 tiers, 2 runs per cell).
 | **Release the concurrency slot before seal and the terminal commit** | no metric outside noise; large-tier overlap skips were 6 and 71 in two identical runs | It loosens what `max_concurrent_runs` and `on_overlap = "skip"` mean, for no measured gain. The idea that slot hold time explains the large-tier overlap skips is not supported at this load. |
 | **`wal_autocheckpoint` 1000 → 4000 pages** | small and normal: flushes +8–9%, CPU +4–5%; large: CPU −3%, block write IOs −5%; bytes written −2–3% | Worse on the small-server profile (ADR-8 5A), and both WAL files grow to their new ceiling: +20–25 MiB of disk during a run. |
 | **No per-fire `schedule_state` write** (next fire published in memory, row written when the loop stops) | −3–5% bytes written; large-tier fire→child p50 353 → 332 ms; exit→ended p95 +0.2–0.3 ms on small and normal; 0.7% fewer runs completed on large | Small gain, and it widens the case where an occurrence can fire again after an unclean stop (ADR-18 already accepts it for power loss). The small regressions are unexplained. ADR-18 had deferred this "until measurements show the statement cost matters"; they show it barely does. |
+| **Lazy running state** (audit item X5): a job that ends within 1 s never writes the `running` transition; its terminal write stores start time and pid | flushes and block IOs unchanged on every tier; bytes written −1 to −5%; CPU +13% on normal and +7% on large, outside the baseline range; large-tier fire→child p95 1026 → 929 ms with skips 48 → 67 | The `running` write is already committed without an fsync (ADR-18), so removing it saves almost nothing, and the per-run timer costs CPU (not profiled). It also leaves a started job reading `pending` for up to 1 s, and a job whose row is deleted in that second is no longer killed. ADR-18 had rejected it for the orphan window; the measurement gives no reason to revisit. The branch was deleted; the design is in this row. |
 | **Release the admission lock before the run-row insert** | large tier: about 1,450 runs completed instead of 3,355, about 1,760 skipped | Every job of a schedule boundary then takes its capacity slot at the same instant. A wave larger than `max_concurrent_runs` overflows into the durable queue, and at 30 runs/s the queue never drains. Do not retry unless the capacity take moves behind the insert too. Note on `Service.admission`. |
 
 Also left alone, without measurement:
@@ -49,18 +52,15 @@ Also left alone, without measurement:
   stalled-sink behaviour of the separate goroutine on purpose; the saving is
   microseconds.
 
-## Not built: needs an owner decision
+## Run counts near the window edge
 
-- **X1, deferred history sync:** commit the run row and terminal state without
-  their own fsync and sync on the 1–3 s cadence. The largest remaining lever
-  (two fsyncs per run on the launch and completion path). After a power loss a
-  run that finished in the window can be recorded `interrupted`, which
-  AGENTS.md does not allow without an explicit exception. Group commit is the
-  alternative that keeps every write synced.
-- **X5, lazy running state:** do not commit `StartRun` for runs that end
-  within about a second. ADR-18 rejected it because a daemon crash in that
-  window orphans a child outside containers. Saves one unsynced commit per
-  short run, no fsync.
+Until 2026-11-13 `analyze.py` put a run in the measurement window by the time
+its row was queued. A tick that falls just before the window start was then
+counted for a build with more admission lag and not for a faster one: the
+ADR-23 session showed 344 against 354.5 succeeded runs on the normal tier for
+identical work. It now counts by scheduled time. The single-change tables in
+`raw/` were made with the old rule; builds with the same admission path are
+inflated equally, so those comparisons stand.
 
 ## Finding: queue overload on the large tier
 

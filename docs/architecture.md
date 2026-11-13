@@ -67,7 +67,10 @@ queued ──▶ pending ──▶ running ──▶ succeeded | failed | timeou
   written synchronously while the metadata database is healthy and by a
   bounded background writer otherwise. Only idempotent API triggers, the
   durable queue and jobs with `on_history_unavailable = "skip"` require the
-  database before starting.
+  database before starting. The run row and terminal state are committed
+  without their own fsync and synced within about 2 s
+  ([ADR-23](adr/0023-deferred-history-sync.md)); a power loss can lose that
+  window, a daemon crash cannot.
 
 ## Behavioral invariants
 

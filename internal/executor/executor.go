@@ -369,8 +369,8 @@ func (s *Service) trigger(ctx context.Context, d model.Definition, hash, trigger
 // failing and history is already waiting, it does not try the database at all,
 // so a dead or locked disk adds no latency to launches.
 //
-// synced selects per-write FULL durability under deferred history sync (X1,
-// ADR-23); see historySynced.
+// synced selects per-write FULL durability under deferred history sync (ADR-23);
+// see historySynced.
 func (s *Service) admitRow(ctx context.Context, r model.Run, synced bool) (recorded bool, err error) {
 	if s.health.down.Load() && s.historyPending() {
 		return false, ctx.Err()
@@ -909,7 +909,7 @@ func (s *Service) finished(r model.Run, d model.Definition, t terminal) {
 }
 
 // historySynced reports whether d's run rows and terminal states keep
-// per-write FULL durability under deferred history sync (X1, ADR-23). An
+// per-write FULL durability under deferred history sync (ADR-23). An
 // on_history_unavailable = "skip" job only runs after its pending row was
 // committed durably (ADR-19), so its history is never deferred.
 func historySynced(d model.Definition) bool {
