@@ -18,6 +18,8 @@ const DOW_LABEL: Record<string, string> = { '*': 'any', '1-5': 'Mon–Fri', '0':
 const MONTH_LABEL = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const CRON_PRESETS: [string, string][] = [
+  ['Every 1 min', '* * * * *'],
+  ['Every 2 min', '*/2 * * * *'],
   ['Every 5 min', '*/5 * * * *'],
   ['Hourly', '0 * * * *'],
   ['Daily 00:00', '0 0 * * *'],
@@ -25,7 +27,7 @@ const CRON_PRESETS: [string, string][] = [
   ['Weekly (Mon)', '0 0 * * 1'],
   ['Monthly (1st)', '0 0 1 * *'],
 ];
-const INTERVAL_PRESETS = ['1m', '5m', '15m', '30m', '1h', '6h', '24h'];
+const INTERVAL_PRESETS = ['1m', '2m', '5m', '15m', '30m', '1h', '6h', '24h'];
 
 /** Sections in display order; the editor's side navigation links to these. */
 export function formSections(kind: string): { id: string; title: string }[] {

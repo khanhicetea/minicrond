@@ -6,7 +6,7 @@
  * restricted day-of-month OR day-of-week matches when the other is "*".
  */
 
-import { isSupportedTimezone } from './timezones';
+import { isSupportedTimezone } from './timezones.ts';
 
 export interface CronFields {
   minute: number[];
@@ -360,7 +360,7 @@ export function humanizeSchedule(expr: string): string {
   if (m.startsWith('*/') && /^\d+$/.test(m.slice(2)) && h === '*' && domAny && monAny && dowAny) {
     return `Every ${durationWords(Number(m.slice(2)) * 60_000)}`;
   }
-  if (h === '*' && m === '*' && domAny && monAny && dowAny) return 'Every hour';
+  if (h === '*' && m === '*' && domAny && monAny && dowAny) return 'Every minute';
   if (h === '*' && domAny && monAny && dowAny && minuteList.length === 1) {
     return `Every hour at :${two(minuteList[0])}`;
   }
