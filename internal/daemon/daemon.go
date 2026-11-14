@@ -293,7 +293,12 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	apiServer.SetJobDefaults(func() model.Definition {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		return d.cfg.Defaults
+		return d.cfg.EffectiveJobDefaults()
+	})
+	apiServer.SetTimezone(func() string {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.cfg.Scheduler.Timezone
 	})
 	apiServer.SetAlertChannels(d.currentAlertChannels)
 	apiServer.SetAlertMutations(d.SaveAlertChannel, d.DeleteAlertChannel)

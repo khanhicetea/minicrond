@@ -61,3 +61,24 @@ func TestDaemonDiagnosticsExposeLogStorageAndPersistence(t *testing.T) {
 		}
 	}
 }
+
+// The web UI prefills new definitions with the scheduler timezone, read live
+// so a reload that changes scheduler.timezone is picked up.
+func TestDaemonReportsSchedulerTimezone(t *testing.T) {
+	s, token, _ := setup(t)
+	rec := call(s, false, "GET", "/api/v1/daemon", token, "", nil)
+	if _, ok := decode(t, rec)["timezone"]; ok {
+		t.Fatal("timezone reported without a provider")
+	}
+	zone := "Asia/Ho_Chi_Minh"
+	s.SetTimezone(func() string { return zone })
+	rec = call(s, false, "GET", "/api/v1/daemon", token, "", nil)
+	if got := decode(t, rec)["timezone"]; got != zone {
+		t.Fatalf("timezone = %v, want %s", got, zone)
+	}
+	zone = "Europe/Berlin"
+	rec = call(s, false, "GET", "/api/v1/daemon", token, "", nil)
+	if got := decode(t, rec)["timezone"]; got != zone {
+		t.Fatalf("after change timezone = %v, want %s", got, zone)
+	}
+}

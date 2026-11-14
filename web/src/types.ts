@@ -37,6 +37,8 @@ export interface DaemonInfo {
   uptime_s: number;
   capabilities: string[];
   tcp_enabled: boolean;
+  /** scheduler.timezone: default for new definitions. */
+  timezone?: string;
   token_fingerprint?: string;
   worker_exhaustions: Record<string, WorkerExhaustion>;
   diagnostics?: {

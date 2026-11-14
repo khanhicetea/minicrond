@@ -69,6 +69,7 @@ type Server struct {
 	saveAlertChannel   func(context.Context, model.AlertChannel) error
 	deleteAlertChannel func(context.Context, string, bool) error
 	jobDefaults        func() model.Definition
+	timezone           func() string
 	testAlert          func(context.Context, string) error
 	alertQueueDepth    func() int
 	serveErrors        chan error
@@ -212,6 +213,9 @@ func (s *Server) SetBasePath(value string) error {
 }
 
 func (s *Server) SetJobDefaults(get func() model.Definition) { s.jobDefaults = get }
+
+// SetTimezone provides the live scheduler.timezone so clients can prefill it.
+func (s *Server) SetTimezone(get func() string) { s.timezone = get }
 
 // SetAlertChannels provides the internal live registry; handlers redact secrets.
 func (s *Server) SetAlertChannels(list func() []model.AlertChannel) { s.alertChannels = list }
@@ -570,6 +574,10 @@ func (s *Server) daemon(w http.ResponseWriter, r *http.Request) {
 	info := map[string]any{"version": s.version, "schema_version": store.SchemaVersion, "uptime_s": int64(time.Since(s.started).Seconds()), "capabilities": capabilities, "tcp_enabled": s.tcpEnabled}
 	if s.tcpEnabled {
 		info["token_fingerprint"] = fingerprint(s.currentTokenHash())
+	}
+	// scheduler.timezone: the default for new definitions (the web UI prefills it).
+	if s.timezone != nil {
+		info["timezone"] = s.timezone()
 	}
 	// Connection waits show whether either database is the bottleneck.
 	writer, reader := s.store.PoolStats()

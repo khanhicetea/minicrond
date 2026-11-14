@@ -36,7 +36,8 @@ export default function JobEditor({ params }: JobEditorProps) {
   const save = useSaveJob();
   const remove = useDeleteJob();
 
-  const [draft, setDraft] = useState<Definition>(() => emptyDefinition('job'));
+  const defaultTimezone = daemon.data?.timezone;
+  const [draft, setDraft] = useState<Definition>(() => emptyDefinition('job', defaultTimezone));
   const [loadedKey, setLoadedKey] = useState('');
   const initializedKey = useRef('');
   const [dirty, setDirty] = useState(false);
@@ -54,13 +55,15 @@ export default function JobEditor({ params }: JobEditorProps) {
     } else if (!creating && detail.data) {
       setDraft({ ...detail.data.definition });
     } else if (creating && !copyFrom) {
-      setDraft(emptyDefinition('job'));
+      // Wait for the daemon's scheduler.timezone, but never block on a failed probe.
+      if (daemon.isPending) return;
+      setDraft(emptyDefinition('job', defaultTimezone));
     } else return;
     initializedKey.current = editorKey;
     setDirty(false);
     setValidationVisible(false);
     setLoadedKey(editorKey);
-  }, [creating, copyFrom, source.data, detail.data, editorKey]);
+  }, [creating, copyFrom, source.data, detail.data, editorKey, daemon.isPending, defaultTimezone]);
 
   useEffect(() => {
     if (!dirty) return;

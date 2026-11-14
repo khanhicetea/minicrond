@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/khanhicetea/minicrond/internal/config"
@@ -128,5 +129,50 @@ func TestAPIImportExplicitZeroOverridesDefaults(t *testing.T) {
 	dflt := decode(t, call(s, true, "GET", "/api/v1/jobs/dflt", "", "", nil))
 	if v, _ := definitionField(t, dflt, "timeout"); v != 60 {
 		t.Fatalf("imported omitted timeout must inherit: %v", dflt["definition"])
+	}
+}
+
+// An omitted timezone takes the daemon-provided default (the scheduler's, via
+// the job defaults hook) for both saves and imports; UTC only without one.
+func TestAPIOmittedTimezoneUsesJobDefaults(t *testing.T) {
+	timezone := func(t *testing.T, s *Server, name string) string {
+		t.Helper()
+		got := decode(t, call(s, true, "GET", "/api/v1/jobs/"+name, "", "", nil))
+		return got["definition"].(map[string]any)["timezone"].(string)
+	}
+	apply := func(t *testing.T, s *Server, content string) {
+		t.Helper()
+		req, _ := json.Marshal(importRequest{Content: content})
+		preview := decode(t, call(s, true, "POST", "/api/v1/import/preview", "", string(req), nil))
+		if rec := call(s, true, "POST", "/api/v1/import/apply", "", previewBodyWithHash(content, preview["content_hash"].(string)), nil); rec.Code != 200 {
+			t.Fatalf("apply: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	const job = `{"name":%q,"command":"true","schedule":"@every 1h"%s}`
+	put := func(t *testing.T, s *Server, name, extra string) {
+		t.Helper()
+		if rec := call(s, true, "PUT", "/api/v1/jobs/"+name, "", fmt.Sprintf(job, name, extra), nil); rec.Code != 200 {
+			t.Fatalf("put %s: %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+
+	s, _, _ := setup(t)
+	withJobDefaults(s, model.Definition{Timezone: "Asia/Ho_Chi_Minh"})
+	put(t, s, "omitted", "")
+	put(t, s, "explicit", `,"timezone":"Europe/Berlin"`)
+	apply(t, s, "[[job]]\nname='imported'\ncommand='true'\nschedule='@every 1h'\n[[job]]\nname='imported-own'\ncommand='true'\nschedule='@every 1h'\ntimezone='Europe/Berlin'\n")
+	for name, want := range map[string]string{"omitted": "Asia/Ho_Chi_Minh", "explicit": "Europe/Berlin", "imported": "Asia/Ho_Chi_Minh", "imported-own": "Europe/Berlin"} {
+		if got := timezone(t, s, name); got != want {
+			t.Errorf("%s timezone = %q, want %q", name, got, want)
+		}
+	}
+
+	s, _, _ = setup(t)
+	put(t, s, "bare", "")
+	apply(t, s, "[[job]]\nname='bare-import'\ncommand='true'\nschedule='@every 1h'\n")
+	for _, name := range []string{"bare", "bare-import"} {
+		if got := timezone(t, s, name); got != "UTC" {
+			t.Errorf("%s without defaults: timezone = %q, want UTC", name, got)
+		}
 	}
 }

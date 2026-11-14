@@ -95,3 +95,10 @@ test('cloning preserves worker execution and restart settings', () => {
   copy.argv.push('--verbose');
   assert.deepEqual(worker.argv, ['queue', '--consume']);
 });
+
+test('new definitions default to the scheduler timezone and keep it across kind switches', () => {
+  assert.equal(emptyDefinition('job').timezone, 'UTC');
+  const job = { ...emptyDefinition('job', 'Asia/Ho_Chi_Minh'), name: 'ticker' };
+  assert.equal(job.timezone, 'Asia/Ho_Chi_Minh');
+  assert.equal(updateDefinitionDraft(job, { kind: 'worker' }).timezone, 'Asia/Ho_Chi_Minh');
+});

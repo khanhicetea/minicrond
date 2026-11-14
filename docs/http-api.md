@@ -66,7 +66,7 @@ HTML rewrites, base path behavior, and untrusted-API rendering rules.
 |---|---|
 | `GET /healthz` | Liveness — always `ok` |
 | `GET /readyz` | Readiness — fails while shutting down |
-| `GET /api/v1/daemon` | Version, schema, uptime, `tcp_enabled`, capabilities, token fingerprint when TCP is enabled |
+| `GET /api/v1/daemon` | Version, schema, uptime, `tcp_enabled`, `timezone` (`scheduler.timezone`, which the web UI prefills for new definitions), capabilities, token fingerprint when TCP is enabled |
 | `POST /api/v1/daemon/reload` | Hot-reload the bootstrap config |
 
 ### Definitions

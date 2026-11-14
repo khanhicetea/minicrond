@@ -317,6 +317,16 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// EffectiveJobDefaults returns the [defaults] block for definitions created at
+// runtime (API saves and imports), with the timezone resolved the way config
+// definitions resolve it: [defaults].timezone, else scheduler.timezone, else
+// UTC. A definition's own timezone still wins.
+func (c *Config) EffectiveJobDefaults() model.Definition {
+	d := c.Defaults
+	d.Timezone = cmp.Or(d.Timezone, c.Scheduler.Timezone, "UTC")
+	return d
+}
+
 func (c *Config) Definitions() []model.Definition {
 	defs := make([]model.Definition, 0, len(c.Init)+len(c.Jobs)+len(c.Workers))
 	defs = append(defs, c.Init...)

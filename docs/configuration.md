@@ -302,7 +302,7 @@ schema below.
 | `argv` | — | both | Direct exec array (no shell) |
 | `shell` | `/bin/sh` | both | Shell used for `command` |
 | `schedule` | — | job | 5-field cron (`m h dom mon dow`, `@daily` etc. supported) or `@every 30s` (min 1s). Required for jobs |
-| `timezone` | scheduler's | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions) |
+| `timezone` | `[defaults]`, else `[scheduler]`, else `UTC` | both | Per-definition IANA timezone; DST-safe (wall-clock schedules keep local time across transitions). Definitions saved through the API or the web UI, and imports, resolve an omitted timezone the same way and store the result; a later change to `scheduler.timezone` does not rewrite stored definitions |
 | `catch_up` | `none` | job | `none`: skip missed fires; `latest`: fire only the most recent miss and mark intermediate ones `missed` |
 | `on_overlap` | `skip` | job | `skip`: a new fire is recorded `skipped` while one runs; `parallel`: allow concurrent runs |
 | `on_history_unavailable` | `run` | job | When the run row cannot be stored (database full, read-only, locked): `run`: start anyway and store history later ([ADR-16](adr/0016-execution-first.md)); `skip`: do not start, record `skipped` / `history_unavailable` once the database recovers. Use `skip` for jobs that must never run twice for one occurrence ([ADR-19](adr/0019-history-unavailable-policy.md)) |

@@ -1,11 +1,12 @@
 import type { Definition } from '../types';
 
-export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
+/** `timezone` is the daemon's scheduler.timezone; UTC until the daemon reports it. */
+export function emptyDefinition(kind: 'job' | 'worker' = 'job', timezone = 'UTC'): Definition {
   const base: Definition = {
     name: '',
     kind,
     enabled: true,
-    timezone: 'UTC',
+    timezone,
     env_base: 'clean',
     timeout: 0,
     grace: 10,
@@ -29,7 +30,7 @@ export function emptyDefinition(kind: 'job' | 'worker' = 'job'): Definition {
 
 export function updateDefinitionDraft(draft: Definition, changes: Partial<Definition>): Definition {
   if (changes.kind && changes.kind !== draft.kind) {
-    return { ...emptyDefinition(changes.kind), name: draft.name };
+    return { ...emptyDefinition(changes.kind, draft.timezone || undefined), name: draft.name };
   }
   return { ...draft, ...changes };
 }
