@@ -9,7 +9,7 @@ With no arguments the binary starts the daemon (same as `daemon`).
 ## Connection model
 
 - **Default (local):** CLI commands talk to the daemon over its mode-0600
-  Unix socket (`$MINICROND_DATA/minicron.sock`). No token needed — access is
+  Unix socket (`$MINICROND_DATA/minicrond.sock`). No token needed — access is
   granted by filesystem permission plus local peer credentials.
 - **Remote:** set `MINICROND_URL` (e.g. `http://host:7423`) and the CLI
   switches to HTTP, requiring `MINICROND_TOKEN` (a bearer token).
@@ -18,8 +18,8 @@ With no arguments the binary starts the daemon (same as `daemon`).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MINICROND_CONFIG` | `minicron.toml` | Bootstrap config path (`daemon`, `init`, `validate`) |
-| `MINICROND_DATA` | `~/.local/share/minicron` | Data directory (`daemon`, `logs`, local CLI socket) |
+| `MINICROND_CONFIG` | `minicrond.toml` | Bootstrap config path (`daemon`, `init`, `validate`) |
+| `MINICROND_DATA` | `~/.local/share/minicrond` | Data directory (`daemon`, `logs`, local CLI socket) |
 | `GOGC` | unset (daemon uses `50`) | Go garbage-collector target. The daemon collects at +50% heap growth when this is unset; set `GOGC=100` for the Go default, or see [ADR-17](adr/0017-gc-pacing.md) |
 | `MINICROND_URL` | unset | Switch CLI to TCP/HTTP mode |
 | `MINICROND_TOKEN` | unset | Bearer token for `MINICROND_URL` and `export` |
@@ -46,7 +46,7 @@ signals and reaps orphaned processes; `MINICROND_INIT=0` disables it. See
 minicrond init [--config PATH]
 ```
 
-Creates a minimal `minicron.toml` (mode 0600); fails if the file exists.
+Creates a minimal `minicrond.toml` (mode 0600); fails if the file exists.
 
 ### `validate` — check a bootstrap config
 
@@ -134,15 +134,15 @@ channels or via the alert-channel API.
 ```sh
 minicrond crontab
 # To import Alice's crontab into the root system service instead:
-sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicrond minicrond crontab --user alice
 ```
 
 Without `--user`, reads the calling user's crontab and imports into the daemon
-at `$MINICROND_DATA/minicron.sock` (default: that user's data directory). With
+at `$MINICROND_DATA/minicrond.sock` (default: that user's data directory). With
 `--user NAME`, the CLI must run as root: it reads and comments NAME's crontab
 using `crontab -u NAME`, checks that the selected local daemon supports
 `run_as`, and sets `run_as = "NAME"` on every imported job so they run as NAME,
-not root. Set `MINICROND_DATA=/var/lib/minicron` to target the root system
+not root. Set `MINICROND_DATA=/var/lib/minicrond` to target the root system
 service; without it, a root CLI would look for a socket under root's home.
 The daemon's TCP port does not select a daemon for this command, and
 `MINICROND_URL` is rejected. Do not run `sudo minicrond crontab` without
@@ -182,7 +182,7 @@ sudo minicrond service uninstall [--user NAME]
 ```
 
 - Root daemon: unit `minicrond`, config `/etc/minicrond/config.toml`, data
-  `/var/lib/minicron`, port 7423.
+  `/var/lib/minicrond`, port 7423.
 - `--user NAME` (port required): unit `minicrond@NAME`, config
   `~NAME/.minicrond/config.toml`, runs as that user.
   The installer walks `~NAME` with descriptor-relative, no-symlink operations:
@@ -196,7 +196,7 @@ sudo minicrond service uninstall [--user NAME]
 minicrond schema
 ```
 
-Emits `schema/minicron.schema.json` (embedded in the binary) — usable to
+Emits `schema/minicrond.schema.json` (embedded in the binary) — usable to
 validate configs or power editors.
 
 ### `version`

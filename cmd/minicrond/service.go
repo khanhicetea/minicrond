@@ -29,7 +29,7 @@ const serviceUnitHeader = "# managed by minicrond service install"
 const (
 	systemUnitName   = "minicrond"
 	systemConfigPath = "/etc/minicrond/config.toml"
-	systemDataDir    = "/var/lib/minicron"
+	systemDataDir    = "/var/lib/minicrond"
 	systemUnitDir    = "/etc/systemd/system"
 	defaultAPIPort   = 7423
 )
@@ -124,7 +124,7 @@ func serviceUninstall(args []string) error {
 		}
 		unitName = systemUnitName + "@" + u.Username
 		configPath = filepath.Join(u.HomeDir, ".minicrond", "config.toml")
-		dataDir = filepath.Join(u.HomeDir, ".local", "share", "minicron")
+		dataDir = filepath.Join(u.HomeDir, ".local", "share", "minicrond")
 	}
 	unitPath := filepath.Join(systemUnitDir, unitName+".service")
 	if _, err := os.Stat(unitPath); err != nil {
@@ -183,7 +183,7 @@ func newServicePlan(userName string, port int) (*servicePlan, error) {
 	return &servicePlan{
 		unitName:   systemUnitName + "@" + u.Username,
 		configPath: filepath.Join(u.HomeDir, ".minicrond", "config.toml"),
-		dataDir:    filepath.Join(u.HomeDir, ".local", "share", "minicron"),
+		dataDir:    filepath.Join(u.HomeDir, ".local", "share", "minicrond"),
 		port:       port,
 		runAs:      u,
 	}, nil

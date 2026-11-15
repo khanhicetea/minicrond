@@ -67,7 +67,7 @@ func TestGatewayAPIContentTypes(t *testing.T) {
 	if err := s.logs.Close(id); err != nil {
 		t.Fatal(err)
 	}
-	for _, base := range []string{"", "/tools/minicron"} {
+	for _, base := range []string{"", "/tools/minicrond"} {
 		if err := s.SetBasePath(base); err != nil {
 			t.Fatal(err)
 		}

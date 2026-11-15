@@ -9,7 +9,7 @@ import (
 
 func loadForTimezone(t *testing.T, content string) *Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, content)
 	cfg, err := Load(path)
 	if err != nil {

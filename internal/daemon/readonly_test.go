@@ -19,7 +19,7 @@ func TestReadOnlyDataDirectoryKeepsJobsRunning(t *testing.T) {
 	dir := t.TempDir()
 	data := filepath.Join(dir, "data")
 	marker := filepath.Join(dir, "ticks")
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	content := "[server]\ntcp_enabled=false\n[[job]]\nname='tick'\nschedule='@every 1s'\ncommand='echo x >> " + marker + "'\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestReadOnlyDataDirectoryKeepsJobsRunning(t *testing.T) {
 	}
 	// Make the whole data directory read-only, as a read-only volume would be,
 	// and drop the lock file the first run created.
-	if err := os.Remove(filepath.Join(data, "minicron.lock")); err != nil {
+	if err := os.Remove(filepath.Join(data, "minicrond.lock")); err != nil {
 		t.Fatal(err)
 	}
 	var dirs []string

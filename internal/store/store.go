@@ -87,7 +87,7 @@ func Open(ctx context.Context, dataDir string, opt ...sqlite.Options) (*Store, e
 	if err := makePrivate(dataDir); err != nil {
 		return nil, fmt.Errorf("set metadata directory permissions: %w", err)
 	}
-	path := filepath.Join(dataDir, "minicron.db")
+	path := filepath.Join(dataDir, "minicrond.db")
 	db, err := sqlite.Open(path, opt...)
 	if err != nil {
 		return nil, fmt.Errorf("open metadata database: %w", err)
@@ -205,7 +205,7 @@ func (s *Store) initSchema(ctx context.Context) error {
 	return nil
 }
 
-// ApplicationID is stored in the SQLite header of minicron.db ("MCRN").
+// ApplicationID is stored in the SQLite header of minicrond.db ("MCRN").
 const ApplicationID = 0x4d43524e
 
 const schema = `

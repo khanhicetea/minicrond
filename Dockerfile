@@ -20,13 +20,13 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/* \
- && install -d -m 0755 /etc/minicron \
- && install -d -m 0700 /var/lib/minicron
+ && install -d -m 0755 /etc/minicrond \
+ && install -d -m 0700 /var/lib/minicrond
 COPY --from=build /out/minicrond /usr/local/bin/minicrond
-COPY examples/docker/minicron.toml /etc/minicron/minicron.toml
-ENV MINICROND_CONFIG=/etc/minicron/minicron.toml \
-    MINICROND_DATA=/var/lib/minicron
-VOLUME ["/var/lib/minicron"]
+COPY examples/docker/minicrond.toml /etc/minicrond/minicrond.toml
+ENV MINICROND_CONFIG=/etc/minicrond/minicrond.toml \
+    MINICROND_DATA=/var/lib/minicrond
+VOLUME ["/var/lib/minicrond"]
 # minicrond detects that it is PID 1 and runs a built-in init that forwards
 # signals and reaps orphaned processes; no tini/--init is needed (set
 # MINICROND_INIT=0 when you use one anyway).

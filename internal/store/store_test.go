@@ -124,7 +124,7 @@ func TestCrashRecoveryAndRetentionKeepNewest(t *testing.T) {
 
 func TestNewerSchemaRefused(t *testing.T) {
 	dir := t.TempDir()
-	db, err := sql.Open("sqlite", dir+"/minicron.db")
+	db, err := sql.Open("sqlite", dir+"/minicrond.db")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestNewerSchemaRefused(t *testing.T) {
 func TestPreReleaseSchemaRefused(t *testing.T) {
 	for _, version := range []int{1, 12} {
 		dir := t.TempDir()
-		db, err := sql.Open("sqlite", dir+"/minicron.db")
+		db, err := sql.Open("sqlite", dir+"/minicrond.db")
 		if err != nil {
 			t.Fatal(err)
 		}

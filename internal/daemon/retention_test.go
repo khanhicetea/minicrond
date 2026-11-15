@@ -81,7 +81,7 @@ func TestSweepRetentionBatchFailureFallsBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestSweepRetentionArchiveBatchFailureFallsBack(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

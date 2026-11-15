@@ -29,7 +29,7 @@ explicit policy, never reclaim metadata or pending execution records, and let
 
 Reclamation deletes logs oldest first, in two stages:
 
-1. archived chunks in `minicron-logs.db` (oldest by archive time). For a run that
+1. archived chunks in `minicrond-logs.db` (oldest by archive time). For a run that
    still has a live writer (a long-running worker) only chunks older than its newest
    8 MiB of compressed archived output are eligible; its newest chunk is always kept
    (amendment 2026-10-26). Runs owned by another operation (an archive in progress
@@ -42,7 +42,7 @@ Archive data is older than sealed buffers by construction, so this is
 "oldest first" across tiers without a merged index.
 
 **Never reclaimed:** live buffers; the newest 8 MiB of archived chunks of runs with a writer;
-`.quarantine/`; SQLite metadata (`minicron.db`: definitions, runs, audit,
+`.quarantine/`; SQLite metadata (`minicrond.db`: definitions, runs, audit,
 queue/pending-execution records, idempotency keys); anything outside the log
 tiers. A deleted run keeps its run record; reads of its log return nothing
 (the same state `db_keep_for` pruning produces).
@@ -53,7 +53,7 @@ tiers. A deleted run keeps its run record; reads of its log return nothing
 
 | Tier | Counted |
 |---|---|
-| Archive | `minicron-logs.db` file size + `minicron-logs.db-wal` size |
+| Archive | `minicrond-logs.db` file size + `minicrond-logs.db-wal` size |
 | Sealed | file sizes in `logs/<run>/` of runs without a writer |
 | Hot | file sizes in `logs/<run>/` of runs with a writer |
 

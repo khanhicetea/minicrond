@@ -21,7 +21,7 @@ Older design drafts and audits were retired; they remain in git history.
 
 The machine-readable contracts are checked in and CI-verified:
 
-- [`schema/minicron.schema.json`](../schema/minicron.schema.json) — JSON
+- [`schema/minicrond.schema.json`](../schema/minicrond.schema.json) — JSON
   Schema for the bootstrap config (also served by `minicrond schema` and
   embedded in the binary for the UI editor).
 - [`cmd/minicrond/openapi.json`](../cmd/minicrond/openapi.json) — OpenAPI

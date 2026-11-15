@@ -43,7 +43,7 @@ func benchmarkDaemonLoaded(b *testing.B, olderRuns int) {
 		b.Skip("run with -benchtime=1x")
 	}
 	dir := b.TempDir()
-	configPath := filepath.Join(dir, "minicron.toml")
+	configPath := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(configPath, []byte("[server]\ntcp_enabled=false\n"), 0o600); err != nil {
 		b.Fatal(err)
 	}
@@ -82,14 +82,14 @@ func benchmarkDaemonLoaded(b *testing.B, olderRuns int) {
 	}
 	// Wait for startup maintenance before measuring the loaded period.
 	time.Sleep(100 * time.Millisecond)
-	socket := filepath.Join(dataDir, "minicron.sock")
+	socket := filepath.Join(dataDir, "minicrond.sock")
 	transport := &http.Transport{MaxIdleConns: 32, MaxIdleConnsPerHost: 32, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	request := func(method, path string, body []byte) ([]byte, int, error) {
-		req, err := http.NewRequestWithContext(b.Context(), method, "http://minicron"+path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(b.Context(), method, "http://minicrond"+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -146,8 +146,8 @@ func benchmarkDaemonLoaded(b *testing.B, olderRuns int) {
 		b.Fatal(err)
 		return 0
 	}
-	mainWAL := filepath.Join(dataDir, "minicron.db-wal")
-	logWAL := filepath.Join(dataDir, "minicron-logs.db-wal")
+	mainWAL := filepath.Join(dataDir, "minicrond.db-wal")
+	logWAL := filepath.Join(dataDir, "minicrond-logs.db-wal")
 	beforeWAL := walSize(mainWAL) + walSize(logWAL)
 	beforeWrite, haveWrite := linuxProcessWriteBytes()
 	runtime.GC()
@@ -273,7 +273,7 @@ func BenchmarkDaemonArchivedSSE64(b *testing.B) {
 	}
 	const runID = "01800000-0000-7000-8000-000000000001"
 	dir := b.TempDir()
-	configPath := filepath.Join(dir, "minicron.toml")
+	configPath := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(configPath, []byte("[server]\ntcp_enabled=false\n"), 0o600); err != nil {
 		b.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func BenchmarkDaemonArchivedSSE64(b *testing.B) {
 	if err != nil || runs != 1 || chunks < 4 {
 		b.Fatalf("archive has %d runs and %d chunks: %v", runs, chunks, err)
 	}
-	socket := filepath.Join(dataDir, "minicron.sock")
+	socket := filepath.Join(dataDir, "minicrond.sock")
 	transport := &http.Transport{MaxIdleConns: 64, MaxIdleConnsPerHost: 64, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
@@ -358,7 +358,7 @@ func BenchmarkDaemonArchivedSSE64(b *testing.B) {
 		readers.Go(func() {
 			<-start
 			began := time.Now()
-			req, err := http.NewRequestWithContext(b.Context(), http.MethodGet, "http://minicron/api/v1/runs/"+runID+"/log/stream", nil)
+			req, err := http.NewRequestWithContext(b.Context(), http.MethodGet, "http://minicrond/api/v1/runs/"+runID+"/log/stream", nil)
 			if err != nil {
 				errs <- err
 				return

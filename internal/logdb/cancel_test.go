@@ -20,7 +20,7 @@ func TestWriteTransactionsStopWaitingWhenContextEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestMaintenanceStatementsStopWaitingWhenContextEnds(t *testing.T) {
 	if err := l.DeleteRuns(t.Context(), []string{"gone"}); err != nil {
 		t.Fatal(err)
 	}
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

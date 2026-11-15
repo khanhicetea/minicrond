@@ -38,7 +38,7 @@ func benchmarkWorkerLiveSSE(b *testing.B, readerCount int) {
 	}
 	const runID = "01800000-0000-7000-8000-000000000002"
 	dir := b.TempDir()
-	configPath := filepath.Join(dir, "minicron.toml")
+	configPath := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(configPath, []byte("[server]\ntcp_enabled=false\n"), 0o600); err != nil {
 		b.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func benchmarkWorkerLiveSSE(b *testing.B, readerCount int) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	socket := filepath.Join(dataDir, "minicron.sock")
+	socket := filepath.Join(dataDir, "minicrond.sock")
 	transport := &http.Transport{MaxIdleConns: readerCount, MaxIdleConnsPerHost: readerCount,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -102,7 +102,7 @@ func benchmarkWorkerLiveSSE(b *testing.B, readerCount int) {
 	for range readerCount {
 		readers.Go(func() {
 			req, err := http.NewRequestWithContext(b.Context(), http.MethodGet,
-				"http://minicron/api/v1/runs/"+runID+"/log/stream", nil)
+				"http://minicrond/api/v1/runs/"+runID+"/log/stream", nil)
 			if err != nil {
 				errs <- err
 				ready <- struct{}{}

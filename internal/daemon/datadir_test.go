@@ -30,7 +30,7 @@ func TestEnsurePrivateDataDir(t *testing.T) {
 	if err := os.Mkdir(used, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(used, "minicron.db"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(used, "minicrond.db"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(used, 0o755); err != nil {

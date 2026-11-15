@@ -124,7 +124,7 @@ export default function RunDetail() {
             icon="download"
             onClick={() => {
               setActionError('');
-              downloadFile(api.rawLogUrl(id), 'minicron-run.log', api.download).catch(err => setActionError(errorText(err)));
+              downloadFile(api.rawLogUrl(id), 'minicrond-run.log', api.download).catch(err => setActionError(errorText(err)));
             }}
           >
             Download log

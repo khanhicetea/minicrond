@@ -63,7 +63,7 @@ else
 	bad "run hello --wait -> status=${status:-?} run_id=${run_id:-?}"
 fi
 logs=$("$BIN" logs "$run_id")
-if echo "$logs" | grep -q "hello from minicron example" && echo "$logs" | grep -q "run_id=$run_id"; then
+if echo "$logs" | grep -q "hello from minicrond example" && echo "$logs" | grep -q "run_id=$run_id"; then
 	ok "logs contain greeting + injected MINICROND_RUN_ID"
 else
 	bad "logs missing expected output"

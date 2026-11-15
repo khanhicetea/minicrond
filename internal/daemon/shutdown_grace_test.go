@@ -12,7 +12,7 @@ import (
 // timeout), however their stop reaches them.
 func TestShutdownGraceCapsWorkerGrace(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	marker := filepath.Join(dir, "started")
 	content := "[server]\ntcp_enabled=false\n[scheduler]\nshutdown_grace=1\n[[worker]]\nname='stubborn'\ngrace=30\ncommand=\"trap '' TERM; touch " + marker + "; while true; do sleep 0.2; done\"\n" +
 		// Also run a job, as a real config would. Which stop reaches the

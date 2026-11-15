@@ -108,7 +108,7 @@ func TestTriggerReportsQueueStorageFailure(t *testing.T) {
 	if rec := call(s, true, "POST", "/api/v1/jobs/blocker/trigger", "", "", nil); rec.Code != 202 {
 		t.Fatalf("blocker: %d", rec.Code)
 	}
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

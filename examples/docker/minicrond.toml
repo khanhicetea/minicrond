@@ -1,5 +1,5 @@
 # Bootstrap config for the container image. Mount your own over
-# /etc/minicron/minicron.toml (read-only is fine).
+# /etc/minicrond/minicrond.toml (read-only is fine).
 
 [server]
 # Socket-only by default: `docker exec <container> minicrond status` and the

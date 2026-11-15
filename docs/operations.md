@@ -2,7 +2,7 @@
 
 ## Data directory
 
-Default `~/.local/share/minicron`, or `/var/lib/minicron` when there is no
+Default `~/.local/share/minicrond`, or `/var/lib/minicrond` when there is no
 usable HOME (`--data-dir` / `MINICROND_DATA` to change). The daemon **requires**
 it to be private (group/other bits zero). An empty directory owned by the
 daemon's user (a fresh container volume) is tightened to 0700 at startup; any
@@ -10,12 +10,12 @@ other non-private directory makes it refuse to start.
 
 ```
 data/
-├── minicron.db          # definitions + run history + audit (SQLite, WAL)
-├── minicron-logs.db     # log archive (SQLite, WAL) — separate database
+├── minicrond.db          # definitions + run history + audit (SQLite, WAL)
+├── minicrond-logs.db     # log archive (SQLite, WAL) — separate database
 ├── log-archive/<run_id>/ # archived large log chunks (files the log archive references)
 ├── logs/<run_id>/       # live run log buffers (zstd chunks: plain, then compressed)
-├── minicron.sock        # mode-0600 Unix socket (local CLI)
-├── minicron.lock        # instance lock (flock + pid)
+├── minicrond.sock        # mode-0600 Unix socket (local CLI)
+├── minicrond.lock        # instance lock (flock + pid)
 └── initial-token        # one-time initial bearer token (mode 0600)
 ```
 
@@ -23,7 +23,7 @@ Rules of thumb:
 
 - Never write the databases directly. SQLite runs in WAL mode; a binary
   that encounters a newer schema refuses to start (no silent downgrades).
-- One daemon per data directory, enforced by `minicron.lock`.
+- One daemon per data directory, enforced by `minicrond.lock`.
 - Databases created by pre-0.6 development builds are refused (`not created
   by minicrond 0.6 or later`); they cannot be upgraded. Remove the data
   directory and start fresh.
@@ -72,7 +72,7 @@ Log storage is two-tier (ADR-6):
    in the file buffer (with `log_on_full` = `drop_old`/`drop_new`), not the
    archive. Successful archival frees buffer capacity for either policy.
 2. **Archive tier** — finished runs are sealed on completion and archived
-   into `data/minicron-logs.db` by a background archiver, which then removes
+   into `data/minicrond-logs.db` by a background archiver, which then removes
    their buffer files. Run completion never waits on the archive; the sealed
    buffer stays readable until it is moved. Still-running
    workers seal+archive their chunks every `logs.worker_flush_interval`
@@ -176,7 +176,7 @@ completed runs still waiting for archival. For a running worker, only archived
 chunks older than its newest 8 MiB (compressed) are eligible, so weeks of worker
 output cannot force every other run's logs out while its recent output stays
 readable. What is **never** deleted by this mechanism: live buffers, the newest
-8 MiB of archived chunks of runs that still have a writer (workers), `.quarantine/`, `minicron.db` metadata (definitions, run
+8 MiB of archived chunks of runs that still have a writer (workers), `.quarantine/`, `minicrond.db` metadata (definitions, run
 records, audit, pending execution records) and anything outside the log tiers.
 A run whose logs were reclaimed keeps its run record; its log reads empty.
 
@@ -245,7 +245,7 @@ Retention:
   to the filesystem (incremental auto-vacuum) and the WAL is truncated.
 
 Monitor data-directory free space (the log disk budget above reacts to
-low headroom, but only by deleting logs). The main `minicron.db` does not shrink after run retention deletes rows;
+low headroom, but only by deleting logs). The main `minicrond.db` does not shrink after run retention deletes rows;
 if physical reclamation is needed there, stop the daemon, back up the
 complete directory, and use SQLite `VACUUM` before restarting.
 
@@ -314,7 +314,7 @@ keeps rising while the archiver is up.
 Create/edit channels in Settings → Alert channels or the alert-channel API.
 The metadata database stores **literal bot credentials in plaintext** (protected
 by the data directory's 0700 and database's 0600 permissions, not encryption).
-Treat `minicron.db`, its WAL, filesystem snapshots and backups as secrets.
+Treat `minicrond.db`, its WAL, filesystem snapshots and backups as secrets.
 Token rotation must also account for old backups/WAL copies; deleting a channel
 is not secure erasure. API list/save responses and audit entries redact tokens.
 Save/delete reloads all channels in memory; no config polling is added.
@@ -390,7 +390,7 @@ minicrond as a container's process manager:
   used at shutdown plus 10 s. If the runtime kills the daemon first, nothing is
   corrupted: the next start marks the runs `interrupted` and salvages their logs.
 - **Data volume.** Mount a volume at the data directory
-  (`MINICROND_DATA=/var/lib/minicron` in the image). An **empty** directory owned
+  (`MINICROND_DATA=/var/lib/minicrond` in the image). An **empty** directory owned
   by the daemon's user is tightened to 0700 at startup (runtimes create mount
   points 0755 or 1777); a non-empty directory with group/other access is refused.
   Run one daemon per data directory: a second container on the same volume exits
@@ -430,9 +430,9 @@ minicrond as a container's process manager:
 ## Backup and restore
 
 1. Stop the daemon (`systemctl stop minicrond` or SIGTERM; wait for exit).
-2. Copy the **complete** data directory: `minicron.db`, `minicron-logs.db`,
+2. Copy the **complete** data directory: `minicrond.db`, `minicrond-logs.db`,
    their WAL files, `log-archive/` and `logs/` buffers together. Copying only
-   `minicron.db` does not preserve log history.
+   `minicrond.db` does not preserve log history.
 3. Restore = stop the daemon, replace the directory, start the daemon.
    Never restore into a directory a daemon is using, and never run two
    daemons against one data directory.
@@ -453,7 +453,7 @@ minicrond as a container's process manager:
 
 Set `server.tcp_enabled = false` and keep `server.unix_socket = true`, then
 restart the daemon. This is a general local service option: the CLI and all
-HTTP routes use `MINICROND_DATA/minicron.sock`, while no TCP port is opened.
+HTTP routes use `MINICROND_DATA/minicrond.sock`, while no TCP port is opened.
 Keep the data directory mode 0700 and socket mode 0600. The socket accepts
 the daemon UID and root; a proxy therefore needs a same-UID relay or process
 identity, with access granted only to trusted operators.
@@ -563,11 +563,11 @@ sudo minicrond service uninstall [--user alice]
 
 | Mode | Unit | Config | Data dir | Port |
 |---|---|---|---|---|
-| root daemon | `minicrond` | `/etc/minicrond/config.toml` | `/var/lib/minicron` | 7423 |
+| root daemon | `minicrond` | `/etc/minicrond/config.toml` | `/var/lib/minicrond` | 7423 |
 | per-user | `minicrond@USER` | `~USER/.minicrond/config.toml` | default (user's) | required, unique |
 
 A hand-written sample unit is checked in at
-[`examples/systemd/minicron.service`](../examples/systemd/minicron.service).
+[`examples/systemd/minicrond.service`](../examples/systemd/minicrond.service).
 `--port` is required for per-user daemons so every daemon on the host binds
 a unique TCP port. Service mode logs to the journal.
 

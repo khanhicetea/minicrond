@@ -10,7 +10,7 @@ import (
 )
 
 func TestLoadSettingsOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[server]\nbind='127.0.0.1:9000'\n[scheduler]\ntimezone='UTC'\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -22,7 +22,7 @@ func TestLoadSettingsOnly(t *testing.T) {
 }
 
 func TestUnixOnlyConfigRequiresSocketAndIgnoresUnusedBind(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[server]\ntcp_enabled=false\nbind='not a TCP address'\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestUnixOnlyConfigRequiresSocketAndIgnoresUnusedBind(t *testing.T) {
 }
 
 func TestLoadConfigDefinitions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[defaults]\nshell='/bin/bash'\n[[init]]\nname='prepare'\ncommand='true'\n[[job]]\nname='tick'\ncommand='true'\nschedule='@every 1m'\n[[worker]]\nname='serve'\ncommand='sleep 60'\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -64,7 +64,7 @@ func TestLoadConfigDefinitions(t *testing.T) {
 }
 
 func TestLoadJobDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[defaults]\nshell='/bin/bash'\nretries=3\nretry_delay=12\n[defaults.env]\nFOO='bar'\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -131,7 +131,7 @@ func TestParseImportStrictAndAtomic(t *testing.T) {
 }
 
 func TestLogArchiveDefaultsAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "")
 	cfg, err := Load(path)
 	if err != nil {
@@ -161,7 +161,7 @@ func TestLogArchiveDefaultsAndValidation(t *testing.T) {
 }
 
 func TestLogSyncWindowDefaultsAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "")
 	cfg, err := Load(path)
 	if err != nil || cfg.Logs.SyncInterval != 2000 || cfg.Logs.SyncMaxDirty != 1024 {
@@ -181,7 +181,7 @@ func TestLogSyncWindowDefaultsAndValidation(t *testing.T) {
 }
 
 func TestFileAlertChannelsAreRejected(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[[alert_channel]]\nname='ops'\ntype='telegram'\nbot_token='env:BOT_TOKEN'\nchat_id='123'\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected removed alert_channel field to be rejected")
@@ -189,7 +189,7 @@ func TestFileAlertChannelsAreRejected(t *testing.T) {
 }
 
 func TestSizeUnits(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[logs]\nmax_line=256\n")
 	cfg, err := Load(path)
 	if err != nil || cfg.Logs.MaxLine != 256 {

@@ -33,7 +33,7 @@ import (
 var version = "0.7.1"
 var commit = "unknown"
 
-//go:embed minicron.schema.json
+//go:embed minicrond.schema.json
 var configSchema []byte
 
 func main() {
@@ -104,7 +104,7 @@ const defaultGCPercent = 50
 
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	configPath := fs.String("config", env("MINICROND_CONFIG", "minicron.toml"), "bootstrap TOML path")
+	configPath := fs.String("config", env("MINICROND_CONFIG", "minicrond.toml"), "bootstrap TOML path")
 	dataDir := fs.String("data-dir", env("MINICROND_DATA", defaultDataDir()), "data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -161,7 +161,7 @@ func runDaemon(args []string) error {
 }
 func initConfig(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	path := fs.String("config", env("MINICROND_CONFIG", "minicron.toml"), "config path")
+	path := fs.String("config", env("MINICROND_CONFIG", "minicrond.toml"), "config path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,7 +200,7 @@ db_keep_for = 30 # days
 `, bind)
 }
 func validate(args []string) error {
-	path := env("MINICROND_CONFIG", "minicron.toml")
+	path := env("MINICROND_CONFIG", "minicrond.toml")
 	if len(args) > 0 {
 		path = args[0]
 	}
@@ -548,7 +548,7 @@ var cliHTTP struct {
 
 func client() *http.Client {
 	baseURL := os.Getenv("MINICROND_URL")
-	socket := filepath.Join(env("MINICROND_DATA", defaultDataDir()), "minicron.sock")
+	socket := filepath.Join(env("MINICROND_DATA", defaultDataDir()), "minicrond.sock")
 	key := "unix:" + socket
 	if baseURL != "" {
 		key = "url:" + baseURL
@@ -591,7 +591,7 @@ func apiBaseURL() string {
 	if url := os.Getenv("MINICROND_URL"); url != "" {
 		return strings.TrimSuffix(url, "/")
 	}
-	return "http://minicron" + strings.TrimSuffix(os.Getenv("MINICROND_BASE_PATH"), "/")
+	return "http://minicrond" + strings.TrimSuffix(os.Getenv("MINICROND_BASE_PATH"), "/")
 }
 func env(k, fallback string) string {
 	if v := os.Getenv(k); v != "" {
@@ -605,9 +605,9 @@ func defaultDataDir() string {
 		// No usable HOME (common in containers): a relative path would put
 		// the data in whatever the working directory is, and in a container
 		// layer that is lost on recreate. Use the system location instead.
-		return "/var/lib/minicron"
+		return "/var/lib/minicrond"
 	}
-	return filepath.Join(home, ".local", "share", "minicron")
+	return filepath.Join(home, ".local", "share", "minicrond")
 }
 func usage() error {
 	return writeOutput("minicrond: trustworthy local job scheduler\ncommands: daemon init validate list run start stop restart runs logs delete reload import crontab export status healthcheck token service version\nservice: install/uninstall systemd units (root daemon or per-user daemons; run as root)\n")

@@ -304,7 +304,7 @@ func TestRawDownloadAcrossPageBoundaries(t *testing.T) {
 	expected = append(expected, "[err] "...)
 	expected = append(expected, payload...)
 	expected = append(expected, '\n')
-	expected = append(expected, "[minicron] "...)
+	expected = append(expected, "[minicrond] "...)
 	expected = append(expected, payload...)
 	expected = append(expected, '\n')
 	if !bytes.Equal(raw.Bytes(), expected) {

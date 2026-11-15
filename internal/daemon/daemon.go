@@ -151,7 +151,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	if err != nil {
 		return err
 	}
-	// Long-term logs live in their own SQLite file, separate from minicron.db:
+	// Long-term logs live in their own SQLite file, separate from minicrond.db:
 	// the file buffer stays the crash-safe hot path, the archive is the
 	// durable, prunable history.
 	// ADR-16: the archive is history, so a log database that cannot be opened
@@ -425,7 +425,7 @@ func (d *Daemon) run(ctx context.Context) (runErr error) {
 	}
 	socket := ""
 	if cfg.Server.UnixOn() {
-		socket = filepath.Join(d.DataDir, "minicron.sock")
+		socket = filepath.Join(d.DataDir, "minicrond.sock")
 	}
 	if err = apiServer.Start(cfg.Server.Bind, socket); err != nil {
 		return err
@@ -965,7 +965,7 @@ func (d *Daemon) acquireLock() error {
 	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.Join(fmt.Errorf("data directory is locked by another daemon: %w", err), dir.Close())
 	}
-	path := filepath.Join(d.DataDir, "minicron.lock")
+	path := filepath.Join(d.DataDir, "minicrond.lock")
 	readOnly := false
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {

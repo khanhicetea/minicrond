@@ -9,7 +9,7 @@ services:
     # timeout. Raise both together if your programs need longer to stop.
     stop_grace_period: 15s
     volumes:
-      - minicron-data:/var/lib/minicron
-      - ./minicron.toml:/etc/minicron/minicron.toml:ro
+      - minicrond-data:/var/lib/minicrond
+      - ./minicrond.toml:/etc/minicrond/minicrond.toml:ro
 volumes:
-  minicron-data:
+  minicrond-data:

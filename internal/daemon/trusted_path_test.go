@@ -11,7 +11,7 @@ import (
 
 func TestTrustedPathRequiresRestart(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	write := func(paths string) {
 		t.Helper()
 		if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n[scheduler]\ntrusted_path="+paths+"\n"), 0600); err != nil {

@@ -58,12 +58,12 @@ func TestNewServicePlanUserRules(t *testing.T) {
 }
 
 func TestUnitContent(t *testing.T) {
-	system := &servicePlan{unitName: "minicrond", configPath: "/etc/minicrond/config.toml", dataDir: "/var/lib/minicron", port: 7423}
+	system := &servicePlan{unitName: "minicrond", configPath: "/etc/minicrond/config.toml", dataDir: "/var/lib/minicrond", port: 7423}
 	got := system.unit("/usr/local/bin/minicrond")
 	for _, want := range []string{
 		serviceUnitHeader,
 		"Description=minicrond job scheduler (system)",
-		"ExecStart=/usr/local/bin/minicrond daemon --config /etc/minicrond/config.toml --data-dir /var/lib/minicron",
+		"ExecStart=/usr/local/bin/minicrond daemon --config /etc/minicrond/config.toml --data-dir /var/lib/minicrond",
 		"WantedBy=multi-user.target",
 	} {
 		if !strings.Contains(got, want) {
@@ -77,7 +77,7 @@ func TestUnitContent(t *testing.T) {
 	asUser := &servicePlan{
 		unitName:   "minicrond@alice",
 		configPath: "/home/alice/.minicrond/config.toml",
-		dataDir:    "/home/alice/.local/share/minicron",
+		dataDir:    "/home/alice/.local/share/minicrond",
 		port:       7500,
 		runAs:      &user.User{Username: "alice", Uid: "1000", Gid: "1000"},
 	}
@@ -86,7 +86,7 @@ func TestUnitContent(t *testing.T) {
 		"Description=minicrond job scheduler (user alice)",
 		"User=alice",
 		"Group=1000",
-		"ExecStart=/usr/local/bin/minicrond daemon --config /home/alice/.minicrond/config.toml --data-dir /home/alice/.local/share/minicron",
+		"ExecStart=/usr/local/bin/minicrond daemon --config /home/alice/.minicrond/config.toml --data-dir /home/alice/.local/share/minicrond",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("user unit missing %q in:\n%s", want, got)

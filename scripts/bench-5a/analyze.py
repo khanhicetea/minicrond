@@ -75,9 +75,9 @@ def files(name):
 f0, f1 = files("files-start"), files("files-end")
 def group(p):
     base = os.path.basename(p)
-    if base.startswith("minicron-logs.db"):
+    if base.startswith("minicrond-logs.db"):
         return base
-    if base.startswith("minicron.db"):
+    if base.startswith("minicrond.db"):
         return base
     return "log-buffers/other"
 g = {}
@@ -88,10 +88,10 @@ for p in set(f0) | set(f1):
 out["disk"]["files_end_bytes"] = {k: v[1] for k, v in sorted(g.items())}
 out["disk"]["files_growth_bytes"] = {k: v[1] - v[0] for k, v in sorted(g.items())}
 # Durable growth: database main files + log buffer files (WAL/SHM are reused, bounded scratch).
-dur = sum(v[1] - v[0] for k, v in g.items() if k in ("minicron.db", "minicron-logs.db", "log-buffers/other"))
+dur = sum(v[1] - v[0] for k, v in g.items() if k in ("minicrond.db", "minicrond-logs.db", "log-buffers/other"))
 out["disk"]["durable_growth_kib_per_min"] = round(dur / 1024 / (win / 60), 1)
-out["disk"]["metadata_db_growth_kib_per_min"] = round((g.get("minicron.db", [0, 0])[1] - g.get("minicron.db", [0, 0])[0]) / 1024 / (win / 60), 1)
-out["disk"]["archive_db_growth_kib_per_min"] = round((g.get("minicron-logs.db", [0, 0])[1] - g.get("minicron-logs.db", [0, 0])[0]) / 1024 / (win / 60), 1)
+out["disk"]["metadata_db_growth_kib_per_min"] = round((g.get("minicrond.db", [0, 0])[1] - g.get("minicrond.db", [0, 0])[0]) / 1024 / (win / 60), 1)
+out["disk"]["archive_db_growth_kib_per_min"] = round((g.get("minicrond-logs.db", [0, 0])[1] - g.get("minicrond-logs.db", [0, 0])[0]) / 1024 / (win / 60), 1)
 out["disk"]["log_buffer_growth_kib_per_min"] = round((g.get("log-buffers/other", [0, 0])[1] - g.get("log-buffers/other", [0, 0])[0]) / 1024 / (win / 60), 1)
 
 for which in ("start", "end"):
@@ -124,9 +124,9 @@ out["ready_s"] = round(float(meta["t_ready"]) - float(meta["t_start"]), 3)
 tmp = tempfile.mkdtemp()
 try:
     for f in os.listdir(os.path.join(d, "data")):
-        if f.startswith("minicron.db"):
+        if f.startswith("minicrond.db"):
             shutil.copy(os.path.join(d, "data", f), tmp)
-    db = sqlite3.connect(os.path.join(tmp, "minicron.db"))
+    db = sqlite3.connect(os.path.join(tmp, "minicrond.db"))
     w0 = int(float(meta["window_start"]) * 1e6); w1 = int(float(meta["window_end"]) * 1e6)
     rs = db.execute("select run_id, job, kind, status, trigger, scheduled_for_us, queued_us, started_us, ended_us, log_bytes, end_reason "
                     "from runs where coalesce(scheduled_for_us, queued_us) >= ? and coalesce(scheduled_for_us, queued_us) < ? "

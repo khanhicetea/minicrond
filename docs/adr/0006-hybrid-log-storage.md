@@ -8,7 +8,7 @@
 
 Run logs use a two-tier design. Live runs keep writing compressed zstd chunk
 files under `data/logs/<run_id>/` first (unchanged hot path, crash-safe). A
-separate SQLite database, `data/minicron-logs.db` (never `minicron.db`), is the
+separate SQLite database, `data/minicrond-logs.db` (never `minicrond.db`), is the
 long-term archive:
 
 1. **Cron job logs** stay in the file buffer while the run executes; when the
@@ -40,7 +40,7 @@ migration from skipping frames. Replaying a chunk preserves its archive age.
 
 ## Consequences
 
-- The data directory holds two databases; copying `minicron.db` alone no longer
+- The data directory holds two databases; copying `minicrond.db` alone no longer
   preserves run output. Rollback guidance (stop daemon, copy whole data dir)
   still applies.
 - `log_max` defaults to 100 MiB and bounds raw bytes still in the file buffer;

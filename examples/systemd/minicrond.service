@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/minicrond daemon --config %h/.config/minicron/minicron.toml
+ExecStart=%h/.local/bin/minicrond daemon --config %h/.config/minicrond/minicrond.toml
 Restart=on-failure
 NoNewPrivileges=true
 PrivateTmp=true

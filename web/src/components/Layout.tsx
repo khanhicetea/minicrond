@@ -21,7 +21,7 @@ function ThemeToggle() {
   const toggle = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
-    localStorage.setItem('minicron_theme', next);
+    localStorage.setItem('minicrond_theme', next);
     setTheme(next);
   };
   return <IconButton icon={theme === 'dark' ? 'sun' : 'moon'} label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} onClick={toggle} />;

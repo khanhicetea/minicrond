@@ -21,11 +21,11 @@ func TestAPIBaseURLEnvironment(t *testing.T) {
 	t.Setenv("MINICRON_URL", "http://old.example")
 	t.Setenv("BASE_PATH", "/old")
 	t.Setenv("MINICROND_BASE_PATH", "")
-	if got := apiBaseURL(); got != "http://minicron" {
+	if got := apiBaseURL(); got != "http://minicrond" {
 		t.Fatalf("legacy BASE_PATH affected URL: %q", got)
 	}
 	t.Setenv("MINICROND_BASE_PATH", "/new/")
-	if got := apiBaseURL(); got != "http://minicron/new" {
+	if got := apiBaseURL(); got != "http://minicrond/new" {
 		t.Fatalf("new base path: %q", got)
 	}
 	t.Setenv("MINICROND_URL", "http://example.com/prefix/")
@@ -59,7 +59,7 @@ func TestCLIReusesSmallUnixConnectionSet(t *testing.T) {
 	t.Setenv("MINICROND_DATA", dir)
 	t.Setenv("MINICROND_URL", "")
 	t.Cleanup(closeClient)
-	listener, err := net.Listen("unix", filepath.Join(dir, "minicron.sock"))
+	listener, err := net.Listen("unix", filepath.Join(dir, "minicrond.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}

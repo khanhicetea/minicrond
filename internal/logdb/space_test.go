@@ -122,7 +122,7 @@ func TestCompactReturnsPrunedSpace(t *testing.T) {
 	if after := pragma(t, l.db, "page_count"); after*4 > before {
 		t.Fatalf("page count %d -> %d after pruning everything", before, after)
 	}
-	if info, err := os.Stat(filepath.Join(dir, "minicron-logs.db-wal")); err == nil && info.Size() != 0 {
+	if info, err := os.Stat(filepath.Join(dir, "minicrond-logs.db-wal")); err == nil && info.Size() != 0 {
 		t.Fatalf("WAL is %d bytes after a truncating checkpoint", info.Size())
 	}
 }
@@ -142,7 +142,7 @@ func TestReadPoolIsReadOnly(t *testing.T) {
 // A pre-0.6 archive (user_version set, no application_id) is refused.
 func TestPreReleaseSchemaRefused(t *testing.T) {
 	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

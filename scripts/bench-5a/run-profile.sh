@@ -124,12 +124,12 @@ write_config() { # scenario config-path
   "$BIN" validate "$cfg" >/dev/null
 }
 
-api() { curl -sS --max-time 5 --unix-socket "$DATA/minicron.sock" "http://minicron$1"; }
+api() { curl -sS --max-time 5 --unix-socket "$DATA/minicrond.sock" "http://minicrond$1"; }
 
 run_one() { # scenario rep
   local scen=$1 rep=$2 dir="$OUT/$scen-r$rep"
   rm -rf "$dir"; mkdir -p "$dir/ev"; mkdir -m 0700 "$dir/data"
-  EV="$dir/ev"; DATA="$dir/data"; local cfg="$dir/minicron.toml"
+  EV="$dir/ev"; DATA="$dir/data"; local cfg="$dir/minicrond.toml"
   write_config "$scen" "$cfg"
   echo "== $scen rep $rep -> $dir"
   local extra=()

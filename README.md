@@ -43,7 +43,7 @@ database or log storage fails ([ADR-16](docs/adr/0016-execution-first.md)).
 | Execution | `command` (via shell) or `argv` (direct exec), clean/inherit env, `env`/`secret_env`/`env_file`, `working_dir`, `run_as` (root daemon), `timeout` + `grace` + configurable `stop_signal`, process-group control, `success_codes` |
 | Workers | `autostart`, `restart = always\|on-failure\|never` with `restart_delay`, `max_restart_attempts`, `healthy_after`; start/stop/restart via API/UI/CLI |
 | Logs | stdout/stderr tagged frames, per-run `log_max` budget with `drop_old`/`drop_new`, live SSE streaming, ANSI-aware web viewer, raw download |
-| Storage | `minicron.db` (definitions, runs, audit) + `minicron-logs.db` (archive) with WAL; rolling age budget pruned daily; per-definition `keep_runs`/`keep_for` |
+| Storage | `minicrond.db` (definitions, runs, audit) + `minicrond-logs.db` (archive) with WAL; rolling age budget pruned daily; per-definition `keep_runs`/`keep_for` |
 | API | REST `/api/v1/*` + SSE log stream, OpenAPI 3.1 contract served at `/openapi.json`, `/healthz` + `/readyz` |
 | Web UI | Jobs & Workers, definition editor (schema-validated) with cloning, run history + live logs, run metrics (15m–30d), settings & diagnostics — embedded in the binary |
 | Alerts | DB-backed Telegram channels managed in the UI/API; jobs/workers opt in with `alerts`; each channel picks the run statuses it delivers (`notify_on`: failed, timeout, skipped, missed, succeeded, worker exhausted), asynchronously with retries |
@@ -57,30 +57,30 @@ On Linux, build from source (or use a [release binary](docs/getting-started.md))
 
 ```sh
 CGO_ENABLED=0 go build -o minicrond ./cmd/minicrond
-./minicrond init       # creates ./minicron.toml (mode 0600)
+./minicrond init       # creates ./minicrond.toml (mode 0600)
 ./minicrond validate   # check bootstrap settings before starting
 ./minicrond daemon     # foreground; leave running in this terminal
 ```
 
 This is a **user-mode** instance. Its default data directory is
-`~/.local/share/minicron` (private, mode 0700); config and data paths can be
+`~/.local/share/minicrond` (private, mode 0700); config and data paths can be
 changed with `MINICROND_CONFIG` / `MINICROND_DATA`. The bootstrap TOML controls
 the server, scheduler, storage, logs, and defaults — **not** editable job
-definitions or alert channels. Set `MINICROND_BASE_PATH=/tools/minicron` to serve the web UI and API
+definitions or alert channels. Set `MINICROND_BASE_PATH=/tools/minicrond` to serve the web UI and API
 under that URL prefix (including health and OpenAPI routes). On first boot,
 read the one-time web/API token from
-`~/.local/share/minicron/initial-token` and remove that file:
+`~/.local/share/minicrond/initial-token` and remove that file:
 
 ```sh
-cat ~/.local/share/minicron/initial-token
-rm ~/.local/share/minicron/initial-token
+cat ~/.local/share/minicrond/initial-token
+rm ~/.local/share/minicrond/initial-token
 ```
 
 Open <http://127.0.0.1:7423> and paste the token. The local CLI uses the
 private Unix socket, so it does not need a token. If the token is lost, use
 `./minicrond token --rotate` locally; this revokes the previous token.
 
-For a socket-only service, set `server.tcp_enabled = false` in `minicron.toml`
+For a socket-only service, set `server.tcp_enabled = false` in `minicrond.toml`
 and restart. The CLI, full API, and UI remain available on the private Unix
 socket; no TCP port or initial bearer token is created. See
 [proxy and Unix-only operations](docs/operations.md#unix-only-and-proxied-operation)
@@ -88,13 +88,13 @@ before publishing the UI through a reverse proxy.
 
 **Production alternative:** install the binary at a permanent path and use
 `sudo minicrond service install` for a root systemd service (config
-`/etc/minicrond/config.toml`, data `/var/lib/minicron`), or
+`/etc/minicrond/config.toml`, data `/var/lib/minicrond`), or
 `sudo minicrond service install --user alice --port 7424` for a daemon running
 as Alice. Installation enables and starts the unit. These are separate
 instances from the foreground user daemon; stop the foreground daemon before
 installing another on the same port, and target the right data directory for
-CLI commands (e.g. `sudo env MINICROND_DATA=/var/lib/minicron minicrond status`
-for the root service). Its first token is in `/var/lib/minicron/initial-token`;
+CLI commands (e.g. `sudo env MINICROND_DATA=/var/lib/minicrond minicrond status`
+for the root service). Its first token is in `/var/lib/minicrond/initial-token`;
 read and remove it as root. See [service operations](docs/operations.md#systemd-installation).
 
 ### 2. Add jobs and workers
@@ -153,7 +153,7 @@ secrets, retention, and worker restart controls.
 ### 3. Operate and inspect
 
 In a second terminal, with the same user's data directory (for a root
-service, run these as root with `MINICROND_DATA=/var/lib/minicron`):
+service, run these as root with `MINICROND_DATA=/var/lib/minicrond`):
 
 ```sh
 ./minicrond status                 # uptime, schema, token fingerprint
@@ -176,7 +176,7 @@ then comments out migrated cron lines:
 
 ```sh
 minicrond crontab   # current user's crontab -> current user's daemon
-sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicrond minicrond crontab --user alice
 # Alice's crontab -> root service; imported jobs get run_as=alice
 ```
 
@@ -198,16 +198,16 @@ security, and troubleshooting.
 - [Architecture](docs/architecture.md) — components, run lifecycle, storage design
 - [ADRs](docs/adr/) — accepted design decisions and their trade-offs
 
-Machine-readable contracts, CI-verified: `schema/minicron.schema.json`
+Machine-readable contracts, CI-verified: `schema/minicrond.schema.json`
 (config; also `minicrond schema`) and `cmd/minicrond/openapi.json`.
 
 ## Operations notes
 
-- Data defaults to `~/.local/share/minicron` and must stay mode 0700;
+- Data defaults to `~/.local/share/minicrond` and must stay mode 0700;
   SQLite runs WAL — never write the DBs directly.
 - Back up and restore the **complete** data directory together
-  (`minicron.db`, `minicron-logs.db`, WAL files, `log-archive/`, `logs/`), daemon
-  stopped. Copying only `minicron.db` loses log history.
+  (`minicrond.db`, `minicrond-logs.db`, WAL files, `log-archive/`, `logs/`), daemon
+  stopped. Copying only `minicrond.db` loses log history.
 - Rotate a lost token locally: `minicrond token --rotate`.
 - TCP is plaintext HTTP, loopback by default; non-loopback binds require
   the explicit `allow_insecure_remote` opt-in (use only behind TLS).
@@ -225,7 +225,7 @@ make check                          # tests + vet + generated-contracts diff
 make contracts                      # verify schema/OpenAPI against generators
 ```
 
-Generated contracts are checked in: `schema/minicron.schema.json`,
+Generated contracts are checked in: `schema/minicrond.schema.json`,
 `cmd/minicrond/openapi.json`, and `web/src/generated/model.ts` (Tygo;
 `make generate-types` after changing `internal/model`). Release CI builds
 linux/amd64 + linux/arm64, runs `govulncheck`, and attaches checksums and

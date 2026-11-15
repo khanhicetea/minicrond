@@ -87,7 +87,7 @@ command = "true"
 }
 
 func TestLoadExplicitZeroOverridesConfigDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, `
 [defaults]
 timeout = 60

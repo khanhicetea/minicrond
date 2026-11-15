@@ -21,7 +21,7 @@ func TestStartFailureReleasesTCPListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := New(nil, nil, nil, nil, nil, nil, "test")
-	socket := filepath.Join(t.TempDir(), "missing", "minicron.sock")
+	socket := filepath.Join(t.TempDir(), "missing", "minicrond.sock")
 	if err := s.Start(addr, socket); err == nil {
 		_ = s.Shutdown(context.Background())
 		t.Fatal("expected Unix listener failure")
@@ -34,7 +34,7 @@ func TestStartFailureReleasesTCPListener(t *testing.T) {
 }
 
 func TestStartPreservesNonSocketAtUnixPath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.sock")
+	path := filepath.Join(t.TempDir(), "minicrond.sock")
 	content := []byte("keep me")
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestStartPreservesNonSocketAtUnixPath(t *testing.T) {
 }
 
 func TestStartPreservesActiveUnixSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.sock")
+	path := filepath.Join(t.TempDir(), "minicrond.sock")
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestStartPreservesActiveUnixSocket(t *testing.T) {
 }
 
 func TestRemoveStaleUnixSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.sock")
+	path := filepath.Join(t.TempDir(), "minicrond.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestRemoveStaleUnixSocket(t *testing.T) {
 
 func TestPeerUID(t *testing.T) {
 	// Keep the path short enough for Darwin's sockaddr_un.
-	dir, err := os.MkdirTemp("/tmp", "minicron-peer-")
+	dir, err := os.MkdirTemp("/tmp", "minicrond-peer-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestPeerListenerRejectsWrongUID(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root is intentionally allowed to access every local socket")
 	}
-	path := filepath.Join(t.TempDir(), "minicron.sock")
+	path := filepath.Join(t.TempDir(), "minicrond.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)

@@ -67,7 +67,7 @@ func BenchmarkSchedulerIdle(b *testing.B) {
 					time.Sleep(time.Millisecond)
 				}
 			}
-			walPath := filepath.Join(dir, "minicron.db-wal")
+			walPath := filepath.Join(dir, "minicrond.db-wal")
 			walSize := func() int64 {
 				info, err := os.Stat(walPath)
 				if err == nil {

@@ -207,7 +207,7 @@ func TestMaintenanceDurationsAreRecorded(t *testing.T) {
 func TestDiskUsageCachesAPartialResultWithItsError(t *testing.T) {
 	f := newBudgetFixture(t)
 	f.completedRun("r", 10<<10)
-	if err := os.Remove(filepath.Join(f.dir, "minicron-logs.db")); err != nil {
+	if err := os.Remove(filepath.Join(f.dir, "minicrond-logs.db")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.DiskUsageCached(t.Context(), time.Hour); err == nil {

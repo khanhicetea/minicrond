@@ -24,7 +24,7 @@ func userPlan(t *testing.T, port int) (*servicePlan, string) {
 	return &servicePlan{
 		unitName:   "minicrond@" + u.Username,
 		configPath: filepath.Join(home, ".minicrond", "config.toml"),
-		dataDir:    filepath.Join(home, ".local", "share", "minicron"),
+		dataDir:    filepath.Join(home, ".local", "share", "minicrond"),
 		port:       port,
 		runAs:      &u2,
 	}, home

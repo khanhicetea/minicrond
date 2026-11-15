@@ -79,7 +79,7 @@ func benchmarkSweepRetentionArchived(b *testing.B, runCount int, blob []byte) {
 		b.Fatal(err)
 		return 0
 	}
-	beforeWAL := walSize(filepath.Join(dir, "minicron.db-wal")) + walSize(filepath.Join(dir, "minicron-logs.db-wal"))
+	beforeWAL := walSize(filepath.Join(dir, "minicrond.db-wal")) + walSize(filepath.Join(dir, "minicrond-logs.db-wal"))
 	beforeWrite, haveWrite := linuxProcessWriteBytes()
 	b.SetBytes(int64((runCount - 1) * len(blob)))
 	b.ReportAllocs()
@@ -95,7 +95,7 @@ func benchmarkSweepRetentionArchived(b *testing.B, runCount int, blob []byte) {
 	if err != nil || archivedRuns != 1 || chunks != 1 {
 		b.Fatalf("retained archive = %d runs, %d chunks: %v", archivedRuns, chunks, err)
 	}
-	b.ReportMetric(float64(walSize(filepath.Join(dir, "minicron.db-wal"))+walSize(filepath.Join(dir, "minicron-logs.db-wal"))-beforeWAL)/float64(runCount-1), "wal-B/run")
+	b.ReportMetric(float64(walSize(filepath.Join(dir, "minicrond.db-wal"))+walSize(filepath.Join(dir, "minicrond-logs.db-wal"))-beforeWAL)/float64(runCount-1), "wal-B/run")
 	if haveWrite && haveAfterWrite && afterWrite > beforeWrite {
 		b.ReportMetric(float64(afterWrite-beforeWrite)/float64(runCount-1), "write-B/run")
 	}

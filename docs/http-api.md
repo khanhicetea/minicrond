@@ -4,16 +4,16 @@ Base URL: the daemon's `server.bind` (default `http://127.0.0.1:7423`)
 when TCP is enabled. The same routes are served on the private Unix socket.
 The full OpenAPI 3.1 contract is checked in at
 [`cmd/minicrond/openapi.json`](../cmd/minicrond/openapi.json) and served
-live at `GET /openapi.json`. If `MINICROND_BASE_PATH=/tools/minicron` is set on the
-daemon, prepend `/tools/minicron` to every route in this document and open the
-web UI at `/tools/minicron/`.
+live at `GET /openapi.json`. If `MINICROND_BASE_PATH=/tools/minicrond` is set on the
+daemon, prepend `/tools/minicrond` to every route in this document and open the
+web UI at `/tools/minicrond/`.
 
 ## Authentication
 
 | Transport | Auth |
 |---|---|
 | TCP (`server.bind`, enabled by default) | `Authorization: Bearer <token>` required for every `/api/` path and `/openapi.json` |
-| Unix socket (`minicron.sock`) | Token-free; the daemon UID or root is authorized by peer credentials |
+| Unix socket (`minicrond.sock`) | Token-free; the daemon UID or root is authorized by peer credentials |
 
 Public without a token over TCP: `GET /healthz`, `GET /readyz` (no detail
 disclosed), and the web UI shell + bundled assets.

@@ -20,8 +20,8 @@ test('terminal hyperlinks are stripped and ANSI styles use only allowed CSS clas
 test('job links keep attacker-controlled names in an encoded local path', () => {
   for (const name of ['javascript:alert(1)', '//evil.example/', '"><img src=x onerror=alert(1)>']) {
     const path = jobPath(name);
-    const url = new URL(path, 'https://minicron.example');
-    assert.equal(url.origin, 'https://minicron.example');
+    const url = new URL(path, 'https://minicrond.example');
+    assert.equal(url.origin, 'https://minicrond.example');
     assert.equal(decodeURIComponent(url.pathname.slice('/jobs/'.length)), name);
   }
 });

@@ -29,11 +29,11 @@ const RangeContext = createContext<RangeContextValue>({ range: '15m', setRange: 
 /** Global time range selected in the header; scopes overview + metrics. */
 export function RangeProvider({ children }: { children: ReactNode }) {
   const [range, setRange] = useState<RangeKey>(() => {
-    const stored = localStorage.getItem('minicron_range');
+    const stored = localStorage.getItem('minicrond_range');
     return stored === '15m' || stored === '1h' || stored === '24h' || stored === '7d' || stored === '30d' ? stored : '15m';
   });
   useEffect(() => {
-    localStorage.setItem('minicron_range', range);
+    localStorage.setItem('minicrond_range', range);
   }, [range]);
   const value = { range, setRange, ms: RANGE_MS[range] };
   return <RangeContext.Provider value={value}>{children}</RangeContext.Provider>;

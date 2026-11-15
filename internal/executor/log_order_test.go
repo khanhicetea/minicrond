@@ -90,7 +90,7 @@ func TestStartupLogAndCaptureDoNotWaitForMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	db, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

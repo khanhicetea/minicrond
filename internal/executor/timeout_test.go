@@ -79,7 +79,7 @@ func TestTimeoutNotDelayedByBlockedStartPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestTimeoutNotDelayedByBlockedSystemLog(t *testing.T) {
 func TestShutdownDoesNotWaitForStuckAdmission(t *testing.T) {
 	dir, st, s := resilienceService(t, Options{})
 	d, hash := putJob(t, st, model.Definition{Name: "stuck-admission", Kind: model.KindJob, Command: "sleep 30", Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestStalledSystemLogDoesNotBlockFinalization(t *testing.T) {
 func TestBeginShutdownReleasesQueuedTriggers(t *testing.T) {
 	dir, st, s := resilienceService(t, Options{})
 	d, hash := putJob(t, st, model.Definition{Name: "queued-admission", Kind: model.KindJob, Command: "sleep 30", Shell: "/bin/sh", OnOverlap: "parallel", SuccessCodes: []int{0}})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

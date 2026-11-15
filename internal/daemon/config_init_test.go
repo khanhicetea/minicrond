@@ -13,7 +13,7 @@ import (
 
 func TestConfigInitRunsBeforeReady(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	marker := filepath.Join(dir, "initialized")
 	content := "[server]\ntcp_enabled=false\n[[init]]\nname='prepare'\ncommand='touch " + marker + "'\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -60,7 +60,7 @@ func TestConfigInitRunsBeforeReady(t *testing.T) {
 
 func TestFailedConfigInitStopsStartup(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n[[init]]\nname='fail'\ncommand='exit 7'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -1282,7 +1282,7 @@ func (s *Server) rawPage(parent context.Context, out io.Writer, reader *logstore
 		case logstore.Stderr:
 			_, err = io.WriteString(out, "[err] ")
 		case logstore.System:
-			_, err = io.WriteString(out, "[minicron] ")
+			_, err = io.WriteString(out, "[minicrond] ")
 		}
 		if err == nil {
 			_, err = out.Write(f.Payload)
@@ -1484,7 +1484,7 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/toml")
-	w.Header().Set("Content-Disposition", `attachment; filename="minicron-export.toml"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="minicrond-export.toml"`)
 	w.Write(body)
 }
 

@@ -167,7 +167,7 @@ func TestFileBytesCountsDatabaseAndWAL(t *testing.T) {
 	if err != nil || db <= 0 || wal < 20*(32<<10) {
 		t.Fatalf("FileBytes = db %d wal %d, %v; want the WAL to hold the written blobs", db, wal, err)
 	}
-	if !strings.HasSuffix(l.path, "minicron-logs.db") {
+	if !strings.HasSuffix(l.path, "minicrond-logs.db") {
 		t.Fatalf("path = %s", l.path)
 	}
 }

@@ -14,7 +14,7 @@
 ## Context
 
 Before this change every execution step depended on a successful metadata
-(`minicron.db`) write:
+(`minicrond.db`) write:
 
 | Step | Old behavior when the write failed |
 |---|---|

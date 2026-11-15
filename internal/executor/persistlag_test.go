@@ -72,7 +72,7 @@ func TestPersistenceLagDuringStorageOutage(t *testing.T) {
 		r, err := st.Run(t.Context(), run.ID)
 		return err == nil && r.Status == "running"
 	})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -64,15 +64,15 @@ resolve_bin() {
 }
 
 # Echo the running daemon's pid, or fail if it is not running.
-# The daemon writes its pid to $MINICROND_DATA/minicron.lock while holding flock.
+# The daemon writes its pid to $MINICROND_DATA/minicrond.lock while holding flock.
 daemon_pid() {
-	[ -f "$MINICROND_DATA/minicron.lock" ] || return 1
-	pid=$(head -n1 "$MINICROND_DATA/minicron.lock" 2>/dev/null)
+	[ -f "$MINICROND_DATA/minicrond.lock" ] || return 1
+	pid=$(head -n1 "$MINICROND_DATA/minicrond.lock" 2>/dev/null)
 	case $pid in
 	'' | *[!0-9]*) return 1 ;;
 	esac
 	[ -r "/proc/$pid/comm" ] || return 1
-	grep -Eq '^(minicrond|minicron)$' "/proc/$pid/comm" 2>/dev/null || return 1
+	grep -Eq '^minicrond$' "/proc/$pid/comm" 2>/dev/null || return 1
 	echo "$pid"
 }
 

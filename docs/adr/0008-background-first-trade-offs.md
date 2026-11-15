@@ -119,7 +119,7 @@ changed the finalizer limits and the execution-state persistence rule.
 6. A09: the missed count under `catch_up=none` is a lower bound above 100,000 occurrences and is only warn-logged; no flag in the run model or API.
 7. A15/ADR-9 caps that are constants (finalizer 256/4×/2 min — since ADR-16 a single 1024 cap with no inline hold — archiver 4096) may need configuration if operators need them.
 8. Embedded web bundle (`internal/api/assets`) was not rebuilt; the UI does not render the SSE `gap` event. Run `make build-web` before release.
-9. Metadata growth (soft-deleted definitions, peak `minicron.db` size) and writer-connection metadata reads on state-feeding paths are unchanged.
+9. Metadata growth (soft-deleted definitions, peak `minicrond.db` size) and writer-connection metadata reads on state-feeding paths are unchanged.
 
 ## Rollout and validation
 

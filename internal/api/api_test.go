@@ -85,27 +85,27 @@ func TestBasePath(t *testing.T) {
 		t.Fatalf("root UI assets: %d %s", root.Code, root.Body.String())
 	}
 	for _, invalid := range []string{
-		"minicron", "/bad//path", "/bad//", "/../bad", "/bad?query",
+		"minicrond", "/bad//path", "/bad//", "/../bad", "/bad?query",
 		`/bad"><script>alert(1)</script>`, "/bad&quote;", "/bad%22", "/bad\npath",
 	} {
 		if err := s.SetBasePath(invalid); err == nil {
 			t.Errorf("accepted invalid MINICROND_BASE_PATH %q", invalid)
 		}
 	}
-	if err := s.SetBasePath("/tools/minicron/"); err != nil {
+	if err := s.SetBasePath("/tools/minicrond/"); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/", "/api/v1/daemon", "/tools/minicrons/api/v1/daemon"} {
+	for _, path := range []string{"/", "/api/v1/daemon", "/tools/minicronds/api/v1/daemon"} {
 		if rec := call(s, false, "GET", path, token, "", nil); rec.Code != 404 {
 			t.Errorf("unprefixed path %q: %d", path, rec.Code)
 		}
 	}
-	if rec := call(s, false, "GET", "/tools/minicron", "", "", nil); rec.Code != 301 || rec.Header().Get("Location") != "/tools/minicron/" {
+	if rec := call(s, false, "GET", "/tools/minicrond", "", "", nil); rec.Code != 301 || rec.Header().Get("Location") != "/tools/minicrond/" {
 		t.Errorf("base redirect: %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	for _, path := range []string{"/tools/minicron/", "/tools/minicron/jobs", "/tools/minicron/runs/example"} {
+	for _, path := range []string{"/tools/minicrond/", "/tools/minicrond/jobs", "/tools/minicrond/runs/example"} {
 		rec := call(s, false, "GET", path, "", "", nil)
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/tools/minicron/" />`) || !strings.Contains(rec.Body.String(), `src="assets/app-`) || !strings.Contains(rec.Body.String(), `href="assets/style-`) {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `<base href="/tools/minicrond/" />`) || !strings.Contains(rec.Body.String(), `src="assets/app-`) || !strings.Contains(rec.Body.String(), `href="assets/style-`) {
 			t.Errorf("UI path %q: %d %s", path, rec.Code, rec.Body.String())
 		}
 	}
@@ -122,7 +122,7 @@ func TestBasePath(t *testing.T) {
 	if jsCount != 1 {
 		t.Errorf("embedded UI contains %d JavaScript files, want one bundle", jsCount)
 	}
-	for _, path := range []string{"/tools/minicron/api/v1/daemon", "/tools/minicron/openapi.json"} {
+	for _, path := range []string{"/tools/minicrond/api/v1/daemon", "/tools/minicrond/openapi.json"} {
 		if rec := call(s, false, "GET", path, "", "", nil); rec.Code != 401 {
 			t.Errorf("unauthed API path %q: %d", path, rec.Code)
 		}
@@ -130,21 +130,21 @@ func TestBasePath(t *testing.T) {
 			t.Errorf("authed API path %q: %d", path, rec.Code)
 		}
 	}
-	if rec := call(s, false, "POST", "/tools/minicron/api/v1/jobs", token, `{"name":"prefixed","command":"true"}`, nil); rec.Code != 200 {
+	if rec := call(s, false, "POST", "/tools/minicrond/api/v1/jobs", token, `{"name":"prefixed","command":"true"}`, nil); rec.Code != 200 {
 		t.Errorf("prefixed API mutation: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := call(s, false, "GET", "/tools/minicron/api/v1/jobs/prefixed", token, "", nil); rec.Code != 200 {
+	if rec := call(s, false, "GET", "/tools/minicrond/api/v1/jobs/prefixed", token, "", nil); rec.Code != 200 {
 		t.Errorf("prefixed path parameter: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := call(s, false, "GET", "/tools/minicron/healthz", "", "", nil); rec.Code != 200 {
+	if rec := call(s, false, "GET", "/tools/minicrond/healthz", "", "", nil); rec.Code != 200 {
 		t.Errorf("prefixed health probe: %d", rec.Code)
 	}
-	if rec := call(s, false, "GET", "/tools/minicron/api/v1/missing", token, "", nil); rec.Code != 404 || !strings.Contains(rec.Body.String(), "not_found") {
+	if rec := call(s, false, "GET", "/tools/minicrond/api/v1/missing", token, "", nil); rec.Code != 404 || !strings.Contains(rec.Body.String(), "not_found") {
 		t.Errorf("unknown API: %d %s", rec.Code, rec.Body.String())
 	}
 	for name := range cachedAssets() {
 		if strings.HasSuffix(name, ".js") {
-			if rec := call(s, false, "GET", "/tools/minicron/assets/"+name, "", "", nil); rec.Code != 200 {
+			if rec := call(s, false, "GET", "/tools/minicrond/assets/"+name, "", "", nil); rec.Code != 200 {
 				t.Errorf("asset: %d", rec.Code)
 			}
 			break
@@ -394,7 +394,7 @@ func TestContentSecurityPolicyOnBrowserResponses(t *testing.T) {
 		t.Fatal("missing JavaScript bundle")
 	}
 	for _, local := range []bool{false, true} {
-		for _, base := range []string{"", "/tools/minicron"} {
+		for _, base := range []string{"", "/tools/minicrond"} {
 			if err := s.SetBasePath(base); err != nil {
 				t.Fatal(err)
 			}
@@ -442,7 +442,7 @@ func TestIframeEnvironmentOnBrowserResponses(t *testing.T) {
 		t.Run(tt.value, func(t *testing.T) {
 			t.Setenv("MINICROND_ALLOW_IFRAME", tt.value)
 			for _, local := range []bool{false, true} {
-				for _, base := range []string{"", "/tools/minicron"} {
+				for _, base := range []string{"", "/tools/minicrond"} {
 					if err := s.SetBasePath(base); err != nil {
 						t.Fatal(err)
 					}

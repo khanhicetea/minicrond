@@ -25,7 +25,7 @@ Check the build:
 ## 2. Create the bootstrap config
 
 ```sh
-./minicrond init          # writes ./minicron.toml (mode 0600)
+./minicrond init          # writes ./minicrond.toml (mode 0600)
 ./minicrond validate      # strict TOML: unknown fields are errors
 ```
 
@@ -41,17 +41,17 @@ documented in [configuration.md](configuration.md).
 
 On first boot the daemon:
 
-1. creates the data directory (`~/.local/share/minicron` by default) and
+1. creates the data directory (`~/.local/share/minicrond` by default) and
    requires it to be private (mode 0700),
-2. creates `minicron.db` (definitions + run history) and
-   `minicron-logs.db` (log archive), both SQLite with WAL,
+2. creates `minicrond.db` (definitions + run history) and
+   `minicrond-logs.db` (log archive), both SQLite with WAL,
 3. writes the initial API bearer token **once** to the mode-0600 file
    `initial-token` in the data directory, then never again.
 
 Read the token and remove the file:
 
 ```sh
-DATA=~/.local/share/minicron
+DATA=~/.local/share/minicrond
 cat "$DATA/initial-token" && rm "$DATA/initial-token"
 ```
 
@@ -125,7 +125,7 @@ sudo ./minicrond service uninstall [--user alice]
 ```
 
 The root daemon reads `/etc/minicrond/config.toml` and stores data under
-`/var/lib/minicron`; per-user daemons read `~USER/.minicrond/config.toml`
+`/var/lib/minicrond`; per-user daemons read `~USER/.minicrond/config.toml`
 and run as that user. See [operations.md](operations.md) for details.
 
 To migrate existing cron jobs, run the interactive import against the desired
@@ -133,7 +133,7 @@ To migrate existing cron jobs, run the interactive import against the desired
 
 ```sh
 minicrond crontab  # run as Alice: Alice's crontab -> Alice's user daemon
-sudo env MINICROND_DATA=/var/lib/minicron minicrond crontab --user alice
+sudo env MINICROND_DATA=/var/lib/minicrond minicrond crontab --user alice
 # Alice's crontab -> root service, with every imported job set to run_as=alice
 ```
 

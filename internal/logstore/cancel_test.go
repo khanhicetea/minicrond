@@ -212,7 +212,7 @@ func TestStopArchiverCancelsWorkerBlockedOnArchiveSlot(t *testing.T) {
 // the shutdown deadline must still end the in-flight archive transaction.
 func TestStopArchiverCancelsArchiveTransactionBlockedOnDatabase(t *testing.T) {
 	s, _, dir := newArchiveStore(t)
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

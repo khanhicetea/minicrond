@@ -43,7 +43,7 @@ func returnsWithin(t *testing.T, what string, fn func() error) {
 // run's completion callback must not need a lock the reload holds.
 func TestReloadReplacesRunningWorker(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	write := func(command string) {
 		content := "[server]\ntcp_enabled=false\n[[worker]]\nname='w'\ncommand='" + command + "'\ngrace=1\n"
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -76,7 +76,7 @@ func TestReloadReplacesRunningWorker(t *testing.T) {
 // The API path edits the registry and then reconciles.
 func TestReconcileDisablesRunningWorker(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

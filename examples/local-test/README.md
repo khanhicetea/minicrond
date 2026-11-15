@@ -1,7 +1,7 @@
-# local-test: real sandbox for hands-on testing of minicron
+# local-test: real sandbox for hands-on testing of minicrond
 
 A self-contained sandbox that runs the real daemon against real job scripts
-from this repository. Nothing touches your `~/.local/share/minicron`; all
+from this repository. Nothing touches your `~/.local/share/minicrond`; all
 state lives under `examples/local-test/.data/` (delete it to reset).
 
 ## Layout
@@ -14,8 +14,8 @@ examples/local-test/
 ├── smoke.sh       # end-to-end test: list/run/logs/failure/timeout/reload
 ├── mc             # CLI wrapper with sandbox env applied (uses unix socket)
 ├── common.sh      # shared helpers (sourced, not run directly)
-├── minicron.toml  # sandbox bootstrap config (bind 127.0.0.1:7423)
-├── jobs/          # example definitions included by minicron.toml
+├── minicrond.toml  # sandbox bootstrap config (bind 127.0.0.1:7423)
+├── jobs/          # example definitions included by minicrond.toml
 │   ├── hello.toml         # job: @every 1m, MINICROND_* metadata env
 │   ├── heartbeat.toml     # job: @every 2m, multi-line stdout
 │   ├── flaky.toml         # job: exits 42 -> recorded as failed
@@ -25,7 +25,7 @@ examples/local-test/
 ```
 
 The jobs reference `scripts/` through `$EXAMPLE_DIR`, which comes from the
-generated `env.local` via each definition's `env_file` (a real minicron
+generated `env.local` via each definition's `env_file` (a real minicrond
 feature). No absolute paths are checked in.
 
 ## Run it
@@ -49,7 +49,7 @@ Everyday commands (unix socket, no token needed):
 ./mc logs <run_id>               # tagged logs of that run
 ./mc run flaky --wait            # deliberate failure (exit 42)
 ./mc run slow --wait             # killed by its own timeout
-./mc reload                      # hot-reload after editing minicron.toml/jobs/
+./mc reload                      # hot-reload after editing minicrond.toml/jobs/
 ./mc token --rotate              # new bearer token for the web UI
 ./stop.sh
 ```
@@ -72,7 +72,7 @@ Web UI: open <http://127.0.0.1:7423> and paste the bearer token printed by
 
 ## HTTP mode (optional)
 
-The CLI defaults to the unix socket at `.data/minicron.sock` (no token). To
+The CLI defaults to the unix socket at `.data/minicrond.sock` (no token). To
 exercise the TCP API instead, set in `.env`:
 
 ```
@@ -83,7 +83,7 @@ MINICROND_TOKEN=<token from start.sh or ./mc token --rotate>
 ## Reset / troubleshoot
 
 - Full reset: `./stop.sh && rm -rf .data .env env.local`
-- Port 7423 busy: edit `bind` in `minicron.toml` (requires daemon restart)
+- Port 7423 busy: edit `bind` in `minicrond.toml` (requires daemon restart)
 - "data directory is locked": another daemon owns `.data`; `./stop.sh` first
 - No `go` toolchain: set `MINICROND_BIN` in `.env` or run `make build` at the
   repo root first

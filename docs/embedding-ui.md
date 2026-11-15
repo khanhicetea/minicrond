@@ -21,7 +21,7 @@ output, IDs and URLs, are untrusted data even over a local socket.
   3. `href="./` → `href="assets/` (all).
 - `BASE_PATH` denotes the URL prefix (configured on the daemon with
   `MINICROND_BASE_PATH`); it is an empty string at the origin root, otherwise a validated
-  absolute path prefix without a trailing slash (e.g. `/tools/minicron`).
+  absolute path prefix without a trailing slash (e.g. `/tools/minicrond`).
   Use a trailing slash in the HTML base. Redirect the bare prefix to its
   slash-terminated form. Do not accept arbitrary HTML in this value.
 - The SPA derives its routing/API prefix from that base tag. Every UI data

@@ -3,7 +3,7 @@
 minicrond has two configuration surfaces:
 
 1. **Bootstrap config** — the strict-TOML file the daemon loads at startup
-   (`minicron.toml` by default). It configures the *daemon*: server,
+   (`minicrond.toml` by default). It configures the *daemon*: server,
    scheduler, storage, logs, job defaults, and optional
    config-owned `[[init]]`, `[[job]]`, and `[[worker]]` entries. Unknown fields are errors.
 2. **Registry** — jobs, workers, and alert channels created/edited in the web UI or via the API.
@@ -12,9 +12,6 @@ minicrond has two configuration surfaces:
    `minicrond export`. Import is an explicit copy; imported files are not
    linked or watched. Config-owned definitions are mirrored into SQLite for
    scheduling and run history; the main TOML file remains authoritative for them.
-
-The `minicron`-prefixed identifiers (config filename, env vars, data paths,
-API paths) are retained compatibility names.
 
 ---
 
@@ -105,7 +102,7 @@ and `max_concurrent_runs` are unitless.
   `server.allow_insecure_remote = true`. TCP is plaintext HTTP; use the
   opt-in only behind a TLS-authenticated tunnel or reverse proxy.
 - `MINICROND_BASE_PATH` — optional daemon environment variable for serving the API and
-  web UI below a URL prefix, such as `/tools/minicron`. It must start with `/`
+  web UI below a URL prefix, such as `/tools/minicrond`. It must start with `/`
   and contain URL path segments made of letters, digits, `-`, `_`, `.`, or `~`.
   A trailing slash is accepted. The prefix applies to both TCP and Unix
   socket routes, including `/healthz`, `/readyz`, and `/openapi.json`.
@@ -228,8 +225,8 @@ and `max_concurrent_runs` are unitless.
   one is refused immediately (`503 read_busy`), so downloads cannot lock out
   JSON pages and metrics (with `slots = 1` a download necessarily does). Defaults suit about 1 CPU / 512 MiB. `0` selects the default.
   Changing them requires a daemon restart (reload rejects the change).
-- `storage.synchronous` — SQLite synchronous mode for `minicron.db` and
-  `minicron-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
+- `storage.synchronous` — SQLite synchronous mode for `minicrond.db` and
+  `minicrond-logs.db`. `"full"` (the default) fsyncs every commit. `"normal"`
   saves one fsync per commit and stays consistent after a crash, but can lose
   the most recent commits on power loss. Requires a daemon restart. With
   `"full"`, a run's metadata writes are still committed without their own
@@ -262,7 +259,7 @@ and `max_concurrent_runs` are unitless.
   enable/disable, import takeover, and manual trigger/start are rejected.
 
 Validate any file with `minicrond validate PATH`. The JSON Schema is
-`schema/minicron.schema.json` (also: `minicrond schema`).
+`schema/minicrond.schema.json` (also: `minicrond schema`).
 
 ---
 

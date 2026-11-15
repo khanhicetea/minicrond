@@ -6,7 +6,7 @@ import (
 )
 
 func TestQueueDefaultsAndValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "")
 	cfg, err := Load(path)
 	if err != nil {

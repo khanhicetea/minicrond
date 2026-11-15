@@ -6,10 +6,10 @@
 function detect(): boolean {
   try {
     if (new URLSearchParams(window.location.search).get('embed') === '1') {
-      sessionStorage.setItem('minicron_embed', '1');
+      sessionStorage.setItem('minicrond_embed', '1');
       return true;
     }
-    if (sessionStorage.getItem('minicron_embed') === '1') return true;
+    if (sessionStorage.getItem('minicrond_embed') === '1') return true;
     return window.self !== window.top;
   } catch {
     // Sandboxed frames can throw on storage access; treat them as embedded.

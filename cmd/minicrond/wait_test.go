@@ -20,7 +20,7 @@ func TestRunWaitPollsQueuedRunToTerminal(t *testing.T) {
 	t.Setenv("MINICROND_DATA", dir)
 	t.Setenv("MINICROND_URL", "")
 	t.Cleanup(closeClient)
-	listener, err := net.Listen("unix", filepath.Join(dir, "minicron.sock"))
+	listener, err := net.Listen("unix", filepath.Join(dir, "minicrond.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}

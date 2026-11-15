@@ -13,7 +13,7 @@ if (isEmbedded) document.documentElement.dataset.embed = 'true';
 
 // Apply the stored theme before first paint to avoid a wrong-theme flash.
 // The custom dark theme mirrors the reference design and is the default.
-const storedTheme = localStorage.getItem('minicron_theme');
+const storedTheme = localStorage.getItem('minicrond_theme');
 document.documentElement.dataset.theme =
   storedTheme === 'light' || storedTheme === 'dark'
     ? storedTheme

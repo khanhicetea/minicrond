@@ -17,7 +17,7 @@ import (
 // and never override a timezone the definition names itself.
 func TestAPIDefinitionsDefaultToSchedulerTimezone(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	write := func(timezone string) {
 		t.Helper()
 		content := "[server]\ntcp_enabled=false\n"
@@ -51,7 +51,7 @@ func TestAPIDefinitionsDefaultToSchedulerTimezone(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	socket := filepath.Join(d.DataDir, "minicron.sock")
+	socket := filepath.Join(d.DataDir, "minicrond.sock")
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
@@ -66,7 +66,7 @@ func TestAPIDefinitionsDefaultToSchedulerTimezone(t *testing.T) {
 		} else {
 			reader = bytes.NewReader(nil)
 		}
-		req, err := http.NewRequestWithContext(t.Context(), method, "http://minicron"+route, reader)
+		req, err := http.NewRequestWithContext(t.Context(), method, "http://minicrond"+route, reader)
 		if err != nil {
 			t.Fatal(err)
 		}

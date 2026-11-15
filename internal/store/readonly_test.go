@@ -24,7 +24,7 @@ func TestOpenReadOnlyDataDirectory(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"minicron.db-wal", "minicron.db-shm"} {
+	for _, name := range []string{"minicrond.db-wal", "minicrond.db-shm"} {
 		if _, err := os.Stat(dir + "/" + name); err == nil {
 			t.Fatalf("%s left after close", name)
 		}

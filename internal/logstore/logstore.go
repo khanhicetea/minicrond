@@ -2692,7 +2692,7 @@ func (s *Store) RawContext(ctx context.Context, runID string, w io.Writer) error
 				}
 			}
 			if f.Stream == System {
-				if _, err := io.WriteString(w, "[minicron] "); err != nil {
+				if _, err := io.WriteString(w, "[minicrond] "); err != nil {
 					return err
 				}
 			}

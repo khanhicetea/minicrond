@@ -73,7 +73,7 @@ type DiskPolicy struct {
 
 // DiskUsage is what the log tiers occupy on disk.
 type DiskUsage struct {
-	ArchiveBytes    int64 // minicron-logs.db plus its WAL and the archived file chunks
+	ArchiveBytes    int64 // minicrond-logs.db plus its WAL and the archived file chunks
 	ArchiveWALBytes int64 // the WAL part of ArchiveBytes
 	SealedBytes     int64 // buffers of runs without a writer, awaiting archival
 	HotBytes        int64 // buffers of runs with a live writer

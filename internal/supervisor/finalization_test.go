@@ -48,7 +48,7 @@ func TestWorkerRestartsWithoutWaitingForFinalization(t *testing.T) {
 	if _, err := st.PutDefinition(t.Context(), def, 0, "test"); err != nil {
 		t.Fatal(err)
 	}
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

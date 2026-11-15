@@ -563,7 +563,7 @@ func (c compiledSchedule) nextFire(after, anchor time.Time) (time.Time, error) {
 		}
 	}
 
-	// robfig/cron correctly skips nonexistent wall times. minicron's contract
+	// robfig/cron correctly skips nonexistent wall times. minicrond's contract
 	// instead coalesces any matching minute in a forward gap at the transition.
 	if transition, oldOffset, newOffset, ok := forwardTransition(after, candidate, c.loc); ok {
 		fixed := time.FixedZone("before-dst", oldOffset)

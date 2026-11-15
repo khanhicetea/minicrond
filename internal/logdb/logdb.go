@@ -1,5 +1,5 @@
 // Package logdb owns the long-term log archive: a SQLite database kept in its
-// own file (minicron-logs.db, separate from the main minicron.db). The file
+// own file (minicrond-logs.db, separate from the main minicrond.db). The file
 // based logstore buffer copies sealed chunks here so logs survive daemon
 // restarts in one queryable place while the live buffer stays small.
 package logdb
@@ -56,16 +56,16 @@ type LogDB struct {
 	stmts *sqlite.StmtCache
 }
 
-// FilesDirName is the directory next to minicron-logs.db that holds archived
+// FilesDirName is the directory next to minicrond-logs.db that holds archived
 // file chunks.
 const FilesDirName = "log-archive"
 
-// Open creates or opens <dataDir>/minicron-logs.db.
+// Open creates or opens <dataDir>/minicrond-logs.db.
 func Open(dataDir string, opt ...sqlite.Options) (*LogDB, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create log database directory: %w", err)
 	}
-	path := filepath.Join(dataDir, "minicron-logs.db")
+	path := filepath.Join(dataDir, "minicrond-logs.db")
 	db, err := sqlite.Open(path, opt...)
 	if err != nil {
 		return nil, fmt.Errorf("open log database: %w", err)
@@ -167,7 +167,7 @@ func (l *LogDB) initSchema(ctx context.Context) error {
 	return nil
 }
 
-// ApplicationID is stored in the SQLite header of minicron-logs.db ("MCRL").
+// ApplicationID is stored in the SQLite header of minicrond-logs.db ("MCRL").
 const ApplicationID = 0x4d43524c
 
 // A file chunk (ADR-20) has file_bytes > 0 and an empty blob. The partial

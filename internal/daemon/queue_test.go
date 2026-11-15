@@ -47,7 +47,7 @@ func waitDaemonReady(t *testing.T, d *Daemon) {
 // run that was executing at shutdown is interrupted, never replayed.
 func TestQueuedRunSurvivesDaemonRestart(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte(queueTestConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestQueuedRunSurvivesDaemonRestart(t *testing.T) {
 // Queue limits are fixed at startup; a reload that changes them is refused.
 func TestReloadRefusesQueueSettingChange(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte(queueTestConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ command='echo ran-after-init'
 // slot before [[init]] runs, which would fail init and abort startup.
 func TestInitRunsBeforeQueuedBacklogDrains(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	// First boot without init to build the backlog.
 	first := strings.Replace(queueInitConfig, "[[init]]\nname='prep'\ncommand='sleep 0.3'\n", "", 1)
 	if err := os.WriteFile(path, []byte(first), 0o600); err != nil {

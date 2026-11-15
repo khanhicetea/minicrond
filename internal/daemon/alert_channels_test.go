@@ -15,7 +15,7 @@ import (
 
 func TestDatabaseChannelLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n"), 0600); err != nil {
 		t.Fatal(err)
 	}

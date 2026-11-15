@@ -24,7 +24,7 @@ echo "==> validating config: $MINICROND_CONFIG"
 "$BIN" validate "$MINICROND_CONFIG"
 
 echo "==> starting daemon (data dir: $MINICROND_DATA)"
-rm -f "$MINICROND_DATA/minicron.sock"
+rm -f "$MINICROND_DATA/minicrond.sock"
 (
 	cd "$EXAMPLE_DIR"
 	nohup "$BIN" daemon --config "$MINICROND_CONFIG" --data-dir "$MINICROND_DATA" \

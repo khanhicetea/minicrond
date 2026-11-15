@@ -46,7 +46,7 @@ func TestUnixOnlyListenerAndTokenTransition(t *testing.T) {
 	}
 	bind := probe.Addr().String()
 	_ = probe.Close()
-	socket := filepath.Join(dir, "minicron.sock")
+	socket := filepath.Join(dir, "minicrond.sock")
 	if err := s.Start(bind, socket); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestUnixOnlyListenerAndTokenTransition(t *testing.T) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}, Timeout: time.Second}
 	for _, path := range []string{"/", "/openapi.json", "/api/v1/daemon"} {
-		resp, err := client.Get("http://minicron" + path)
+		resp, err := client.Get("http://minicrond" + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -111,7 +111,7 @@ func TestUnixOnlySSEAndDownloadWithoutBearer(t *testing.T) {
 		t.Fatalf("trigger: %d %s", run.Code, run.Body.String())
 	}
 	runID := decode(t, run)["run_id"].(string)
-	socket := filepath.Join(t.TempDir(), "minicron.sock")
+	socket := filepath.Join(t.TempDir(), "minicrond.sock")
 	if err := s.Start("unused", socket); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestUnixOnlySSEAndDownloadWithoutBearer(t *testing.T) {
 		"/api/v1/runs/" + runID + "/log/stream": "event: backlog_done",
 		"/api/v1/runs/" + runID + "/log/raw":    "streamed",
 	} {
-		resp, err := client.Get("http://minicron" + path)
+		resp, err := client.Get("http://minicrond" + path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ func TestMultipleUnixOnlyInstancesShareNoTCPPort(t *testing.T) {
 	for range 2 {
 		s := New(nil, nil, nil, nil, nil, nil, "test")
 		s.SetTCPEnabled(false)
-		if err := s.Start("127.0.0.1:7423", filepath.Join(t.TempDir(), "minicron.sock")); err != nil {
+		if err := s.Start("127.0.0.1:7423", filepath.Join(t.TempDir(), "minicrond.sock")); err != nil {
 			t.Fatalf("Unix-only instance startup: %v", err)
 		}
 		t.Cleanup(func() { _ = s.Shutdown(context.Background()) })

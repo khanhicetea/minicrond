@@ -28,10 +28,10 @@ test:
 
 check: test generate-types
 	go vet ./...
-	git diff --exit-code -- schema/minicron.schema.json cmd/minicrond/openapi.json web/src/generated/model.ts
+	git diff --exit-code -- schema/minicrond.schema.json cmd/minicrond/openapi.json web/src/generated/model.ts
 
 contracts:
-	cmp schema/minicron.schema.json cmd/minicrond/minicron.schema.json
+	cmp schema/minicrond.schema.json cmd/minicrond/minicrond.schema.json
 	go run ./cmd/openapi-gen | cmp - cmd/minicrond/openapi.json
 	python3 -m json.tool cmd/minicrond/openapi.json >/dev/null
 

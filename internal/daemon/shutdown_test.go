@@ -17,7 +17,7 @@ func TestShutdownIsBoundedWhileReloadWaitsOnLongGraceWorker(t *testing.T) {
 	t.Cleanup(func() { executorShutdownBudget = old })
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	write := func(command string) {
 		content := "[server]\ntcp_enabled=false\n[[worker]]\nname='w'\ncommand=\"" + command + "\"\ngrace=30\n"
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -54,7 +54,7 @@ func TestShutdownIsBoundedWhileReloadWaitsOnLongGraceWorker(t *testing.T) {
 func startTestDaemon(t *testing.T) (*Daemon, context.CancelFunc, chan error) {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 // ADR-10: the headroom rule is on by default; the byte budget and the
 // quarantine purge are opt-in.
 func TestDiskBudgetDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "")
 	cfg, err := Load(path)
 	if err != nil {
@@ -30,7 +30,7 @@ func TestDiskBudgetDefaults(t *testing.T) {
 }
 
 func TestDiskBudgetExplicitSettings(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[logs]\ndisk_budget=2048\ndisk_min_free=1024\nquarantine_keep_for=14\nquarantine_max_size=256\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestDiskBudgetExplicitSettings(t *testing.T) {
 // An explicit zero disables the headroom rule instead of selecting the default
 // (the A12 pattern: omitted and zero are different).
 func TestDiskMinFreeExplicitZeroDisablesHeadroom(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	mustWrite(t, path, "[logs]\ndisk_min_free=0\n")
 	cfg, err := Load(path)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestDiskMinFreeExplicitZeroDisablesHeadroom(t *testing.T) {
 }
 
 func TestDiskBudgetValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	for _, logs := range []string{
 		"disk_budget=-1", "disk_budget=1073741825", "disk_budget='5GiB'",
 		"disk_min_free=-1", "disk_min_free=1073741825", "disk_min_free='512MiB'",
@@ -86,16 +86,16 @@ func TestDiskBudgetValidation(t *testing.T) {
 // The schema served to the UI editor documents the same defaults and limits as
 // the code, and both embedded copies are identical.
 func TestSchemaDocumentsDiskBudgetSettings(t *testing.T) {
-	a, err := os.ReadFile("../../schema/minicron.schema.json")
+	a, err := os.ReadFile("../../schema/minicrond.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile("../../cmd/minicrond/minicron.schema.json")
+	b, err := os.ReadFile("../../cmd/minicrond/minicrond.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(a, b) {
-		t.Fatal("the two copies of minicron.schema.json differ")
+		t.Fatal("the two copies of minicrond.schema.json differ")
 	}
 	var schema struct {
 		Properties struct {

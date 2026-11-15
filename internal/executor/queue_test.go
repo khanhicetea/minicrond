@@ -137,7 +137,7 @@ func TestQueuePersistenceUnavailableRejects(t *testing.T) {
 	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
 		t.Fatal(err)
 	}
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ func TestRetryMeetingUnavailableQueueIsRedeferred(t *testing.T) {
 	if _, err := s.Trigger(t.Context(), blocker, bh, "manual", nil); err != nil {
 		t.Fatal(err)
 	}
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

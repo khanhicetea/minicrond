@@ -27,7 +27,7 @@ func BenchmarkDaemonIdle(b *testing.B) {
 			for i := range jobs {
 				fmt.Fprintf(&cfg, "\n[[job]]\nname='job-%03d'\ncommand='true'\nschedule='0 0 1 1 *'\ntimezone='UTC'\n", i)
 			}
-			configPath := filepath.Join(dir, "minicron.toml")
+			configPath := filepath.Join(dir, "minicrond.toml")
 			if err := os.WriteFile(configPath, []byte(cfg.String()), 0o600); err != nil {
 				b.Fatal(err)
 			}
@@ -87,8 +87,8 @@ func BenchmarkDaemonIdle(b *testing.B) {
 				b.Fatal(err)
 				return 0
 			}
-			mainWAL := filepath.Join(dataDir, "minicron.db-wal")
-			logWAL := filepath.Join(dataDir, "minicron-logs.db-wal")
+			mainWAL := filepath.Join(dataDir, "minicrond.db-wal")
+			logWAL := filepath.Join(dataDir, "minicrond-logs.db-wal")
 			beforeWAL := walSize(mainWAL) + walSize(logWAL)
 			runtime.GC()
 			var before, after syscall.Rusage

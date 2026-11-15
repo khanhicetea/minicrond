@@ -29,7 +29,7 @@ func TestLoopRecoversFromStorageFailure(t *testing.T) {
 	sched := New(st, executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4}))
 	t.Cleanup(sched.Stop)
 	// A second connection simulates the failure without touching the store.
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestJobKeepsFiringWhileMetadataIsUnwritable(t *testing.T) {
 	ex := executor.New(st, logs, executor.Options{MaxConcurrentRuns: 4})
 	sched := New(st, ex)
 	t.Cleanup(sched.Stop)
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestJobKeepsCadenceWhileDatabaseIsWriteLocked(t *testing.T) {
 			t.Fatal("job never fired")
 		}
 	}
-	locker, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	locker, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

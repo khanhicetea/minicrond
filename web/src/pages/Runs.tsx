@@ -336,7 +336,7 @@ function RunOutput({
             size="sm"
             outlined
             onClick={() => {
-              downloadFile(api.rawLogUrl(run.run_id), 'minicron-run.log', api.download).catch(err => onDownloadError(errorText(err)));
+              downloadFile(api.rawLogUrl(run.run_id), 'minicrond-run.log', api.download).catch(err => onDownloadError(errorText(err)));
             }}
           />
         </div>

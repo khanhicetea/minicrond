@@ -11,7 +11,7 @@
 ## Context
 
 Every run's log is written twice: to its chunk file in `logs/<run_id>/`, and
-again into `minicron-logs.db` when the run is archived. Zero viewers read
+again into `minicrond-logs.db` when the run is archived. Zero viewers read
 either copy, so this is pure background cost. Measured per run on ext4
 (`io_cost_bench_test.go`, archiver running as in the daemon):
 
@@ -90,7 +90,7 @@ merging and every public contract stay as they are.
   a missing one, and its chunks are salvaged up to the last intact frame. The
   run's job/kind label and drop counters in the archive are lost in that case.
   A daemon crash still loses nothing.
-- **Backups:** the archive is now two places, `minicron-logs.db` and
+- **Backups:** the archive is now two places, `minicrond-logs.db` and
   `log-archive/`. Backups must copy the whole data directory, which was
   already the guidance.
 - **`logs.db_max_size`** now bounds the database plus its archive files, not

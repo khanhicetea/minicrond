@@ -247,7 +247,7 @@ func TestArchiverBatchesShortRuns(t *testing.T) {
 	ids = append(ids, "large", "noindex")
 	s.archiveSealedBatch(context.Background(), ids)
 
-	rdb, err := sqlite.OpenReader(filepath.Join(dir, "minicron-logs.db"))
+	rdb, err := sqlite.OpenReader(filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

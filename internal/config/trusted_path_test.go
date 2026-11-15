@@ -7,7 +7,7 @@ import (
 )
 
 func TestTrustedPathBootstrapValidation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	for _, tt := range []struct {
 		input string
 		valid bool

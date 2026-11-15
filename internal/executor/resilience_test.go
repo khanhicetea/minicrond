@@ -73,7 +73,7 @@ func TestTerminalStatePersistsAfterStorageOutage(t *testing.T) {
 		r, err := st.Run(t.Context(), run.ID)
 		return err == nil && r.Status == "running"
 	})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCapacityGateSkipsAndDefersRetries(t *testing.T) {
 func TestRunningStateWriteFailureDoesNotKillProcess(t *testing.T) {
 	dir, st, s := resilienceService(t, Options{})
 	d, hash := putJob(t, st, model.Definition{Name: "keep-going", Kind: model.KindJob, Command: "sleep 1; exit 0", Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestRunExecutesWhenRowInsertFails(t *testing.T) {
 	}})
 	marker := filepath.Join(t.TempDir(), "ran")
 	d, hash := putJob(t, st, model.Definition{Name: "no-row", Kind: model.KindJob, Command: "touch " + marker, Shell: "/bin/sh", OnOverlap: "skip", SuccessCodes: []int{0}})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestSkipJobDoesNotRunWithoutRow(t *testing.T) {
 	}})
 	marker := filepath.Join(t.TempDir(), "ran")
 	d, hash := putJob(t, st, model.Definition{Name: "billing", Kind: model.KindJob, Command: "touch " + marker, Shell: "/bin/sh", OnOverlap: "skip", OnHistoryUnavailable: "skip", SuccessCodes: []int{0}})
-	saboteur, err := sqlite.Open(filepath.Join(dir, "minicron.db"))
+	saboteur, err := sqlite.Open(filepath.Join(dir, "minicrond.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

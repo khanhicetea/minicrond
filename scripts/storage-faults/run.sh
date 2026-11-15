@@ -28,7 +28,7 @@ mkdir -p "$MNT"
 sudo mount -o loop "$IMG" "$MNT"
 sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 "$DATA"
 : > "$OUT/job.ticks"; : > "$OUT/worker.starts"
-cat > "$WORK/minicron.toml" <<TOML
+cat > "$WORK/minicrond.toml" <<TOML
 [server]
 tcp_enabled = false
 [scheduler]
@@ -46,7 +46,7 @@ restart = "always"
 restart_delay = 1
 healthy_after = 1
 TOML
-export MINICROND_CONFIG=$WORK/minicron.toml MINICROND_DATA=$DATA
+export MINICROND_CONFIG=$WORK/minicrond.toml MINICROND_DATA=$DATA
 start() { "$BIN" daemon >> "$OUT/daemon.log" 2>&1 & PID=$!; sleep 3; }
 count() { wc -l < "$1" | tr -d ' '; }
 status() { timeout 5 "$BIN" status 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["diagnostics"]["run_history"]; print(" ".join(f"{k}={v}" for k,v in sorted(d.items())))' 2>/dev/null || echo "status unavailable"; }
@@ -58,7 +58,7 @@ phase() { # name seconds
     "$(kill -0 "$PID" 2>/dev/null && echo alive || echo DEAD)" "$(status)" | tee -a "$OUT/summary.txt"
 }
 fill() { fallocate -l "$(( $(stat -f -c '%a*%S' "$MNT") ))" "$MNT/data/filler" 2>/dev/null || dd if=/dev/zero of="$MNT/data/filler" bs=1M 2>/dev/null || true; }
-rows() { python3 - "$DATA/minicron.db" <<'PY'
+rows() { python3 - "$DATA/minicrond.db" <<'PY'
 import sqlite3,sys
 db=sqlite3.connect(f"file:{sys.argv[1]}?mode=ro",uri=True)
 print(" ".join(f"{j}:{n}" for j,n in db.execute("select job,count(*) from runs group by job")))
@@ -72,7 +72,7 @@ phase disk-full "$PHASE"
 rm -f "$MNT/data/filler"
 phase space-freed "$PHASE"
 echo "rows after recovery: $(rows)" | tee -a "$OUT/summary.txt"
-python3 - "$DATA/minicron.db" "$PHASE" <<'PY' &
+python3 - "$DATA/minicrond.db" "$PHASE" <<'PY' &
 import sqlite3,sys,time
 db=sqlite3.connect(sys.argv[1],isolation_level=None,timeout=30)
 db.execute("BEGIN EXCLUSIVE"); time.sleep(int(sys.argv[2])+2); db.execute("COMMIT")

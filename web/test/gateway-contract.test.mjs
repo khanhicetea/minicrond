@@ -91,7 +91,7 @@ test('source guardrails reject unsafe examples', () => {
 
 test('API URL confinement preserves BASE_PATH and rejects escapes', async () => {
   globalThis.window = { location: { origin: 'https://gateway.example' } };
-  for (const base of ['/', '/tools/minicron/']) {
+  for (const base of ['/', '/tools/minicrond/']) {
     globalThis.document = { querySelector: () => ({ getAttribute: () => base }) };
     const { apiPath } = await import(`../src/lib/base.ts?base=${encodeURIComponent(base)}`);
     assert.equal(apiPath('/api/v1/daemon'), `${base}api/v1/daemon`);

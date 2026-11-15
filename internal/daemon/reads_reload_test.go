@@ -13,7 +13,7 @@ import (
 // is refused (like storage.synchronous) instead of silently not applying.
 func TestReloadRejectsChangedReadsLimits(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	write := func(reads string) {
 		if err := os.WriteFile(path, []byte("[server]\ntcp_enabled=false\n"+reads), 0o600); err != nil {
 			t.Fatal(err)

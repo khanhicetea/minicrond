@@ -25,7 +25,7 @@ func TestOrphanArchiveResumesAfterPartialBatchFailure(t *testing.T) {
 		}
 	}
 	// Inject a real transaction failure only after the first bounded batch.
-	control, err := sql.Open("sqlite", filepath.Join(dir, "minicron-logs.db"))
+	control, err := sql.Open("sqlite", filepath.Join(dir, "minicrond-logs.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

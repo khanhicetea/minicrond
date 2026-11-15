@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://minicron.dev/schema/v0.2/config.json",
+  "$id": "https://minicrond.dev/schema/v0.2/config.json",
   "title": "minicrond configuration",
   "type": "object",
   "additionalProperties": false,

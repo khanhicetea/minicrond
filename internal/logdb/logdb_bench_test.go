@@ -71,7 +71,7 @@ func BenchmarkDeleteRunWithChunk(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	walPath := filepath.Join(dir, "minicron-logs.db-wal")
+	walPath := filepath.Join(dir, "minicrond-logs.db-wal")
 	walSize := func() int64 {
 		info, err := os.Stat(walPath)
 		if err != nil {

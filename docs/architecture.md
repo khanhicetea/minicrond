@@ -2,7 +2,7 @@
 
 minicrond is a single Go binary: scheduler, executor, supervisor, storage,
 API, embedded web UI, and alerting in one process. One daemon owns one data
-directory (enforced by an flock on `minicron.lock`).
+directory (enforced by an flock on `minicrond.lock`).
 
 ```
                     ┌────────────────────────────────────────────┐
@@ -175,9 +175,9 @@ See [ADR-13](adr/0013-database-alert-channels.md).
 
 Two SQLite databases, never merged:
 
-- `minicron.db` — definitions, alert-channel settings and credentials, runs,
+- `minicrond.db` — definitions, alert-channel settings and credentials, runs,
   audit, the durable execution queue.
-- `minicron-logs.db` — the long-term log archive with a rolling age budget
+- `minicrond-logs.db` — the long-term log archive with a rolling age budget
   (`logs.db_keep_for`) and optional size budget (`logs.db_max_size`), pruned
   daily at `logs.db_prune_at`.
 

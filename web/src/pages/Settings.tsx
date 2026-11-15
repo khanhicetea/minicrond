@@ -418,14 +418,14 @@ function ImportTab() {
           <button
             type="button"
             className="btn-sub"
-            onClick={() => void downloadFile('/api/v1/export', 'minicron-export.toml', api.download).catch(err => setError(errorText(err)))}
+            onClick={() => void downloadFile('/api/v1/export', 'minicrond-export.toml', api.download).catch(err => setError(errorText(err)))}
           >
             <Icon name="file-text" size={14} /> TOML bundle
           </button>
           <button
             type="button"
             className="btn-sub"
-            onClick={() => void downloadFile('/api/v1/export?format=json', 'minicron-export.json', api.download).catch(err => setError(errorText(err)))}
+            onClick={() => void downloadFile('/api/v1/export?format=json', 'minicrond-export.json', api.download).catch(err => setError(errorText(err)))}
           >
             <Icon name="file-text" size={14} /> JSON
           </button>

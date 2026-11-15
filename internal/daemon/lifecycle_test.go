@@ -24,7 +24,7 @@ func TestBasePathEnvironment(t *testing.T) {
 			t.Setenv("BASE_PATH", tc.old)
 			t.Setenv("MINICROND_BASE_PATH", tc.current)
 			dir := t.TempDir()
-			path := filepath.Join(dir, "minicron.toml")
+			path := filepath.Join(dir, "minicrond.toml")
 			if err := os.WriteFile(path, []byte("[server]\nbind='127.0.0.1:99999'\nunix_socket=false\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -39,7 +39,7 @@ func TestBasePathEnvironment(t *testing.T) {
 
 func TestStartupFailureStopsExecutionAndReleasesLock(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "minicron.toml")
+	path := filepath.Join(dir, "minicrond.toml")
 	config := "[server]\nbind='127.0.0.1:99999'\nunix_socket=false\n"
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)

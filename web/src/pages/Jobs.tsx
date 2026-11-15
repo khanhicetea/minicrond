@@ -170,7 +170,7 @@ export default function Jobs() {
     const blob = new Blob([text], { type: 'application/toml' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'minicron-definition.toml';
+    link.download = 'minicrond-definition.toml';
     link.click();
     URL.revokeObjectURL(link.href);
   };

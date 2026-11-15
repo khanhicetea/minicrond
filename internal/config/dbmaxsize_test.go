@@ -10,7 +10,7 @@ import (
 
 // A17: MiB values are bounded before they are shifted into bytes.
 func TestDBMaxSizeBounds(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "minicron.toml")
+	path := filepath.Join(t.TempDir(), "minicrond.toml")
 	try := func(value int64) error {
 		mustWrite(t, path, fmt.Sprintf("[logs]\ndb_max_size=%d\n", value))
 		_, err := Load(path)

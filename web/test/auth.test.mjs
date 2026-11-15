@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-const values = new Map([['minicron_token', 'retained-token']]);
+const values = new Map([['minicrond_token', 'retained-token']]);
 globalThis.sessionStorage = {
   getItem: key => values.get(key) ?? null,
   setItem: (key, value) => values.set(key, value),
@@ -16,7 +16,7 @@ test('proxy access discards a retained bearer and revocation ends access', () =>
   auth.useProxy();
   assert.equal(auth.mode, 'proxy');
   assert.equal(auth.token, '');
-  assert.equal(values.has('minicron_token'), false);
+  assert.equal(values.has('minicrond_token'), false);
   auth.revoke();
   assert.equal(auth.mode, 'revoked');
 });
@@ -30,5 +30,5 @@ test('a 401 probe falls back to token login and token 401 clears it', () => {
   auth.revoke();
   assert.equal(auth.mode, 'login');
   assert.equal(auth.token, '');
-  assert.equal(values.has('minicron_token'), false);
+  assert.equal(values.has('minicrond_token'), false);
 });

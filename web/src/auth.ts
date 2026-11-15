@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 type AuthMode = 'checking' | 'login' | 'token' | 'proxy' | 'revoked' | 'error' | 'unsupported';
 type AuthState = { mode: AuthMode };
 
-const STORAGE_KEY = 'minicron_token';
+const STORAGE_KEY = 'minicrond_token';
 let storedToken = sessionStorage.getItem(STORAGE_KEY) ?? '';
 let state: AuthState = { mode: 'checking' };
 const serverState: AuthState = { mode: 'checking' };
