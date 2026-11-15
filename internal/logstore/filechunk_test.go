@@ -452,33 +452,41 @@ func TestFileChunkSyncFollowsSealState(t *testing.T) {
 // archive failure and eventually quarantined, without deadlocking on the run
 // lock the batch held.
 func TestBatchedRemoveFailureQuarantinesWithoutDeadlock(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
-	}
 	s, _, dir := newArchiveStore(t)
 	root := filepath.Join(dir, "logs")
 	sealedBuffer(t, root, "stuck", []byte("a\n"))
-	// An unremovable subdirectory makes RemoveAll fail while the buffer
-	// itself can still be moved into the quarantine.
-	sub := filepath.Join(root, "stuck", "sub")
-	if err := os.Mkdir(sub, 0o700); err != nil {
+	sealedBuffer(t, root, "other", []byte("b\n"))
+	base := filepath.Join(root, "stuck")
+	_, sealed, err := readOrphanIndex(base)
+	if err != nil || len(sealed) != 1 {
+		t.Fatalf("index %v, %v", sealed, err)
+	}
+	chunk := chunkPath(base, 1)
+	image, err := os.ReadFile(chunk)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "f"), nil, 0o600); err != nil {
+	// The archiver holds the chunk's image, so the batch needs only a stat of
+	// the file. A non-empty directory in its place makes the removal after
+	// the commit fail for any user, while the index beside it is still a
+	// buffer file the quarantine can move. (A read-only log root would also
+	// stop the quarantine's own renames.)
+	if err := os.Remove(chunk); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(sub, 0o500); err != nil {
+	if err := os.Mkdir(chunk, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		os.Chmod(sub, 0o700)
-		os.Chmod(filepath.Join(root, QuarantineDir, "stuck", "sub"), 0o700)
-	})
-	// The batch's own failure is the one that reaches the quarantine.
+	if err := os.WriteFile(filepath.Join(chunk, "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
+	s.archiver.sealed = map[string]*sealedRun{
+		"stuck": {job: "job", kind: model.KindJob, meta: sealed[1], image: image},
+	}
+	// The batch's own failure is the one that reaches the quarantine.
 	s.orphanFailures["stuck"] = orphanQuarantineAfter - 1
 	s.mu.Unlock()
-	sealedBuffer(t, root, "other", []byte("b\n"))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -491,5 +499,8 @@ func TestBatchedRemoveFailureQuarantinesWithoutDeadlock(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, QuarantineDir, "stuck")); err != nil {
 		t.Fatalf("stuck buffer not quarantined: %v", err)
+	}
+	if bufferExists(t, dir, "other") {
+		t.Fatal("the other run of the batch was not archived and removed")
 	}
 }
