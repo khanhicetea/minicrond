@@ -16,7 +16,7 @@ import (
 // Quarantine purge policy (ADR-10). Quarantined files are evidence kept for
 // manual repair, so by default they are kept forever and only reported (see
 // DiskUsage). An operator may opt in to an age limit and/or a byte cap; both
-// delete whole top-level entries (a <run>-<chunk>.zst.corrupt file or a <run>
+// delete whole top-level entries (a <run>.<chunk>.zst.corrupt file or a <run>
 // directory), oldest first, and every deletion is logged. Disk pressure never
 // purges the quarantine.
 
@@ -137,4 +137,20 @@ func (s *Store) PurgeQuarantine(ctx context.Context, p QuarantinePolicy, now tim
 		slog.Warn("quarantined log data was purged by policy", "entries", res.Entries, "bytes", res.Bytes, "by_age", res.ByAge, "by_size", res.ByBytes, "unlogged_entries", res.Entries-logged)
 	}
 	return res, errors.Join(errs...)
+}
+
+// dirBytes sums the sizes of the regular files directly in dir (a quarantined
+// run directory is flat). Files vanishing during the walk are not errors.
+func dirBytes(dir string) int64 {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+	}
+	return total
 }

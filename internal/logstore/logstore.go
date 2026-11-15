@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +135,10 @@ type index struct {
 	Chunks    []chunkMeta `json:"chunks"`
 	Final     bool        `json:"final"`
 	Truncated bool        `json:"truncated"`
+	// Open is the chunk being written when the index was written (0 once the
+	// writer closed). It lets bufferChunks find a live chunk after archival
+	// emptied Chunks (ADR-24).
+	Open int `json:"open,omitempty"`
 	// Dropped* record output discarded while log storage was failing
 	// (ADR-8 2A) and SyncFailures the fsync errors seen; they are evidence
 	// that capture was incomplete or its durability unconfirmed.
@@ -216,14 +219,16 @@ type Store struct {
 }
 
 // sealedChunk is a chunk sealed without its own fsync (ADR-20), waiting for
-// the group sync together with its run's index and directory. number 0 queues
-// only the directory (a rename into the archive directory).
+// the group sync together with its run's index and directory. A buffer seal
+// has buf (the run's flat buffer base, ADR-24), path and index; a chunk
+// renamed into the archive directory has only path; an entry with only dir
+// queues that directory (renames into the archive directory).
 type sealedChunk struct {
-	dir    string
-	number int
+	buf   string
+	path  string
+	index string
+	dir   string
 }
-
-func (c sealedChunk) path() string { return filepath.Join(c.dir, fmt.Sprintf("%06d.zst", c.number)) }
 
 // maxDeferredSeals bounds the sealed chunks waiting for a group sync; beyond
 // it a seal syncs inline as before, so a disk slower than the seal rate costs
@@ -343,13 +348,14 @@ type WriterOptions struct {
 }
 
 func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error) {
+	if !validRunID(runID) {
+		return nil, fmt.Errorf("invalid log run id %q", runID)
+	}
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
-	dir := filepath.Join(s.root, runID)
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return nil, err
-	}
-	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: dir, maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
+	// No directory: the first chunk is created exclusively, which also refuses
+	// a run id whose buffer is still on disk (ADR-24).
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, base: s.base(runID), maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
 	if err := w.rotate(); err != nil {
 		return nil, err
 	}
@@ -364,13 +370,13 @@ func (s *Store) Open(runID, job, kind string, opt WriterOptions) (*Writer, error
 // OpenDegraded returns a writer for a run whose log storage could not be
 // opened (cause). ADR-8 2A / ADR-16: the run still executes. The writer starts
 // in degraded capture, discarding and counting output, and recovers lazily on
-// a later line (creating the run directory then), exactly like a writer whose
+// a later line (creating its first chunk then), exactly like a writer whose
 // storage failed mid-run. It is registered so Seal and readers treat it as an
 // ordinary active run.
 func (s *Store) OpenDegraded(runID, job, kind string, opt WriterOptions, cause error) *Writer {
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
-	w := &Writer{store: s, runID: runID, job: job, kind: kind, dir: filepath.Join(s.root, runID), maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
+	w := &Writer{store: s, runID: runID, job: job, kind: kind, base: s.base(runID), maxBytes: opt.MaxBytes, maxLine: opt.MaxLine, dropNew: opt.DropNew, frameSync: s.frameSync.Load()}
 	w.mu.Lock()
 	w.enterDegraded(cause)
 	w.mu.Unlock()
@@ -438,7 +444,7 @@ func (s *Store) finalize(runID string, async bool) error {
 	}
 	s.claimWait(runID)
 	defer s.release(runID)
-	return s.archiveOwned(context.Background(), runID)
+	return s.archiveOwned(context.Background(), runID, nil)
 }
 
 // claim takes exclusive archive/delete ownership of a run without waiting.
@@ -503,8 +509,9 @@ func (s *Store) acquireArchiveSlot(ctx context.Context) error {
 	}
 }
 
-// archiveOwned archives an inactive buffer. Callers own the run.
-func (s *Store) archiveOwned(ctx context.Context, runID string) error {
+// archiveOwned archives an inactive buffer. Callers own the run. extra are
+// chunk files a root listing found (see bufferChunks), or nil.
+func (s *Store) archiveOwned(ctx context.Context, runID string, extra []chunkFile) error {
 	if err := s.acquireArchiveSlot(ctx); err != nil {
 		return err
 	}
@@ -514,7 +521,7 @@ func (s *Store) archiveOwned(ctx context.Context, runID string) error {
 	if s.Active(runID) != nil {
 		return nil
 	}
-	return s.archiveOrphan(ctx, runID, filepath.Join(s.root, runID))
+	return s.archiveOrphan(ctx, runID, s.base(runID), extra)
 }
 
 // StartArchiver starts the background workers that archive sealed runs.
@@ -630,12 +637,12 @@ func (s *Store) ArchiveStats() ArchiveStats {
 		active[id] = true
 	}
 	s.mu.Unlock()
-	entries, err := os.ReadDir(s.root)
+	runs, err := s.listBuffers(true)
 	if err != nil {
 		return st
 	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || active[e.Name()] {
+	for _, r := range runs {
+		if active[r.id] {
 			continue
 		}
 		if st.SealedRuns >= maxArchiveStatDirs {
@@ -643,18 +650,7 @@ func (s *Store) ArchiveStats() ArchiveStats {
 			break
 		}
 		st.SealedRuns++
-		files, err := os.ReadDir(filepath.Join(s.root, e.Name()))
-		if err != nil {
-			continue
-		}
-		for _, f := range files {
-			if !strings.HasSuffix(f.Name(), ".zst") {
-				continue
-			}
-			if info, err := f.Info(); err == nil {
-				st.SealedBytes += info.Size()
-			}
-		}
+		st.SealedBytes += r.chunkBytes
 	}
 	return st
 }
@@ -865,16 +861,16 @@ func (s *Store) flushArchive(wait bool) {
 	}
 }
 
-// dropSeals forgets the deferred seals of buffers the archiver has committed
-// and removed, so the group sync does not try to open them.
-func (s *Store) dropSeals(dirs map[string]bool) {
+// dropSeals forgets the deferred seals of buffers (by base) the archiver has
+// committed and removed, so the group sync does not try to open them.
+func (s *Store) dropSeals(bufs map[string]bool) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	kept := s.sealed[:0]
 	for _, c := range s.sealed {
-		if dirs[c.dir] {
-			if c.number > 0 {
-				delete(s.unsyncedSeals, c.path())
+		if c.buf != "" && bufs[c.buf] {
+			if c.path != "" {
+				delete(s.unsyncedSeals, c.path)
 			}
 			continue
 		}
@@ -909,7 +905,7 @@ func (s *Store) archiveSealedBatch(ctx context.Context, ids []string) {
 		rest = s.archiveShortRuns(ctx, owned)
 	}
 	for _, id := range rest {
-		err := s.archiveOwned(ctx, id)
+		err := s.archiveOwned(ctx, id, nil)
 		s.recordOrphanResult(id, err)
 		if err != nil {
 			slog.Error("log archival failed; the orphan sweep will retry", "run", id, "error", err)
@@ -959,16 +955,16 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 			s.unlockRun(id, lock, true)
 			continue // reopened: no longer sealed
 		}
-		dir := filepath.Join(s.root, id)
+		base := s.base(id)
 		var r logdb.RunChunks
 		var size int64
 		ok, fromImage := false, false
 		if sealed != nil {
-			r, size, ok = s.sealedShortRun(dir, sealed)
+			r, size, ok = s.sealedShortRun(base, sealed)
 			fromImage = ok
 		}
 		if !ok {
-			r, size, ok = s.loadShortRun(dir)
+			r, size, ok = s.loadShortRun(base)
 		}
 		if !ok || (len(batch) > 0 && (bytes+size > archiveBatchBytes || chunks+len(r.Chunks) > archiveBatchChunks)) {
 			s.unlockRun(id, lock, true)
@@ -999,12 +995,12 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 	}
 	removed := make(map[string]bool, len(batch))
 	for _, r := range batch {
-		dir := filepath.Join(s.root, r.id)
-		err := removeBuffer(dir, r)
+		base := s.base(r.id)
+		err := removeBuffer(base, r)
 		if err != nil {
 			slog.Error("removing an archived log buffer failed; the orphan sweep will retry", "run", r.id, "error", err)
 		} else {
-			removed[dir] = true
+			removed[base] = true
 		}
 		results[r.id] = err
 	}
@@ -1012,30 +1008,28 @@ func (s *Store) archiveShortRuns(ctx context.Context, ids []string) (rest []stri
 	return rest
 }
 
-// removeBuffer deletes an archived run's buffer directory. A run archived
-// from its image holds one chunk file and its index, so they are
-// unlinked by name; anything else, or a surprise in the directory, takes the
-// directory walk.
-func removeBuffer(dir string, r shortRun) error {
-	if r.image {
-		_ = os.Remove(filepath.Join(dir, fmt.Sprintf("%06d.zst", r.Chunks[0].Number)))
-		_ = os.Remove(filepath.Join(dir, "index.json"))
-		if os.Remove(dir) == nil {
-			return nil
+// removeBuffer deletes an archived short run's buffer by name: its chunk
+// files, then its index. A run archived from its image holds exactly one
+// chunk file and its index; a short run loaded from disk had an index that
+// listed exactly the chunk files bufferChunks found (loadShortRun).
+func removeBuffer(base string, r shortRun) error {
+	for _, c := range r.Chunks {
+		if err := removeFile(chunkPath(base, c.Number)); err != nil {
+			return err
 		}
 	}
-	return os.RemoveAll(dir)
+	return removeFile(indexPath(base))
 }
 
 // sealedShortRun builds a run's archive rows from its handed-over plain chunk
 // image instead of reading the buffer back. The caller owns the run (as every
 // deleter must), so a buffer that still exists cannot vanish meanwhile; one
 // that is gone was deleted while queued and is not archived.
-func (s *Store) sealedShortRun(dir string, sealed *sealedRun) (r logdb.RunChunks, size int64, ok bool) {
-	if _, err := os.Stat(dir); err != nil {
+func (s *Store) sealedShortRun(base string, sealed *sealedRun) (r logdb.RunChunks, size int64, ok bool) {
+	m := sealed.meta
+	if _, err := os.Lstat(chunkPath(base, m.Number)); err != nil {
 		return r, 0, false
 	}
-	m := sealed.meta
 	blob := s.archiveBlob(m, sealed.image)
 	r.Job, r.Kind = sealed.job, sealed.kind
 	r.Chunks = []logdb.Chunk{{Number: m.Number, First: m.First, Last: m.Last, RawBytes: m.Raw, Blob: blob}}
@@ -1046,12 +1040,12 @@ func (s *Store) sealedShortRun(dir string, sealed *sealedRun) (r logdb.RunChunks
 // loadShortRun reads a sealed buffer for a multi-run transaction. ok is false
 // for anything the one-by-one path must handle: no or invalid index, chunks
 // that are not indexed (salvage) or indexed but missing, and file chunks.
-func (s *Store) loadShortRun(dir string) (r logdb.RunChunks, size int64, ok bool) {
-	idx, sealed, err := readOrphanIndex(dir)
+func (s *Store) loadShortRun(base string) (r logdb.RunChunks, size int64, ok bool) {
+	idx, sealed, err := readOrphanIndex(base)
 	if err != nil || len(sealed) == 0 {
 		return r, 0, false
 	}
-	files, err := chunkFiles(dir)
+	files, err := bufferChunksFrom(base, &idx, nil)
 	if err != nil || len(files) != len(sealed) {
 		return r, 0, false
 	}
@@ -1117,24 +1111,22 @@ func (s *Store) ArchiveOrphansContext(ctx context.Context) error {
 	if s.db == nil {
 		return nil
 	}
-	entries, err := os.ReadDir(s.root)
+	// One listing of the root finds every buffer, stray files included;
+	// hidden entries such as the quarantine are not buffer files.
+	runs, err := s.listBuffers(false)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for _, e := range entries {
+	for _, r := range runs {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(errs, err)...)
 		}
-		// Hidden entries, including the quarantine, are not run buffers.
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		runID := e.Name()
+		runID := r.id
 		if s.Active(runID) != nil || !s.claim(runID) {
 			continue
 		}
-		err := s.archiveOwned(ctx, runID)
+		err := s.archiveOwned(ctx, runID, r.chunks)
 		s.recordOrphanResult(runID, err)
 		s.release(runID)
 		if err != nil {
@@ -1178,12 +1170,8 @@ func (s *Store) recordOrphanResult(runID string, cause error) {
 	}
 	lock := s.lockRun(runID, true)
 	defer s.unlockRun(runID, lock, true)
-	quarantine := filepath.Join(s.root, QuarantineDir)
-	target := filepath.Join(quarantine, runID)
-	err := os.MkdirAll(quarantine, 0o700)
-	if err == nil {
-		err = os.Rename(filepath.Join(s.root, runID), target)
-	}
+	target := filepath.Join(s.root, QuarantineDir, runID)
+	err := s.quarantineBuffer(runID, target)
 	if err != nil {
 		slog.Error("quarantining unarchivable log buffer failed", "run", runID, "error", err)
 		return
@@ -1197,7 +1185,7 @@ type Writer struct {
 	runID      string
 	job        string
 	kind       string
-	dir        string
+	base       string // flat buffer path prefix (ADR-24)
 	file       *os.File
 	enc        *zstd.Encoder
 	chunk      int
@@ -1263,7 +1251,7 @@ type Writer struct {
 	lastSyncErr error
 }
 
-func (w *Writer) chunkPath(n int) string { return filepath.Join(w.dir, fmt.Sprintf("%06d.zst", n)) }
+func (w *Writer) chunkPath(n int) string { return chunkPath(w.base, n) }
 
 // Flush seals the current chunk (if it has data) and archives all sealed
 // chunks of this writer. It waits for another archival of this run to finish.
@@ -1317,11 +1305,15 @@ func (w *Writer) rotate() error {
 	if err != nil {
 		return fmt.Errorf("open log chunk %d: %w", next, err)
 	}
+	// The index written by finishChunk names the chunk that follows.
 	// A nil file means the previous chunk was abandoned after a storage
 	// failure (or none exists yet); an abandoned chunk stays on disk,
 	// unindexed, for the orphan sweep.
+	open := w.idx.Open
+	w.idx.Open = next
 	if w.file != nil {
 		if err := w.finishChunk(); err != nil {
+			w.idx.Open = open
 			w.chunkErr = errors.Join(err, f.Close(), os.Remove(path))
 			return w.chunkErr
 		}
@@ -1456,7 +1448,7 @@ func (w *Writer) finishChunk() error {
 	if deferred {
 		// Queued after the index is in place, so the group sync covers the
 		// new index; queued even when it failed, so the chunk is synced.
-		w.store.deferSeal(w.dir, w.chunk)
+		w.store.deferSeal(w.base, w.chunk)
 	}
 	if indexErr != nil {
 		w.chunkErr = fmt.Errorf("index log chunk %d: %w", w.chunk, indexErr)
@@ -1466,7 +1458,7 @@ func (w *Writer) finishChunk() error {
 }
 func (w *Writer) writeIndex() error { return w.writeIndexSync(true) }
 
-// writeIndexSync replaces index.json. Without sync the new index is renamed
+// writeIndexSync replaces the run's index (<run>.json). Without sync the new index is renamed
 // into place unsynced; the caller queues it for the group sync (ADR-20).
 func (w *Writer) writeIndexSync(sync bool) error {
 	w.idx.Job, w.idx.Kind = w.job, w.kind
@@ -1477,7 +1469,7 @@ func (w *Writer) writeIndexSync(sync bool) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(w.dir, "index.json.tmp")
+	tmp := indexTmpPath(w.base)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -1491,18 +1483,10 @@ func (w *Writer) writeIndexSync(sync bool) error {
 	if err != nil {
 		return err
 	}
-	if err = os.Rename(tmp, filepath.Join(w.dir, "index.json")); err != nil || !sync {
+	if err = os.Rename(tmp, indexPath(w.base)); err != nil || !sync {
 		return err
 	}
-	dir, err := os.Open(w.dir)
-	if err != nil {
-		return err
-	}
-	err = dir.Sync()
-	if closeErr := dir.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return syncDir(filepath.Dir(w.base))
 }
 
 // Write appends one frame and returns storage errors to the caller; it is
@@ -1692,10 +1676,6 @@ func (w *Writer) reopenChunk() error {
 		w.file = nil
 	}
 	w.indexAbandonedChunk()
-	// A writer opened degraded may not have its directory yet.
-	if err := os.Mkdir(w.dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
 	return w.rotate()
 }
 
@@ -1880,18 +1860,18 @@ func (s *Store) deferSealRoom() bool {
 	return len(s.sealed) < maxDeferredSeals
 }
 
-// deferSeal queues a sealed chunk, written and indexed but not synced, for
-// the next group sync and arms the timer.
-func (s *Store) deferSeal(dir string, number int) {
+// deferSeal queues a sealed chunk of the buffer at base, written and indexed
+// but not synced, for the next group sync and arms the timer.
+func (s *Store) deferSeal(base string, number int) {
 	s.syncMu.Lock()
-	s.deferSealLocked(sealedChunk{dir, number})
+	s.deferSealLocked(sealedChunk{buf: base, path: chunkPath(base, number), index: indexPath(base)})
 	s.syncMu.Unlock()
 }
 
 func (s *Store) deferSealLocked(c sealedChunk) {
 	s.sealed = append(s.sealed, c)
-	if c.number > 0 {
-		s.unsyncedSeals[c.path()] = true
+	if c.path != "" {
+		s.unsyncedSeals[c.path] = true
 	}
 	if s.syncTimer == nil {
 		s.syncTimer = time.AfterFunc(time.Duration(s.syncInterval.Load()), s.timerFlush)
@@ -1934,7 +1914,8 @@ func (s *Store) flushDirtyLocked(waitArchive bool) {
 }
 
 // syncSealed makes deferred seals durable: the chunk files and indexes, then
-// the run directories. A buffer the archiver already committed and removed (or
+// their directories: the log root once for every buffer (ADR-24), and the
+// archive directories chunks were renamed into. A buffer the archiver already committed and removed (or
 // a deletion removed) is skipped: its output is durable in the archive, or gone
 // on purpose. The fsyncs of each step run a few at a time so the filesystem
 // can share journal commits between them, as it did for the concurrent inline
@@ -1973,14 +1954,15 @@ func (s *Store) syncSealed(sealed []sealedChunk) {
 	var dirsMu sync.Mutex
 	dirs := make(map[string]bool)
 	for _, c := range sealed {
-		if c.number == 0 {
+		if c.dir != "" {
 			dirs[c.dir] = true
-			continue
 		}
-		files = append(files, c.path())
-		if !seen[c.dir] {
-			seen[c.dir] = true
-			files = append(files, filepath.Join(c.dir, "index.json"))
+		if c.path != "" {
+			files = append(files, c.path)
+		}
+		if c.index != "" && !seen[c.index] {
+			seen[c.index] = true
+			files = append(files, c.index)
 		}
 	}
 	parallelDo(files, func(path string) {
@@ -2249,6 +2231,7 @@ func (w *Writer) Close() error {
 	}
 	w.closed = true
 	w.idx.Final = true
+	w.idx.Open = 0
 	w.closeErr = w.finishChunk()
 	if w.lockRef != nil {
 		// Drop the writer's reference; this call still holds its own.
@@ -2616,7 +2599,7 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 			return out, nil
 		}
 	}
-	entries, err := chunkFiles(filepath.Join(s.root, runID))
+	entries, idx, err := bufferChunks(s.base(runID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2624,16 +2607,11 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 	// still take the normal decode path so unsealed and crash-salvaged files
 	// remain visible.
 	var sealedLast map[int]uint64
-	if after > 0 && len(entries) > 1 {
-		if data, err := os.ReadFile(filepath.Join(s.root, runID, "index.json")); err == nil {
-			var idx index
-			if json.Unmarshal(data, &idx) == nil && idx.Version == int(Version) {
-				sealedLast = make(map[int]uint64, len(idx.Chunks))
-				for _, chunk := range idx.Chunks {
-					if chunk.Number > 0 && chunk.First > 0 && chunk.Last >= chunk.First {
-						sealedLast[chunk.Number] = chunk.Last
-					}
-				}
+	if after > 0 && len(entries) > 1 && idx != nil {
+		sealedLast = make(map[int]uint64, len(idx.Chunks))
+		for _, chunk := range idx.Chunks {
+			if chunk.Number > 0 && chunk.First > 0 && chunk.Last >= chunk.First {
+				sealedLast[chunk.Number] = chunk.Last
 			}
 		}
 	}
@@ -2665,7 +2643,7 @@ func (s *Store) readContext(ctx context.Context, runID string, after uint64, lim
 func (s *Store) openFileChunk(runID string, number int) (*os.File, error) {
 	f, err := os.Open(s.db.ChunkPath(runID, number))
 	if errors.Is(err, fs.ErrNotExist) {
-		f, err = os.Open(filepath.Join(s.root, runID, fmt.Sprintf("%06d.zst", number)))
+		f, err = os.Open(chunkPath(s.base(runID), number))
 	}
 	return f, err
 }
@@ -2730,7 +2708,7 @@ func (s *Store) DeleteContext(ctx context.Context, runID string) error {
 			return err
 		}
 	}
-	return os.RemoveAll(filepath.Join(s.root, runID))
+	return removeRun(s.base(runID), nil)
 }
 
 // DeleteRuns removes a retention page of inactive runs. An archive batch
@@ -2804,7 +2782,7 @@ func (s *Store) DeleteRunsContext(ctx context.Context, runIDs []string) ([]strin
 				continue
 			}
 		}
-		if err := os.RemoveAll(filepath.Join(s.root, id)); err != nil {
+		if err := removeRun(s.base(id), nil); err != nil {
 			errs = append(errs, fmt.Errorf("run %s: %w", id, err))
 			continue
 		}

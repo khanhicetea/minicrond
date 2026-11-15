@@ -12,15 +12,12 @@ import (
 func TestOrphanArchiveResumesAfterPartialBatchFailure(t *testing.T) {
 	s, db, dir := newArchiveStore(t)
 	buffer := filepath.Join(dir, "logs", "run")
-	if err := os.Mkdir(buffer, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	for i := 1; i <= archiveBatchChunks+1; i++ {
 		blob, err := encodeFrames([]Frame{{Sequence: uint64(i), Stream: Stdout, Payload: []byte("x")}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(buffer, fmt.Sprintf("%06d.zst", i)), blob, 0o600); err != nil {
+		if err := os.WriteFile(chunkPath(buffer, i), blob, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -42,9 +39,13 @@ func TestOrphanArchiveResumesAfterPartialBatchFailure(t *testing.T) {
 	if err != nil || chunks != archiveBatchChunks {
 		t.Fatalf("committed prefix = %d chunks, error %v", chunks, err)
 	}
-	files, err := chunkFiles(buffer)
+	files, _, err := bufferChunks(buffer, nil)
 	if err != nil || len(files) != 1 || files[0].number != archiveBatchChunks+1 {
-		t.Fatalf("uncommitted files not preserved: %v, error %v", files, err)
+		t.Fatalf("uncommitted files not preserved or not findable: %v, error %v", files, err)
+	}
+	// Readers still see every frame between the failed and the next sweep.
+	if frames, err := s.Read("run", 0, 5000); err != nil || len(frames) != archiveBatchChunks+1 {
+		t.Fatalf("read between sweeps: %d frames, error %v", len(frames), err)
 	}
 	if _, err := control.ExecContext(t.Context(), "DROP TRIGGER reject_later_chunks"); err != nil {
 		t.Fatal(err)

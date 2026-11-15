@@ -35,8 +35,10 @@ Reclamation deletes logs oldest first, in two stages:
    (amendment 2026-10-26). Runs owned by another operation (an archive in progress
    commits in several batches; a checkpoint or deletion) are skipped entirely,
    exactly as stage 2 skips owned runs;
-2. sealed buffers under `logs/<run>/` of runs with no writer that are waiting
-   for archival or retrying it (oldest by modification time).
+2. sealed buffers (`logs/<run>.*`, flat files since
+   [ADR-24](0024-flat-log-buffers.md)) of runs with no writer that are waiting
+   for archival or retrying it (oldest by the modification time of the
+   buffer's newest file).
 
 Archive data is older than sealed buffers by construction, so this is
 "oldest first" across tiers without a merged index.
@@ -54,8 +56,8 @@ tiers. A deleted run keeps its run record; reads of its log return nothing
 | Tier | Counted |
 |---|---|
 | Archive | `minicrond-logs.db` file size + `minicrond-logs.db-wal` size |
-| Sealed | file sizes in `logs/<run>/` of runs without a writer |
-| Hot | file sizes in `logs/<run>/` of runs with a writer |
+| Sealed | sizes of the `logs/<run>.*` buffer files of runs without a writer |
+| Hot | sizes of the `logs/<run>.*` buffer files of runs with a writer |
 
 `LogBytes = archive + sealed + hot` is what the byte budget applies to. The
 quarantine is measured and reported (`quarantine_bytes`, entries, oldest age) but
@@ -149,8 +151,8 @@ Preserving damaged logs stays the default, but "forever" is not a budget. Opt-in
 - `logs.quarantine_max_size` (MiB, `0` = no cap): then delete oldest entries until
   the rest fits.
 
-An entry is a top-level item of `.quarantine/` (a `<run>-<chunk>.zst.corrupt` file or
-a `<run>/` directory), aged by modification time. The policy runs at the daily log
+An entry is a top-level item of `.quarantine/` (a `<run>.<chunk>.zst.corrupt` file or
+a `<run>/` directory, [ADR-24](0024-flat-log-buffers.md)), aged by modification time. The policy runs at the daily log
 prune only, never from disk pressure, and every deletion is logged at WARN with the
 reason. Without a policy, `quarantine_bytes`, `quarantine_entries` and
 `quarantine_oldest_age_s` are the alert-able metrics.

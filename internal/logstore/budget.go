@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -187,9 +185,9 @@ func (s *Store) setDiskStatus(st DiskStatus) {
 	s.disk.statusMu.Unlock()
 }
 
-// MeasureDiskUsage walks the log tiers. The cost is one directory listing and a
-// stat per file of every run buffer still on disk (live and awaiting
-// archival), plus the quarantine and the archived file chunks (ADR-20).
+// MeasureDiskUsage walks the log tiers. The cost is one listing of the log
+// root and a stat per buffer file (live and awaiting archival, flat since
+// ADR-24), plus the quarantine and the archived file chunks (ADR-20).
 func (s *Store) MeasureDiskUsage(ctx context.Context) (DiskUsage, error) {
 	u := DiskUsage{MeasuredAt: time.Now()}
 	var errs []error
@@ -200,34 +198,24 @@ func (s *Store) MeasureDiskUsage(ctx context.Context) (DiskUsage, error) {
 		}
 		u.ArchiveBytes, u.ArchiveWALBytes = db+wal+s.db.ChunkFileBytes(), wal
 	}
-	entries, err := os.ReadDir(s.root)
+	u.QuarantineBytes, u.QuarantineEntries, u.QuarantineOldest = quarantineUsage(filepath.Join(s.root, QuarantineDir))
+	if err := ctx.Err(); err != nil {
+		return u, err
+	}
+	// Only buffer files count: other entries (hidden ones, directories) are
+	// skipped by the archive sweep and
+	// pruneSealed too, so counting them would report pressure that can never
+	// be relieved.
+	runs, err := s.listBuffers(true)
 	if err != nil {
 		return u, errors.Join(append(errs, err)...)
 	}
-	for _, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return u, err
-		}
-		if !e.IsDir() {
-			continue
-		}
-		path := filepath.Join(s.root, e.Name())
-		if e.Name() == QuarantineDir {
-			u.QuarantineBytes, u.QuarantineEntries, u.QuarantineOldest = quarantineUsage(path)
-			continue
-		}
-		// Other hidden directories are not run buffers: the archive sweep and
-		// pruneSealed skip them, so counting them would report pressure that can
-		// never be relieved.
-		if strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		size := dirBytes(path)
-		if s.Active(e.Name()) != nil {
-			u.HotBytes += size
+	for _, r := range runs {
+		if s.Active(r.id) != nil {
+			u.HotBytes += r.bytes
 			u.HotRuns++
 		} else {
-			u.SealedBytes += size
+			u.SealedBytes += r.bytes
 			u.SealedRuns++
 		}
 	}
@@ -252,22 +240,6 @@ func (s *Store) DiskUsageCached(ctx context.Context, maxAge time.Duration) (Disk
 		d.usage, d.usageErr, d.usageValid, d.usageAt = u, err, true, time.Now()
 	}
 	return u, err
-}
-
-// dirBytes sums the sizes of the regular files directly in dir. Run buffers are
-// flat. Files vanishing during the walk (archival) are not errors.
-func dirBytes(dir string) int64 {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-	var total int64
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil && info.Mode().IsRegular() {
-			total += info.Size()
-		}
-	}
-	return total
 }
 
 // quarantineUsage totals the quarantine: bytes under it, number of top-level
@@ -536,26 +508,18 @@ func (s *Store) finishPass(st *DiskStatus, prev DiskStatus, unresolved bool) {
 // progress, deletion) are skipped. Deleting a buffer that is queued for
 // archival is safe: the archiver finds nothing to move.
 func (s *Store) pruneSealed(ctx context.Context, want int64) (runs int, freed int64, err error) {
-	entries, err := os.ReadDir(s.root)
+	listed, err := s.listBuffers(true)
 	if err != nil {
 		return 0, 0, err
 	}
-	type candidate struct {
-		id      string
-		modTime time.Time
-	}
-	var candidates []candidate
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || s.Active(e.Name()) != nil {
-			continue
+	var candidates []*runFiles
+	for _, r := range listed {
+		if s.Active(r.id) == nil {
+			candidates = append(candidates, r)
 		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		candidates = append(candidates, candidate{e.Name(), info.ModTime()})
 	}
-	slices.SortFunc(candidates, func(a, b candidate) int {
+	// Oldest first by the newest file of each buffer (its last seal).
+	slices.SortFunc(candidates, func(a, b *runFiles) int {
 		if c := a.modTime.Compare(b.modTime); c != 0 {
 			return c
 		}
@@ -572,7 +536,7 @@ func (s *Store) pruneSealed(ctx context.Context, want int64) (runs int, freed in
 		if !s.claim(c.id) {
 			continue
 		}
-		size, err := s.removeSealed(c.id)
+		size, err := s.removeSealed(c)
 		s.release(c.id)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("run %s: %w", c.id, err))
@@ -586,19 +550,17 @@ func (s *Store) pruneSealed(ctx context.Context, want int64) (runs int, freed in
 	return runs, freed, errors.Join(errs...)
 }
 
-// removeSealed deletes one inactive buffer under its exclusive run lock and
-// returns the bytes freed, or -1 if the run became active meanwhile. Callers
-// own the run.
-func (s *Store) removeSealed(runID string) (int64, error) {
-	lock := s.lockRun(runID, true)
-	defer s.unlockRun(runID, lock, true)
-	if s.Active(runID) != nil {
+// removeSealed deletes one inactive buffer, as listed in r, under its
+// exclusive run lock and returns the bytes freed (as listed), or -1 if the
+// run became active meanwhile. Callers own the run.
+func (s *Store) removeSealed(r *runFiles) (int64, error) {
+	lock := s.lockRun(r.id, true)
+	defer s.unlockRun(r.id, lock, true)
+	if s.Active(r.id) != nil {
 		return -1, nil
 	}
-	dir := filepath.Join(s.root, runID)
-	size := dirBytes(dir)
-	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := removeRun(s.base(r.id), r.chunks); err != nil {
 		return 0, err
 	}
-	return size, nil
+	return r.bytes, nil
 }

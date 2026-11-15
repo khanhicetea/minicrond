@@ -7,7 +7,8 @@
 ## Decision
 
 Run logs use a two-tier design. Live runs keep writing compressed zstd chunk
-files under `data/logs/<run_id>/` first (unchanged hot path, crash-safe). A
+files under `data/logs/<run_id>/` (flat `data/logs/<run_id>.*` files since
+[ADR-24](0024-flat-log-buffers.md)) first (unchanged hot path, crash-safe). A
 separate SQLite database, `data/minicrond-logs.db` (never `minicrond.db`), is the
 long-term archive:
 

@@ -10,7 +10,8 @@
 
 ## Context
 
-Every run's log is written twice: to its chunk file in `logs/<run_id>/`, and
+Every run's log is written twice: to its chunk file in `logs/<run_id>/`
+(flat `logs/<run_id>.*` files since [ADR-24](0024-flat-log-buffers.md)), and
 again into `minicrond-logs.db` when the run is archived. Zero viewers read
 either copy, so this is pure background cost. Measured per run on ext4
 (`io_cost_bench_test.go`, archiver running as in the daemon):

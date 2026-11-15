@@ -200,7 +200,7 @@ func TestDiskPressureProtectsActiveRunsAndQuarantine(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.completedRun("done", 10<<10)
-	quarantined := filepath.Join(f.dir, "logs", QuarantineDir, "run-000001.zst.corrupt")
+	quarantined := filepath.Join(f.dir, "logs", QuarantineDir, "run.000001.zst.corrupt")
 	if err := os.MkdirAll(filepath.Dir(quarantined), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -435,8 +435,10 @@ func TestDiskPressureReclaimsArchiveThenSealedBuffersOldestFirst(t *testing.T) {
 	base := time.Now().Add(-time.Hour)
 	for i, id := range []string{"sealed-b", "sealed-a", "sealed-c"} { // b is oldest
 		at := base.Add(time.Duration(i) * time.Minute)
-		if err := os.Chtimes(filepath.Join(f.dir, "logs", id), at, at); err != nil {
-			t.Fatal(err)
+		for _, name := range bufferFiles(t, f.dir, id) {
+			if err := os.Chtimes(filepath.Join(f.dir, "logs", name), at, at); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	live, err := f.s.Open("live", "j", model.KindJob, WriterOptions{})

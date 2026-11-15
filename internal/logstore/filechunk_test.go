@@ -86,8 +86,8 @@ func TestLargeChunksAreArchivedAsFiles(t *testing.T) {
 	if err := s.Close("run"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "run")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("buffer left behind: %v", err)
+	if bufferExists(t, dir, "run") {
+		t.Fatalf("buffer left behind: %v", bufferFiles(t, dir, "run"))
 	}
 	var chunks []logdb.Chunk
 	if err := ldb.EachChunk(t.Context(), "run", 0, func(c logdb.Chunk) (bool, error) { chunks = append(chunks, c); return true, nil }); err != nil {
@@ -241,7 +241,7 @@ func TestArchiverBatchesShortRuns(t *testing.T) {
 	}
 	sealedBuffer(t, root, "large", randomLines(5, 200))
 	sealedBuffer(t, root, "noindex", []byte("salvaged\n"))
-	if err := os.Remove(filepath.Join(root, "noindex", "index.json")); err != nil {
+	if err := os.Remove(indexPath(filepath.Join(root, "noindex"))); err != nil {
 		t.Fatal(err)
 	}
 	ids = append(ids, "large", "noindex")
@@ -285,7 +285,7 @@ func TestEmptyIndexIsSalvagedLikeAMissingOne(t *testing.T) {
 	s, _, dir := newArchiveStore(t)
 	root := filepath.Join(dir, "logs")
 	sealedBuffer(t, root, "run", []byte("a\nb\nc\n"))
-	if err := os.WriteFile(filepath.Join(root, "run", "index.json"), nil, 0o600); err != nil {
+	if err := os.WriteFile(indexPath(filepath.Join(root, "run")), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ArchiveOrphans(); err != nil {
@@ -417,7 +417,7 @@ func TestFileChunkSyncFollowsSealState(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.SyncAll()
-		chunk := filepath.Join(dir, "logs", "run", "000001.zst")
+		chunk := bufPath(dir, "run", "000001.zst")
 		if !contains(log.paths, chunk) {
 			t.Fatalf("group sync skipped the sealed chunk: %v", log.paths)
 		}
@@ -438,7 +438,7 @@ func TestFileChunkSyncFollowsSealState(t *testing.T) {
 		if err := s.ArchiveOrphans(); err != nil {
 			t.Fatal(err)
 		}
-		if !contains(log.paths, filepath.Join(dir, "logs", "run", "000001.zst")) {
+		if !contains(log.paths, bufPath(dir, "run", "000001.zst")) {
 			t.Fatalf("chunk of an earlier process archived without a sync: %v", log.paths)
 		}
 		checkSequence(t, readAll(t, s, "run"), 200)

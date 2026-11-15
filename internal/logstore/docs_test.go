@@ -70,10 +70,10 @@ func TestDocsDescribeTheFailedFrameSequence(t *testing.T) {
 	docContains(t, "operations.md", "the frames of the one write that failed do")
 }
 
-// N2: the quarantine copy is named <run>-<chunk>.zst.corrupt (preserveCorrupt).
+// N2: the quarantine copy is named <run>.<chunk>.zst.corrupt (preserveCorrupt).
 func TestDocsNameTheQuarantineCopyLikeTheCode(t *testing.T) {
-	docContains(t, "operations.md", "<run>-<chunk>.zst.corrupt")
-	if b, _ := os.ReadFile("../../docs/operations.md"); strings.Contains(string(b), "<run>-<chunk>.corrupt") {
+	docContains(t, "operations.md", "<run>.<chunk>.zst.corrupt")
+	if b, _ := os.ReadFile("../../docs/operations.md"); strings.Contains(string(b), "<run>.<chunk>.corrupt") {
 		t.Error("docs/operations.md names the quarantine copy without .zst")
 	}
 }

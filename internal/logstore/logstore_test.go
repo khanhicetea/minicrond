@@ -3,9 +3,6 @@ package logstore
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -184,20 +181,17 @@ func TestReadSkipsIndexedChunksButDecodesUnindexedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(s.root, "run")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	base := filepath.Join(s.root, "run")
 	for i := 1; i <= 3; i++ {
 		blob, err := encodeFrames([]Frame{{Sequence: uint64(i), Stream: Stdout, Payload: []byte("line")}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%06d.zst", i)), blob, 0o600); err != nil {
+		if err := os.WriteFile(chunkPath(base, i), blob, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	indexPath := filepath.Join(dir, "index.json")
+	indexPath := indexPath(base)
 	idx := index{Version: int(Version), Chunks: []chunkMeta{{Number: 1, First: 1, Last: 1}, {Number: 2, First: 2, Last: 2}}}
 	data, err := json.Marshal(idx)
 	if err != nil {
@@ -208,7 +202,7 @@ func TestReadSkipsIndexedChunksButDecodesUnindexedFiles(t *testing.T) {
 	}
 	// A skipped sealed chunk is never opened, while the unindexed third file
 	// must still be decoded (as it would be after a crash during rotation).
-	if err := os.WriteFile(filepath.Join(dir, "000001.zst"), []byte("corrupt"), 0o600); err != nil {
+	if err := os.WriteFile(chunkPath(base, 1), []byte("corrupt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	frames, err := s.Read("run", 2, 1)
@@ -253,7 +247,7 @@ func TestJobLogArchivedIntoDatabaseOnClose(t *testing.T) {
 	if err = s.Close("run1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = os.Stat(filepath.Join(dir, "logs", "run1")); !errors.Is(err, fs.ErrNotExist) {
+	if bufferExists(t, dir, "run1") {
 		t.Fatal("buffer directory must be removed after archival")
 	}
 	runs, chunks, _, err := ldb.Stats(t.Context())
@@ -427,7 +421,7 @@ func TestOrphanBuffersAreSalvagedIntoArchive(t *testing.T) {
 	delete(buffer.writers, "crashed")
 	buffer.mu.Unlock()
 
-	files, err := filepath.Glob(filepath.Join(dir, "logs", "crashed", "*.zst"))
+	files, err := filepath.Glob(filepath.Join(dir, "logs", "crashed.*.zst"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +458,7 @@ func TestOrphanBuffersAreSalvagedIntoArchive(t *testing.T) {
 			t.Fatalf("frame %d payload %d bytes", i, len(f.Payload))
 		}
 	}
-	if _, err = os.Stat(filepath.Join(dir, "logs", "crashed")); !errors.Is(err, fs.ErrNotExist) {
+	if bufferExists(t, dir, "crashed") {
 		t.Fatal("orphan directory must be removed after archival")
 	}
 	runs, _, _, err := ldb.Stats(t.Context())
@@ -494,7 +488,7 @@ func TestDeleteRemovesArchiveAndFiles(t *testing.T) {
 	if runs != 0 {
 		t.Fatalf("archive still holds %d runs", runs)
 	}
-	if _, err = os.Stat(filepath.Join(dir, "logs", "run1")); !errors.Is(err, fs.ErrNotExist) {
+	if bufferExists(t, dir, "run1") {
 		t.Fatal("buffer directory still present")
 	}
 	frames, err := s.Read("run1", 0, 10)

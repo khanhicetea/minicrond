@@ -63,7 +63,7 @@ func TestRotationFinalizationFailureRemainsStable(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The chunk can be sealed, but its index cannot be atomically installed.
-	if err := os.Mkdir(filepath.Join(w.dir, "index.json"), 0o700); err != nil {
+	if err := os.Mkdir(indexPath(w.base), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	failure := w.Write(Stdout, payload, 0)
@@ -101,18 +101,15 @@ func TestOrphanArchivePreservesBuffersWithInvalidIndex(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, db, dir := newArchiveStore(t)
 			buffer := filepath.Join(dir, "logs", "run")
-			if err := os.Mkdir(buffer, 0o700); err != nil {
-				t.Fatal(err)
-			}
 			blob, err := encodeFrames([]Frame{{Sequence: 1, Stream: Stdout, Payload: []byte("preserve")}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			chunk := filepath.Join(buffer, "000001.zst")
+			chunk := chunkPath(buffer, 1)
 			if err := os.WriteFile(chunk, blob, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			indexPath := filepath.Join(buffer, "index.json")
+			indexPath := indexPath(buffer)
 			if tc.body == "" {
 				err = os.Mkdir(indexPath, 0o700)
 			} else {

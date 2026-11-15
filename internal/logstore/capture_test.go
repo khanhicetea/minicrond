@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -115,7 +114,7 @@ func TestPipeKeepsDrainingWhenLogWritesFail(t *testing.T) {
 	// Even though the final chunk could not be sealed, evidence reaches the index.
 	_ = s.Close("run")
 	var idx index
-	data, err := os.ReadFile(filepath.Join(w.dir, "index.json"))
+	data, err := os.ReadFile(indexPath(w.base))
 	if err != nil || json.Unmarshal(data, &idx) != nil {
 		t.Fatalf("index unreadable: %v", err)
 	}
@@ -187,7 +186,7 @@ func TestCaptureRecoversAndRecordsLoss(t *testing.T) {
 		}
 	}
 	var idx index
-	data, _ := os.ReadFile(filepath.Join(w.dir, "index.json"))
+	data, _ := os.ReadFile(indexPath(w.base))
 	if err := json.Unmarshal(data, &idx); err != nil || !idx.Truncated || idx.DroppedFrames != 11 {
 		t.Fatalf("index = %+v, %v", idx, err)
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,7 +35,7 @@ func waitArchived(t *testing.T, dir, runID string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "logs", runID)); errors.Is(err, os.ErrNotExist) {
+		if !bufferExists(t, dir, runID) {
 			return
 		}
 		if time.Now().After(deadline) {

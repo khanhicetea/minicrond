@@ -30,7 +30,7 @@ func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 // Default policy: keep everything; the quarantine is only measured.
 func TestQuarantineIsKeptByDefaultAndReported(t *testing.T) {
 	s, _, _ := newArchiveStore(t)
-	old := addQuarantined(t, s, "run-000001.zst.corrupt", 4000, 400*24*time.Hour)
+	old := addQuarantined(t, s, "run.000001.zst.corrupt", 4000, 400*24*time.Hour)
 	res, err := s.PurgeQuarantine(t.Context(), QuarantinePolicy{}, time.Now())
 	if err != nil || res.Entries != 0 || !exists(old) {
 		t.Fatalf("zero policy purged: %+v, %v", res, err)
@@ -50,8 +50,8 @@ func TestQuarantineIsKeptByDefaultAndReported(t *testing.T) {
 func TestQuarantineAgePolicyPurgesOnlyOldEntriesAndLogsThem(t *testing.T) {
 	logs := captureLogs(t)
 	s, _, _ := newArchiveStore(t)
-	old := addQuarantined(t, s, "old-000001.zst.corrupt", 1000, 40*24*time.Hour)
-	recent := addQuarantined(t, s, "new-000001.zst.corrupt", 1000, 24*time.Hour)
+	old := addQuarantined(t, s, "old.000001.zst.corrupt", 1000, 40*24*time.Hour)
+	recent := addQuarantined(t, s, "new.000001.zst.corrupt", 1000, 24*time.Hour)
 	// A whole quarantined buffer directory is purged as one entry.
 	dir := filepath.Join(s.root, QuarantineDir, "buffer")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

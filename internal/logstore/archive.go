@@ -1,7 +1,6 @@
 package logstore
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -126,7 +125,7 @@ func (s *Store) renameMove(dir string, m movedChunk) error {
 		return err
 	}
 	delete(s.unsyncedSeals, m.src)
-	s.deferSealLocked(sealedChunk{dir: dir, number: m.number})
+	s.deferSealLocked(sealedChunk{path: s.db.ChunkPath(filepath.Base(dir), m.number)})
 	return nil
 }
 
@@ -283,10 +282,10 @@ var errArchiveDB = errors.New("archive database")
 // readOrphanIndex loads a buffer's index and its sealed chunk metadata. A
 // missing index, or an empty one (an index renamed into place whose data was
 // not yet synced when the OS crashed, ADR-20), means every chunk is salvaged.
-func readOrphanIndex(dir string) (index, map[int]chunkMeta, error) {
+func readOrphanIndex(base string) (index, map[int]chunkMeta, error) {
 	sealed := make(map[int]chunkMeta)
 	var idx index
-	b, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	b, err := os.ReadFile(indexPath(base))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return idx, nil, fmt.Errorf("read orphan log index: %w", err)
 	}
@@ -315,16 +314,26 @@ func readOrphanIndex(dir string) (index, map[int]chunkMeta, error) {
 // archive slot and its exclusive run lock. Indexed chunks are copied verbatim
 // (or, from fileChunkMin, moved into the archive directory); unindexed chunks
 // are salvaged up to the last intact frame. Every committed batch is removed
-// before loading the next one, including during startup recovery.
-func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
-	idx, sealed, err := readOrphanIndex(dir)
+// before loading the next one, including during startup recovery. base is the
+// run's flat buffer prefix; extra are chunk files a root listing found.
+func (s *Store) archiveOrphan(ctx context.Context, runID, base string, extra []chunkFile) error {
+	idx, sealed, err := readOrphanIndex(base)
 	if err != nil {
 		return err
 	}
-	files, err := chunkFiles(dir)
+	files, err := bufferChunksFrom(base, &idx, extra)
 	if err != nil {
 		return err
 	}
+	// Empty chunks have nothing to archive and are removed with the buffer.
+	var empty []string
+	// A buffer whose index names no chunk is found by probing from chunk 1
+	// (bufferChunks). Once a committed batch removed its lowest chunks, the
+	// rest would be unreachable for readers until the next sweep lists the
+	// root, so a stub index naming the next chunk is written; it lists no
+	// sealed chunk, so the next sweep still salvages them all.
+	stub := len(sealed) == 0 && idx.Open == 0
+	resumeAt := 0
 	var chunks []logdb.Chunk
 	var paths []string
 	var moves []movedChunk
@@ -351,6 +360,11 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 				return err
 			}
 		}
+		if stub && resumeAt > 0 {
+			if err := writeStubIndex(base, idx, resumeAt); err != nil {
+				return err
+			}
+		}
 		clear(chunks)
 		chunks = chunks[:0]
 		paths = paths[:0]
@@ -369,6 +383,7 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		resumeAt = file.number // a flush in this iteration leaves this chunk and later ones
 		info, err := os.Stat(file.path)
 		if err != nil {
 			return err
@@ -413,6 +428,7 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 					quarantined = append(quarantined, fmt.Errorf("%w; the original was moved to the quarantine", cause))
 				}
 				// Otherwise a genuinely empty chunk: nothing to archive.
+				empty = append(empty, file.path)
 				continue
 			}
 			if salvageErr != nil {
@@ -449,19 +465,46 @@ func (s *Store) archiveOrphan(ctx context.Context, runID, dir string) error {
 		paths = append(paths, file.path)
 		size += int64(len(c.Blob))
 	}
+	resumeAt = 0
 	if err := flush(); err != nil {
 		return err
 	}
 	if len(corrupt) > 0 {
 		return fmt.Errorf("orphan log buffer kept: %w", errors.Join(append(corrupt, quarantined...)...))
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	for _, path := range empty {
+		if err := removeFile(path); err != nil {
+			return err
+		}
+	}
+	// Every chunk is archived and removed: the temporary index, then the
+	// index, close the buffer.
+	if err := removeFile(indexTmpPath(base)); err != nil {
+		return err
+	}
+	if err := removeFile(indexPath(base)); err != nil {
 		return err
 	}
 	if len(quarantined) > 0 {
 		return fmt.Errorf("%w: %w", errChunkQuarantined, errors.Join(quarantined...))
 	}
 	return nil
+}
+
+// writeStubIndex replaces an orphan's index by one that lists no sealed
+// chunk and names open, the lowest chunk left, so readers keep finding the
+// chunks a partly archived buffer still holds. It is not synced: after a
+// crash the startup sweep lists the root and finds them anyway.
+func writeStubIndex(base string, idx index, open int) error {
+	idx.Version, idx.Chunks, idx.Open = int(Version), nil, open
+	b, err := json.Marshal(idx)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(indexTmpPath(base), b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(indexTmpPath(base), indexPath(base))
 }
 
 // errChunkQuarantined reports a sweep that archived everything decodable and
@@ -476,7 +519,8 @@ func (s *Store) preserveCorrupt(runID, path string, blob []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, runID+"-"+filepath.Base(path)+".corrupt"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// The chunk's file name (<run>.NNNNNN.zst) already names the run.
+	f, err := os.OpenFile(filepath.Join(dir, filepath.Base(path)+".corrupt"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -492,6 +536,8 @@ type chunkFile struct {
 	path   string
 }
 
+// chunkFiles lists the chunk files of an archive directory (log-archive/<run>,
+// ADR-20), which keeps a directory per run.
 func chunkFiles(dir string) ([]chunkFile, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.zst"))
 	if err != nil {
@@ -504,8 +550,7 @@ func chunkFiles(dir string) ([]chunkFile, error) {
 			files = append(files, chunkFile{number: number, path: path})
 		}
 	}
-	// Zero padding is a minimum width, not a maximum: 1000000 follows 999999.
-	slices.SortFunc(files, func(a, b chunkFile) int { return cmp.Compare(a.number, b.number) })
+	sortChunkFiles(files)
 	return files, nil
 }
 

@@ -13,7 +13,9 @@ data/
 ├── minicrond.db          # definitions + run history + audit (SQLite, WAL)
 ├── minicrond-logs.db     # log archive (SQLite, WAL) — separate database
 ├── log-archive/<run_id>/ # archived large log chunks (files the log archive references)
-├── logs/<run_id>/       # live run log buffers (zstd chunks: plain, then compressed)
+├── logs/                 # live run log buffers, flat files per run (ADR-24):
+│   ├── <run_id>.json      #   index: sealed chunks, final flag, capture evidence
+│   └── <run_id>.NNNNNN.zst #  zstd chunks: plain, then compressed
 ├── minicrond.sock        # mode-0600 Unix socket (local CLI)
 ├── minicrond.lock        # instance lock (flock + pid)
 └── initial-token        # one-time initial bearer token (mode 0600)
@@ -51,8 +53,10 @@ for later aggregation. See
 
 Log storage is two-tier (ADR-6):
 
-1. **Live tier** — running runs write compressed chunk files under
-   `data/logs/<run_id>/`. Every accepted frame is written to the chunk file
+1. **Live tier** — running runs write compressed chunk files
+   `data/logs/<run_id>.NNNNNN.zst` with an index `data/logs/<run_id>.json`
+   (flat files, no directory per run:
+   [ADR-24](adr/0024-flat-log-buffers.md)). Every accepted frame is written to the chunk file
    before the next line is read, so a daemon crash loses no accepted output.
    With `logs.durability = "batch"` (default, ADR-8 1B) the fsync is grouped:
    one shared timer, armed only while some run holds unsynced output, syncs all
@@ -61,7 +65,8 @@ Log storage is two-tier (ADR-6):
    1 MiB) of unsynced output. A sparse run is synced by the timer without
    another line arriving. Pipe EOF and run completion join the same group
    ([ADR-20](adr/0020-log-archive-write-path.md)): the sealed chunk, its index
-   and directory are synced by the next group sync, or never if the archiver
+   and the `logs/` directory are synced by the next group sync (one directory
+   fsync per pass for all runs), or never if the archiver
    has already committed the run and removed its buffer; orderly shutdown
    always syncs. An **OS crash or power loss can lose output newer than the
    last sync**, a finished run's last output included (nominally the sync
@@ -139,20 +144,20 @@ ends, the run keeps its real status (for example `succeeded`) and is marked
 `log_truncated`.
 
 Corrupt buffers: an orphaned chunk that cannot be decoded at all is never
-deleted. It is moved at once to `data/logs/.quarantine/<run>-<chunk>.zst.corrupt`,
+deleted. It is moved at once to `data/logs/.quarantine/<run>.<chunk>.zst.corrupt`,
 the run's valid chunks are archived (so the run stays readable), and the sweep
 reports the quarantine once. A chunk corrupt after a valid prefix has the prefix
 archived and the original bytes copied to the same
-`.quarantine/<run>-<chunk>.zst.corrupt` name. If the quarantine move itself
+`.quarantine/<run>.<chunk>.zst.corrupt` name. If the quarantine move itself
 fails, the chunk stays in place and fails each sweep; after repeated failures the
-whole buffer moves to `.quarantine/<run>/`. Torn tails left by a crash are still
+whole buffer moves to `.quarantine/<run>/`, its files keeping their names. Torn tails left by a crash are still
 salvaged up to the last intact frame. By default quarantined files are kept
 forever and never pruned automatically: watch `quarantine_bytes`,
 `quarantine_entries` and `quarantine_oldest_age_s` under
 `diagnostics.log_storage.disk` (see below) and remove or repair them
 deliberately. To bound them, opt in to `logs.quarantine_keep_for` (days) and/or
 `logs.quarantine_max_size` (MiB): the daily log prune then deletes whole
-top-level entries (a `<run>-<chunk>.zst.corrupt` file or a `<run>/` directory),
+top-level entries (a `<run>.<chunk>.zst.corrupt` file or a `<run>/` directory),
 oldest first, and logs every deletion at warn level with its reason. Disk
 pressure never touches the quarantine.
 

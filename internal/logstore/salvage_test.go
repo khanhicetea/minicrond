@@ -88,11 +88,10 @@ func TestSalvageFramesClassifiesStreams(t *testing.T) {
 
 func writeOrphan(t *testing.T, dir, run, chunk string, data []byte) string {
 	t.Helper()
-	buffer := filepath.Join(dir, "logs", run)
-	if err := os.MkdirAll(buffer, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(buffer, chunk)
+	path := bufPath(dir, run, chunk)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +115,7 @@ func TestCorruptOrphanChunkIsPreservedWithError(t *testing.T) {
 			if err == nil {
 				t.Fatal("a corrupt chunk was reported as successfully archived")
 			}
-			quarantined, readErr := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run-000001.zst.corrupt"))
+			quarantined, readErr := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run.000001.zst.corrupt"))
 			if readErr != nil || !bytes.Equal(quarantined, tc.blob) {
 				t.Fatalf("corrupt chunk missing from the quarantine: %v", readErr)
 			}
@@ -200,8 +199,8 @@ func TestTornChunkValidPrefixIsStillSalvaged(t *testing.T) {
 	if err != nil || len(frames) < 2 || string(frames[0].Payload) != "one" {
 		t.Fatalf("salvaged %v, %v", frames, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "run")); !os.IsNotExist(err) {
-		t.Fatalf("buffer not removed after a successful salvage: %v", err)
+	if bufferExists(t, dir, "run") {
+		t.Fatalf("buffer not removed after a successful salvage: %v", bufferFiles(t, dir, "run"))
 	}
 }
 
@@ -221,7 +220,7 @@ func TestPartlyCorruptChunkArchivesPrefixAndPreservesOriginal(t *testing.T) {
 	if _, chunks, _, _ := db.Stats(t.Context()); chunks != 1 {
 		t.Fatalf("archived %d chunks", chunks)
 	}
-	kept, err := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run-000001.zst.corrupt"))
+	kept, err := os.ReadFile(filepath.Join(dir, "logs", QuarantineDir, "run.000001.zst.corrupt"))
 	if err != nil || !bytes.Equal(kept, blob) {
 		t.Fatalf("original bytes not preserved: %v", err)
 	}
@@ -234,8 +233,8 @@ func TestEmptyOrphanChunkIsNotCorruption(t *testing.T) {
 	if err := s.ArchiveOrphans(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "run")); !os.IsNotExist(err) {
-		t.Fatalf("empty buffer kept: %v", err)
+	if bufferExists(t, dir, "run") {
+		t.Fatalf("empty buffer kept: %v", bufferFiles(t, dir, "run"))
 	}
 }
 
@@ -257,7 +256,7 @@ func TestPipeTruncationSetsRunLevelFlag(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "logs", "run", "index.json"))
+	data, err := os.ReadFile(bufPath(dir, "run", "index.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

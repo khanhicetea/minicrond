@@ -3,7 +3,6 @@ package logstore
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -319,9 +318,8 @@ func TestFailedFinalArchiveRetriedWithoutRestart(t *testing.T) {
 	if s.Active("run") != nil {
 		t.Fatal("closed writer still active")
 	}
-	buffer := filepath.Join(dir, "logs", "run")
-	if _, err := os.Stat(buffer); err != nil {
-		t.Fatal("failed archive lost buffer:", err)
+	if !bufferExists(t, dir, "run") {
+		t.Fatal("failed archive lost buffer")
 	}
 	reopened, err := logdb.Open(dir)
 	if err != nil {
@@ -334,8 +332,8 @@ func TestFailedFinalArchiveRetriedWithoutRestart(t *testing.T) {
 	if err := s.ArchiveOrphans(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(buffer); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("buffer remains after retry: %v", err)
+	if left := bufferFiles(t, dir, "run"); len(left) != 0 {
+		t.Fatalf("buffer remains after retry: %v", left)
 	}
 	frames, err := s.Read("run", 0, 100)
 	if err != nil || len(frames) != 1 || string(frames[0].Payload) != "retained" {
@@ -357,11 +355,7 @@ func TestArchiveBatchBounds(t *testing.T) {
 			defer func(old int64) { fileChunkMin = old }(fileChunkMin)
 			fileChunkMin = 1 << 40
 			s, db, dir := newArchiveStore(t)
-			buffer := filepath.Join(dir, "logs", "run")
-			if err := os.Mkdir(buffer, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			w := &Writer{store: s, runID: "run", job: "job", kind: model.KindJob, dir: buffer}
+			w := &Writer{store: s, runID: "run", job: "job", kind: model.KindJob, base: filepath.Join(dir, "logs", "run")}
 			rng := rand.NewChaCha8([32]byte{1})
 			payload := make([]byte, tc.payload)
 			if _, err := rng.Read(payload); err != nil {
@@ -436,18 +430,19 @@ func TestChunkFilesUseNumericOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(s.root, "run")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for i, name := range []string{"999999.zst", "1000000.zst"} {
+	base := filepath.Join(s.root, "run")
+	for i, n := range []int{999999, 1000000} {
 		blob, err := encodeFrames([]Frame{{Sequence: uint64(i + 1), Stream: Stdout, Payload: []byte("x")}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), blob, 0o600); err != nil {
+		if err := os.WriteFile(chunkPath(base, n), blob, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The index names the sealed chunk; the next one is found past it.
+	if err := os.WriteFile(indexPath(base), []byte(`{"version":1,"chunks":[{"number":999999,"first":1,"last":1,"bytes":1,"raw":25}],"final":false,"truncated":false}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	frames, err := s.Read("run", 0, 100)
 	if err != nil || len(frames) != 2 || frames[0].Sequence != 1 || frames[1].Sequence != 2 {

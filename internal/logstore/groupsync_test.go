@@ -433,14 +433,14 @@ func TestSealWithFailedIndexStillQueuesSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A directory where the index's temporary file goes makes writeIndex fail.
-	if err := os.Mkdir(filepath.Join(w.dir, "index.json.tmp"), 0o700); err != nil {
+	if err := os.Mkdir(indexTmpPath(w.base), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close("run"); err == nil {
 		t.Fatal("expected the index failure")
 	}
 	s.SyncAll()
-	if want := filepath.Join(w.dir, "000001.zst"); !slices.Contains(synced, want) {
+	if want := chunkPath(w.base, 1); !slices.Contains(synced, want) {
 		t.Fatalf("chunk not synced after a failed index: %v", synced)
 	}
 }

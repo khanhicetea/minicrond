@@ -251,8 +251,8 @@ func TestStopArchiverCancelsArchiveTransactionBlockedOnDatabase(t *testing.T) {
 	if took := time.Since(start); took > 3*time.Second {
 		t.Fatalf("StopArchiver waited %v for the database", took)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "run")); err != nil {
-		t.Fatalf("buffer must remain for the next sweep: %v", err)
+	if !bufferExists(t, dir, "run") {
+		t.Fatal("buffer must remain for the next sweep")
 	}
 }
 

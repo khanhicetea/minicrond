@@ -3,12 +3,8 @@ package logstore
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -165,7 +161,7 @@ func TestSealDoesNotWaitForArchival(t *testing.T) {
 	if err != nil || runs != 1 || chunks != 1 {
 		t.Fatalf("archive has %d runs, %d chunks, error %v", runs, chunks, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "logs", "run")); !errors.Is(err, fs.ErrNotExist) {
+	if bufferExists(t, dir, "run") {
 		t.Fatal("buffer directory must be removed after background archival")
 	}
 	frames, err = s.Read("run", 0, 10)
