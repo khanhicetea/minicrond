@@ -341,6 +341,47 @@ summary {
   color: var(--mc-info-fg);
 }
 
+.callout-ok {
+  border-color: var(--mc-ok-line);
+  background: var(--mc-ok-soft);
+}
+.callout-ok .callout-icon {
+  color: var(--mc-ok-fg);
+}
+
+/* App-wide confirmation banner, pinned under the header (see NoticeBar). */
+.notice-anchor {
+  position: fixed;
+  top: calc(var(--mc-header-h) + 0.75rem);
+  left: 50%;
+  z-index: 40;
+  width: min(36rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.notice-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.875rem;
+  font-size: var(--mc-text-sm);
+  color: var(--mc-fg);
+  box-shadow: var(--mc-shadow-pop);
+  pointer-events: auto;
+  animation: notice-in 160ms ease-out;
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.375rem);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-bar {
+    animation: none;
+  }
+}
+
 /* Attention list items inside a danger callout. */
 .attention-grid {
   display: grid;

@@ -11,6 +11,7 @@ import { definitionToToml, highlightToml } from '../lib/toml';
 import { duplicateDefinition, emptyDefinition, updateDefinitionDraft } from '../lib/definition';
 import { validateDefinition, type DefinitionIssue } from '../lib/validate';
 import { jobPath } from '../lib/routes';
+import { showNotice } from '../lib/notice';
 import type { Definition } from '../types';
 
 const FORM_ID = 'job-editor-form';
@@ -44,7 +45,6 @@ export default function JobEditor({ params }: JobEditorProps) {
   const [validationVisible, setValidationVisible] = useState(false);
   const [copiedToml, setCopiedToml] = useState(false);
   const [serverError, setServerError] = useState('');
-  const [savedFlash, setSavedFlash] = useState(false);
 
   // Query data can change after focus or invalidation. Never replace an open draft.
   useEffect(() => {
@@ -129,12 +129,13 @@ export default function JobEditor({ params }: JobEditorProps) {
       {
         onSuccess: saved => {
           setDirty(false);
+          const label = saved.kind === 'worker' ? 'Worker' : 'Job';
+          showNotice({
+            tone: 'ok',
+            title: creating ? `${label} ${saved.name} created` : `${label} ${saved.name} saved`,
+          });
           if (creating) void navigate(jobPath(saved.name));
-          else {
-            setDraft(saved);
-            setSavedFlash(true);
-            setTimeout(() => setSavedFlash(false), 2500);
-          }
+          else setDraft(saved);
         },
         onError: error => setServerError(errorText(error)),
       },
@@ -190,7 +191,6 @@ export default function JobEditor({ params }: JobEditorProps) {
         badge={
           <>
             {!creating && <Badge tone={isWorker ? 'ok' : 'info'}>{isWorker ? 'Worker' : 'Job'}</Badge>}
-            {savedFlash && <Badge tone="ok" icon="check">Saved</Badge>}
             {configOwned && <Badge tone="info">Config owned · view only</Badge>}
           </>
         }

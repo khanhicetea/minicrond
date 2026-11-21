@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { Icon } from './Icon';
+import NoticeBar from './NoticeBar';
 import { IconButton, SearchField } from './ui';
 import { auth, useAuthState } from '../auth';
 import { daemonQuery } from '../queries';
@@ -215,6 +216,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           {mode === 'token' && <IconButton icon="log-out" label="Sign out" title="Sign out (clears the token from this tab)" onClick={() => auth.logout()} />}
         </div>
       </header>
+      <NoticeBar />
       <main className={flush ? 'page-flush' : 'page'}>{children}</main>
     </div>
   );
