@@ -36,6 +36,7 @@
   --color-warn-fg: var(--mc-warn-fg);
   --color-info: var(--mc-info);
   --color-info-fg: var(--mc-info-fg);
+  --color-neutral: var(--mc-neutral);
 
   --color-base-100: var(--mc-surface-1);
   --color-base-200: var(--mc-surface-canvas);

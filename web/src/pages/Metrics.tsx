@@ -3,90 +3,52 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/Layout';
-import { errorText } from '../api';
+import { RunGraph } from '../components/RunGraph';
+import { api, errorText } from '../api';
 import { LegendDot, LineChart, StackedBars, StepChart } from '../components/charts';
-import { daemonQuery, jobsQuery, runMetricsQuery, useWorkerStates } from '../queries';
+import { daemonQuery, runMetricsQuery } from '../queries';
+import { useOverview } from '../lib/attention';
 import { formatDurationMs, formatUptime } from '../lib/format';
 import { useRange, RANGE_MS, RANGE_LABEL, type RangeKey } from '../lib/range';
 import { jobPath } from '../lib/routes';
-import type { RunMetrics } from '../types';
+import type { RunJobMetrics, RunMetrics, WorkerState } from '../types';
 import { useChartColors } from '../lib/tokens';
 
 const BUCKETS = 48;
-
+const RANGE_KEYS: RangeKey[] = ['15m', '1h', '24h', '7d', '30d'];
 const EMPTY_METRICS: RunMetrics = { total: 0, succeeded: 0, failed: 0, active: 0, queued: 0, jobs: [], buckets: [] };
+
+type WorkerGroup = WorkerState['status'];
+const WORKER_GROUPS: { key: WorkerGroup; label: string; dot: string }[] = [
+  { key: 'running', label: 'Running', dot: 'bg-ok' },
+  { key: 'restarting', label: 'Restarting', dot: 'bg-warn' },
+  { key: 'held', label: 'Held', dot: 'bg-warn' },
+  { key: 'exhausted', label: 'Exhausted', dot: 'bg-danger' },
+  { key: 'stopped', label: 'Stopped / disabled', dot: 'bg-neutral' },
+];
 
 function formatChartTimeLabel(time: number, range: RangeKey) {
   const date = new Date(time);
-  if (range === '7d' || range === '30d') {
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  }
-  if (range === '24h') {
-    return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  }
+  if (range === '7d' || range === '30d') return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  if (range === '24h') return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Metrics — run statistics computed from live history + daemon info. */
+const duration = (ms: number | null | undefined) => (ms == null ? '—' : formatDurationMs(ms));
+const failureRate = (job: { succeeded: number; failed: number }) => {
+  const done = job.succeeded + job.failed;
+  return done > 0 ? (job.failed / done) * 100 : null;
+};
+
+/** Metrics — run statistics computed on request from stored history, plus daemon facts. */
 export default function Metrics() {
   const { range, setRange } = useRange();
-  const { info: BLUE, ok: GREEN, danger: RED, warn: AMBER } = useChartColors();
+  const { info: BLUE, warn: AMBER, ok: GREEN, danger: RED } = useChartColors();
   const daemon = useQuery(daemonQuery());
   const metrics = useQuery(runMetricsQuery(range, BUCKETS));
-  const jobs = useQuery(jobsQuery());
-  const [jobFilter, setJobFilter] = useState('');
-
-  const jobNames = (jobs.data ?? []).filter(d => d.kind === 'job').map(d => d.name).sort();
-  const workerNames = (jobs.data ?? []).filter(d => d.kind === 'worker').map(d => d.name);
-  const workerStates = useWorkerStates(workerNames);
-
-  const now = Date.now();
-  const windowMs = RANGE_MS[range];
-
-  const data = metrics.data ?? EMPTY_METRICS;
-  const stats = {
-    ...data,
-    rate: data.total > 0 ? (data.succeeded / data.total) * 100 : null,
-    median: data.duration_p50_ms ?? null,
-    p95: data.duration_p95_ms ?? null,
-  };
-
-  // Per-job aggregates for the Job stats panel.
-  const jobStats = stats.jobs.map(job => ({
-    ...job,
-    rate: job.total > 0 ? (job.succeeded / job.total) * 100 : null,
-    median: job.duration_p50_ms ?? null,
-    p95: job.duration_p95_ms ?? null,
-  }));
-
-  const selectedJob = jobFilter === '' ? null : jobStats.find(s => s.name === jobFilter) ?? null;
-
-  // Bucket the window for charts.
-  const start = now - windowMs;
-  const bucketMs = windowMs / BUCKETS;
-  const buckets = stats.buckets;
-  const success = buckets.map(bucket => bucket.success);
-  const failure = buckets.map(bucket => bucket.failure);
-  const median = buckets.map(bucket => bucket.duration_p50_ms ?? null);
-  const p95 = buckets.map(bucket => bucket.duration_p95_ms ?? null);
-  const activeSeries = buckets.map(bucket => bucket.active);
-  const queueSeries = buckets.map(bucket => bucket.queued);
-  const timeLabels = buckets.map((_, i) => formatChartTimeLabel(start + i * bucketMs, range));
-  const charts = { success, failure, median, p95, activeSeries, queueSeries, timeLabels };
-
-  const rows = { healthy: 0, attention: 0, stopped: 0 };
-  for (const name of workerNames) {
-    const state = workerStates[name];
-    if (!state) continue;
-    if ((state.failures ?? 0) > 0 || state.held) rows.attention += 1;
-    else if (state.active) rows.healthy += 1;
-    else rows.stopped += 1;
-  }
-  const total = rows.healthy + rows.attention + rows.stopped;
-  const workerRows = { rows, total };
-
-  const rangeKeys: RangeKey[] = ['15m', '1h', '24h', '7d', '30d'];
-  const activeRange = range;
+  const alerts = useQuery({ queryKey: ['alert-metrics'], queryFn: api.alertMetrics, refetchInterval: 30_000, refetchIntervalInBackground: false });
+  const { jobs, definitions, runsByJob, workerStates } = useOverview();
+  const [filter, setFilter] = useState('');
 
   if (metrics.isPending) {
     return <div className="space-y-4"><PageHeader title="Metrics" /><div className="skeleton h-48 w-full" /></div>;
@@ -103,9 +65,43 @@ export default function Metrics() {
     );
   }
 
+  const data = metrics.data ?? EMPTY_METRICS;
+  const now = Date.now();
+  const windowMs = RANGE_MS[range];
+  const start = now - windowMs;
+  const bucketMs = windowMs / BUCKETS;
+  const buckets = data.buckets;
+  const labels = buckets.map((_, i) => formatChartTimeLabel(start + i * bucketMs, range));
+  const completed = data.succeeded + data.failed;
+  const rate = failureRate(data);
+  const failingJobs = data.jobs.filter(job => job.failed > 0).length;
+
+  // Workers: every defined worker lands in exactly one group; disabled ones count as stopped.
+  const workers = definitions.filter(d => d.kind === 'worker');
+  const workerCounts: Record<WorkerGroup, number> = { running: 0, restarting: 0, held: 0, exhausted: 0, stopped: 0 };
+  const restartingNames: string[] = [];
+  for (const worker of workers) {
+    const state = workerStates[worker.name];
+    const group: WorkerGroup = worker.enabled === false || !state ? 'stopped' : state.status in workerCounts ? state.status : 'stopped';
+    workerCounts[group] += 1;
+    if (group === 'restarting') restartingNames.push(worker.name);
+  }
+  const workersUp = workerCounts.running;
+  const workersTrouble = workerCounts.restarting + workerCounts.held + workerCounts.exhausted;
+
+  const needle = filter.trim().toLowerCase();
+  const jobRows = [...data.jobs]
+    .filter(job => !needle || job.name.toLowerCase().includes(needle))
+    .sort((a, b) => b.failed - a.failed || (failureRate(b) ?? 0) - (failureRate(a) ?? 0) || a.name.localeCompare(b.name));
+
+  const history = daemon.data?.diagnostics?.run_history;
+  const degraded = Boolean(history && (history.storage_degraded || history.read_only || history.dropped > 0));
+  const alertCounts = Object.entries(alerts.data?.counts ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const stale = metrics.isError || jobs.isError || daemon.isError;
+
   return (
-    <div className="space-y-4">
-      {(metrics.isError || jobs.isError || daemon.isError) && (
+    <div className="space-y-5">
+      {stale && (
         <div role="alert" className="panel border-warn/40 bg-warn/5 px-4 py-3 text-sm text-warn-fg">
           {metrics.isError ? 'Metrics' : jobs.isError ? 'Definitions' : 'Daemon status'} could not be refreshed. Displayed values may be stale.
           <button type="button" className="ml-3 underline" onClick={() => { void metrics.refetch(); void jobs.refetch(); void daemon.refetch(); }}>Retry</button>
@@ -113,15 +109,11 @@ export default function Metrics() {
       )}
       <PageHeader
         title="Metrics"
-        subtitle={
-          <span className="inline-flex items-center gap-1.5">
-            Computed by backend run metrics · {metrics.isError ? 'refresh failed' : 'updated live'} <span className={`dot ${metrics.isError ? 'dot-amber' : 'dot-green dot-pulse'}`} />
-          </span>
-        }
+        subtitle={`Run history for the ${RANGE_LABEL[range].toLowerCase()} · computed when this page is open`}
         actions={
-          <div className="tab-seg">
-            {rangeKeys.map(key => (
-              <button key={key} type="button" className={activeRange === key ? 'active' : ''} onClick={() => setRange(key)}>
+          <div className="tab-seg" role="group" aria-label="Time range">
+            {RANGE_KEYS.map(key => (
+              <button key={key} type="button" aria-pressed={range === key} className={range === key ? 'active' : ''} onClick={() => setRange(key)}>
                 {key}
               </button>
             ))}
@@ -129,292 +121,226 @@ export default function Metrics() {
         }
       />
 
-      {/* Stat cards */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon="activity" label={`Runs (${RANGE_LABEL[activeRange].replace('Last ', '')})`} value={String(stats.total)} sub="Total runs queued" />
-        <StatCard
-          icon="trending-up"
-          label="Success rate"
-          value={stats.rate === null ? '—' : `${stats.rate.toFixed(1)}%`}
-          valueClass="text-ok-fg"
-          sub={
-            <>
-              <span className="text-ok-fg">{stats.succeeded} succeeded</span> · <span className="text-danger-fg">{stats.failed} failed</span>
-            </>
-          }
+      {degraded && history && (
+        <section role="alert" className="panel flex flex-wrap items-center gap-3 border-warn/40 bg-warn/5 px-4 py-3 text-sm">
+          <Icon name="alert-triangle" size={16} className="shrink-0 text-warn-fg" />
+          <strong className="font-semibold text-warn-fg">Run history is {history.read_only ? 'read-only' : 'degraded'}</strong>
+          <span className="muted">
+            Schedules keep running. {history.pending} runs waiting to be stored, {history.dropped} dropped. Figures below may be incomplete.
+          </span>
+        </section>
+      )}
+
+      {/* KPI row */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <Kpi label="Completed runs" value={completed.toLocaleString()} sub={`${data.total.toLocaleString()} recorded in window`} />
+        <Kpi
+          label="Failure rate"
+          value={rate === null ? '—' : `${rate.toFixed(rate < 10 ? 1 : 0)}%`}
+          valueClass={data.failed > 0 ? 'text-danger-fg' : ''}
+          sub={data.failed > 0 ? <><span className="text-danger-fg">{data.failed} failed</span> in {failingJobs} {failingJobs === 1 ? 'job' : 'jobs'}</> : 'No failures'}
         />
-        <StatCard icon="users" label="Active runs" value={String(stats.active)} valueClass={stats.active > 0 ? 'text-link' : ''} sub="Currently executing" />
-        <StatCard icon="file-text" label="Daemon uptime" value={daemon.data ? formatUptime(daemon.data.uptime_s) : '—'} valueClass="text-warn-fg" sub={daemon.data ? `v${daemon.data.version} · schema ${daemon.data.schema_version}` : daemon.isError ? 'unavailable' : 'connecting…'} />
+        <Kpi label="Duration p95" value={duration(data.duration_p95_ms)} sub={`median ${duration(data.duration_p50_ms)}`} />
+        <Kpi label="Running now" value={String(data.active)} valueClass={data.active > 0 ? 'text-link' : ''} sub={`${data.queued} queued`} />
+        <Kpi
+          label="Workers"
+          value={<>{workersUp}<span className="text-base font-normal faint"> / {workers.length} up</span></>}
+          sub={workersTrouble > 0 ? <span className="text-warn-fg">{workersTrouble} need attention</span> : workers.length === 0 ? 'None defined' : 'All healthy or stopped'}
+        />
       </div>
 
-      {/* Main 4/8 split */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        {/* Left column: Worker states, Active runs, Run stats */}
-        <div className="flex min-w-0 flex-col gap-4 lg:col-span-4">
-          {/* Worker states */}
-          <section className="panel p-4 sm:p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="panel-title">Worker states</h2>
-              <span className="num text-xs muted">{workerRows.total} total</span>
-            </div>
-            {workerRows.total > 0 && (
-              <div className="mb-3 flex h-2 w-full overflow-hidden rounded-full bg-base-200" title="Healthy / needs attention / stopped">
-                <div className="bg-ok" style={{ width: `${(workerRows.rows.healthy / workerRows.total) * 100}%` }} />
-                <div className="bg-warn" style={{ width: `${(workerRows.rows.attention / workerRows.total) * 100}%` }} />
-                <div className="bg-danger" style={{ width: `${(workerRows.rows.stopped / workerRows.total) * 100}%` }} />
-              </div>
-            )}
-            <table className="mc-table">
-              <thead>
-                <tr>
-                  <th>State</th>
-                  <th className="text-right">Instances</th>
-                  <th className="text-right">%</th>
-                </tr>
-              </thead>
-              <tbody>
-                <WorkerRow color="bg-ok" label="Healthy" count={workerRows.rows.healthy} total={workerRows.total} />
-                <WorkerRow color="bg-warn" label="Needs attention" count={workerRows.rows.attention} total={workerRows.total} />
-                <WorkerRow color="bg-danger" label="Stopped" count={workerRows.rows.stopped} total={workerRows.total} />
-              </tbody>
-            </table>
-            {workerRows.total === 0 && <p className="mt-3 text-xs faint">{jobs.isError ? 'Worker definitions are unavailable.' : jobs.isPending ? 'Loading workers…' : 'No workers defined.'}</p>}
-          </section>
-
-          {/* Active runs & queue depth */}
+      <div className="flex flex-wrap items-start gap-5">
+        {/* Main column */}
+        <div className="flex min-w-0 flex-[999_1_40rem] flex-col gap-5">
           <ChartPanel
-            title="Active runs"
-            right={
-              <span className="num text-xs">
-                <span className="text-link">Active {stats.active}</span>
-                <span className="mx-2 faint">·</span>
-                <span className="text-warn-fg">Queued {stats.queued}</span>
-              </span>
-            }
-            legend={
-              <>
-                <LegendDot color={BLUE} label="Active" />
-                <LegendDot color={AMBER} label="Queued" />
-              </>
-            }
+            title="Completed runs"
+            legend={<><LegendDot color={GREEN} label="Succeeded" /><LegendDot color={RED} label="Failed" /></>}
+            right={<span className="num text-xs muted">{formatDurationMs(bucketMs)} per bar</span>}
           >
-            <StepChart
-              series={[
-                { name: 'Active', color: BLUE, points: charts.activeSeries },
-                { name: 'Queued', color: AMBER, points: charts.queueSeries },
-              ]}
-              labels={charts.timeLabels}
-              height={180}
-            />
+            <StackedBars buckets={buckets.map(b => ({ success: b.success, failure: b.failure }))} labels={labels} height={200} />
           </ChartPanel>
 
-          {/* Run statistics */}
-          <section className="panel p-4 sm:p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="panel-title">Run stats</h2>
-              <span className="text-xs muted">{RANGE_LABEL[activeRange]}</span>
-            </div>
-            <table className="mc-table">
-              <thead>
-                <tr>
-                  <th>Statistic</th>
-                  <th className="text-right">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.queued</td>
-                  <td className="num text-right">{stats.total}</td>
-                </tr>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.succeeded</td>
-                  <td className="num text-right text-ok-fg">{stats.succeeded}</td>
-                </tr>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.failed</td>
-                  <td className="num text-right text-danger-fg">{stats.failed}</td>
-                </tr>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.duration_p50</td>
-                  <td className="num text-right">{stats.median === null ? '—' : formatDurationMs(stats.median)}</td>
-                </tr>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.duration_p95</td>
-                  <td className="num text-right">{stats.p95 === null ? '—' : formatDurationMs(stats.p95)}</td>
-                </tr>
-                <tr>
-                  <td className="font-mono text-[0.8rem]">runs.active</td>
-                  <td className="num text-right">{stats.active}</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-        </div>
-
-        {/* Right column: Job stats (filterable), then Run duration + Completed runs */}
-        <div className="flex min-w-0 flex-col gap-4 lg:col-span-8">
-          {/* Job stats */}
-          <section className="panel p-4 sm:p-5">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="panel-title">Job stats</h2>
-              <label className="flex items-center gap-2 text-xs muted">
-                <Icon name="list" size={13} />
-                <select className="mc-select h-9 py-1 text-xs" value={jobFilter} onChange={event => setJobFilter(event.target.value)} aria-label="Filter job stats">
-                  <option value="">All jobs</option>
-                  {jobNames.map(name => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            {jobFilter === '' ? (
-              /* All jobs: per-job breakdown */
-              <div className="overflow-x-auto">
-                <table className="mc-table">
-                  <thead>
-                    <tr>
-                      <th>Job</th>
-                      <th className="text-right">Runs</th>
-                      <th className="text-right">Success</th>
-                      <th className="text-right">Failed</th>
-                      <th className="text-right">Rate</th>
-                      <th className="text-right">Median</th>
-                      <th className="text-right">p95</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {jobStats.map(job => (
-                      <tr key={job.name}>
-                        <td className="max-w-[14rem] truncate">
-                          <Link href={jobPath(job.name)} className="flex items-center gap-2 font-medium hover:text-link-hover">
-                            <span className={`inline-block h-2 w-2 rounded-full ${job.failed > 0 ? 'bg-danger' : 'bg-ok'}`} />
-                            {job.name}
-                            {job.active > 0 && <span className="chip chip-info !px-1.5 !py-0 text-[0.65rem]">{job.active} active</span>}
-                          </Link>
-                        </td>
-                        <td className="num text-right">{job.total}</td>
-                        <td className="num text-right text-ok-fg">{job.succeeded}</td>
-                        <td className="num text-right text-danger-fg">{job.failed}</td>
-                        <td className="num text-right">{job.rate === null ? '—' : `${job.rate.toFixed(0)}%`}</td>
-                        <td className="num text-right">{job.median === null ? '—' : formatDurationMs(job.median)}</td>
-                        <td className="num text-right">{job.p95 === null ? '—' : formatDurationMs(job.p95)}</td>
-                      </tr>
-                    ))}
-                    {jobStats.length === 0 && (
-                      <tr>
-                        <td colSpan={7} className="py-6 text-center text-xs faint">
-                          No runs in the selected window.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : selectedJob ? (
-              /* Single job: summary strip */
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-                  <MiniStat label="Runs" value={String(selectedJob.total)} />
-                  <MiniStat label="Succeeded" value={String(selectedJob.succeeded)} valueClass="text-ok-fg" />
-                  <MiniStat label="Failed" value={String(selectedJob.failed)} valueClass="text-danger-fg" />
-                  <MiniStat label="Active" value={String(selectedJob.active)} valueClass={selectedJob.active > 0 ? 'text-link' : ''} />
-                  <MiniStat label="Median" value={selectedJob.median === null ? '—' : formatDurationMs(selectedJob.median)} />
-                  <MiniStat label="p95" value={selectedJob.p95 === null ? '—' : formatDurationMs(selectedJob.p95)} />
-                </div>
-                <div>
-                  <div className="mb-1 flex items-center justify-between text-xs muted">
-                    <span>
-                      Success rate{' '}
-                      <span className="num font-medium text-base-content">{selectedJob.rate === null ? '—' : `${selectedJob.rate.toFixed(1)}%`}</span>
-                    </span>
-                    <span className="num">
-                      <span className="text-ok-fg">{selectedJob.succeeded}</span> / <span className="text-danger-fg">{selectedJob.failed}</span>
-                    </span>
-                  </div>
-                  <div className="flex h-2 w-full overflow-hidden rounded-full bg-base-200">
-                    <div className="bg-ok" style={{ width: `${selectedJob.rate ?? 0}%` }} />
-                    <div className="bg-danger" style={{ width: `${selectedJob.failed + selectedJob.succeeded > 0 ? 100 - (selectedJob.rate ?? 0) : 0}%` }} />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="py-6 text-center text-xs faint">No runs for this job in the selected window.</p>
-            )}
-          </section>
-
-          {/* Run duration + Completed runs */}
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <ChartPanel
-              title="Run duration"
-              right={
-                <span className="num text-xs">
-                  <span className="text-link">p50</span> {stats.median === null ? '—' : formatDurationMs(stats.median)}
-                  <span className="mx-2 faint">·</span>
-                  <span className="text-ok-fg">p95</span> {stats.p95 === null ? '—' : formatDurationMs(stats.p95)}
-                </span>
-              }
-              legend={
-                <>
-                  <LegendDot color={BLUE} label="p50" />
-                  <LegendDot color={GREEN} label="p95" />
-                </>
-              }
-            >
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <ChartPanel title="Run duration" legend={<><LegendDot color={BLUE} label="p50" /><LegendDot color={AMBER} label="p95" /></>}>
               <LineChart
                 series={[
-                  { name: 'p50', color: BLUE, points: charts.median.map(ms => (ms === null ? null : ms / 1000)) },
-                  { name: 'p95', color: GREEN, points: charts.p95.map(ms => (ms === null ? null : ms / 1000)) },
+                  { name: 'p50', color: BLUE, points: buckets.map(b => (b.duration_p50_ms == null ? null : b.duration_p50_ms / 1000)) },
+                  { name: 'p95', color: AMBER, points: buckets.map(b => (b.duration_p95_ms == null ? null : b.duration_p95_ms / 1000)) },
                 ]}
-                labels={charts.timeLabels}
+                labels={labels}
+                height={180}
                 log
-                formatY={value => (value >= 1 ? String(Number(value.toFixed(2))) : value.toFixed(2))}
+                formatY={value => `${value >= 1 ? Number(value.toFixed(2)) : value.toFixed(2)} s`}
               />
             </ChartPanel>
-
-            <ChartPanel
-              title="Completed runs"
-              right={<span className="num text-xs muted">Total {stats.succeeded + stats.failed}</span>}
-              legend={
-                <>
-                  <LegendDot color={GREEN} label="Success" />
-                  <LegendDot color={RED} label="Failure" />
-                </>
-              }
-            >
-              <StackedBars
-                buckets={charts.success.map((value, index) => ({ success: value, failure: charts.failure[index] }))}
-                labels={charts.timeLabels}
+            <ChartPanel title="Concurrency" legend={<><LegendDot color={BLUE} label="Running" /><LegendDot color={AMBER} label="Queued" /></>}>
+              <StepChart
+                series={[
+                  { name: 'Running', color: BLUE, points: buckets.map(b => b.active) },
+                  { name: 'Queued', color: AMBER, points: buckets.map(b => b.queued) },
+                ]}
+                labels={labels}
+                height={180}
               />
             </ChartPanel>
           </div>
+
+          <section className="panel" aria-labelledby="metrics-jobs">
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+              <div className="flex items-baseline gap-2">
+                <h2 id="metrics-jobs" className="panel-title">Jobs</h2>
+                <span className="text-xs faint">sorted by failures</span>
+              </div>
+              <label className="flex items-center gap-2 text-xs muted">
+                <Icon name="search" size={13} />
+                <span className="sr-only">Filter jobs</span>
+                <input type="search" className="mc-input h-9 w-48 py-1 text-xs" placeholder="Filter jobs" value={filter} onChange={event => setFilter(event.target.value)} />
+              </label>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="mc-table">
+                <thead>
+                  <tr>
+                    <th>Job</th>
+                    <th className="text-right">Runs</th>
+                    <th className="min-w-[10rem]">Failures</th>
+                    <th className="text-right">p50</th>
+                    <th className="text-right">p95</th>
+                    <th className="min-w-[9rem]">Recent runs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobRows.map(job => <JobRow key={job.name} job={job} runs={runsByJob.get(job.name) ?? []} now={now} />)}
+                  {jobRows.length === 0 && (
+                    <tr><td colSpan={6} className="py-6 text-center text-xs faint">{needle ? 'No jobs match the filter.' : 'No runs in the selected window.'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </div>
+
+        {/* Rail */}
+        <aside aria-label="System" className="flex min-w-0 flex-[1_1_18rem] flex-col gap-5">
+          <section className="panel p-4 sm:p-5" aria-labelledby="metrics-workers">
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 id="metrics-workers" className="panel-title">Workers</h2>
+              <span className="num text-xs faint">{workers.length} defined</span>
+            </div>
+            {workers.length > 0 && (
+              <div className="mb-3 flex h-2 w-full gap-0.5 overflow-hidden rounded-full bg-base-200">
+                {WORKER_GROUPS.map(group => workerCounts[group.key] > 0 && (
+                  <div key={group.key} className={group.dot} style={{ width: `${(workerCounts[group.key] / workers.length) * 100}%` }} />
+                ))}
+              </div>
+            )}
+            <ul className="space-y-2 text-sm">
+              {WORKER_GROUPS.map(group => (
+                <li key={group.key} className="flex items-center gap-2">
+                  <span className={`inline-block h-2 w-2 rounded-full ${group.dot}`} />
+                  {group.label}
+                  {group.key === 'restarting' && restartingNames.length > 0 && <span className="truncate text-xs faint">· {restartingNames.join(', ')}</span>}
+                  <span className={`num ml-auto ${workerCounts[group.key] === 0 ? 'faint' : ''}`}>{workerCounts[group.key]}</span>
+                </li>
+              ))}
+            </ul>
+            {workers.length === 0 && <p className="mt-3 text-xs faint">{jobs.isPending ? 'Loading workers…' : 'No workers defined.'}</p>}
+          </section>
+
+          <section className="panel p-4 sm:p-5" aria-labelledby="metrics-alerts">
+            <div className="mb-3 flex items-baseline justify-between">
+              <h2 id="metrics-alerts" className="panel-title">Alert deliveries</h2>
+              <span className="num text-xs faint">queue {alerts.data?.queue_depth ?? '—'}</span>
+            </div>
+            {alertCounts.length > 0 ? (
+              <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-2 text-sm">
+                {alertCounts.map(([status, count]) => {
+                  const bad = status === 'failed' || status === 'dropped';
+                  return (
+                    <div key={status} className="contents">
+                      <dt className={bad && count > 0 ? 'text-danger-fg' : 'muted'}>{status}</dt>
+                      <dd className={`num text-right ${bad && count > 0 ? 'text-danger-fg' : ''}`}>{count}</dd>
+                    </div>
+                  );
+                })}
+              </dl>
+            ) : (
+              <p className="text-xs faint">{alerts.isError ? 'Alert metrics are unavailable.' : alerts.isPending ? 'Loading…' : 'No alerts delivered yet.'}</p>
+            )}
+            <Link href="/settings" className="mt-3 inline-block text-sm text-link hover:text-link-hover">Alert channels →</Link>
+          </section>
+
+          <section className="panel p-4 sm:p-5" aria-labelledby="metrics-daemon">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 id="metrics-daemon" className="panel-title">Daemon</h2>
+              {daemon.data && (
+                <span className={`flex items-center gap-1.5 text-xs ${degraded ? 'text-warn-fg' : 'text-ok-fg'}`}>
+                  <span className={`dot ${degraded ? 'dot-amber' : 'dot-green'}`} />
+                  {degraded ? 'Degraded' : 'Healthy'}
+                </span>
+              )}
+            </div>
+            {daemon.data ? (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                <dt className="muted">Uptime</dt><dd className="num text-right">{formatUptime(daemon.data.uptime_s)}</dd>
+                <dt className="muted">Version</dt><dd className="num text-right">v{daemon.data.version} · schema {daemon.data.schema_version}</dd>
+                <dt className="muted">Run history</dt>
+                <dd className={`text-right ${history && history.pending > 0 ? 'text-warn-fg' : ''}`}>
+                  {!history ? '—' : history.pending > 0 ? `background writer · ${history.pending} pending` : 'up to date'}
+                </dd>
+                {daemon.data.timezone && <><dt className="muted">Time zone</dt><dd className="num text-right">{daemon.data.timezone}</dd></>}
+              </dl>
+            ) : (
+              <p className="text-xs faint">{daemon.isError ? 'Daemon status is unavailable.' : 'Connecting…'}</p>
+            )}
+            <Link href="/monitor" className="mt-3 inline-block text-sm text-link hover:text-link-hover">Live CPU and memory in Monitor →</Link>
+          </section>
+
+          <p className="text-xs leading-relaxed faint">
+            Figures come from stored run history and are computed only while this page is open; nothing is sampled in the background.
+          </p>
+        </aside>
       </div>
     </div>
   );
 }
 
-function StatCard({ icon, label, value, sub, valueClass = '' }: { icon: 'activity' | 'trending-up' | 'users' | 'file-text'; label: string; value: string; sub?: React.ReactNode; valueClass?: string }) {
+function Kpi({ label, value, sub, valueClass = '' }: { label: string; value: React.ReactNode; sub?: React.ReactNode; valueClass?: string }) {
   return (
     <div className="stat-card">
-      <div className="flex items-center justify-between">
-        <span className="label">{label}</span>
-        <Icon name={icon} size={16} className="text-link" />
-      </div>
-      <div className={`text-[1.9rem] font-bold leading-tight ${valueClass}`}>{value}</div>
+      <span className="label">{label}</span>
+      <div className={`num text-[1.75rem] font-semibold leading-tight ${valueClass}`}>{value}</div>
       {sub && <div className="text-xs muted">{sub}</div>}
     </div>
   );
 }
 
-function MiniStat({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
+function JobRow({ job, runs, now }: { job: RunJobMetrics; runs: Parameters<typeof RunGraph>[0]['runs']; now: number }) {
+  const rate = failureRate(job);
   return (
-    <div className="rounded-lg border border-base-300 bg-base-200 px-3 py-2">
-      <div className="text-[0.65rem] uppercase tracking-wide muted">{label}</div>
-      <div className={`num text-lg font-semibold leading-tight ${valueClass}`}>{value}</div>
-    </div>
+    <tr>
+      <td className="max-w-[16rem] truncate">
+        <Link href={jobPath(job.name)} className="flex items-center gap-2 font-medium hover:text-link-hover">
+          <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${job.failed > 0 ? 'bg-danger' : 'bg-ok'}`} />
+          <span className="truncate">{job.name}</span>
+          {job.active > 0 && <span className="chip chip-info !px-1.5 !py-0 text-[0.65rem]">{job.active} running</span>}
+        </Link>
+      </td>
+      <td className="num text-right">{job.total}</td>
+      <td>
+        <div className="flex items-center gap-2.5">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-base-200">
+            <div className="h-full bg-danger" style={{ width: `${Math.min(100, rate ?? 0)}%` }} />
+          </div>
+          <span className={`num min-w-[4.5rem] text-right ${job.failed > 0 ? 'text-danger-fg' : 'faint'}`}>
+            {job.failed === 0 ? '0' : `${job.failed} · ${rate === null ? '—' : `${rate.toFixed(rate < 10 ? 1 : 0)}%`}`}
+          </span>
+        </div>
+      </td>
+      <td className="num text-right">{duration(job.duration_p50_ms)}</td>
+      <td className="num text-right">{duration(job.duration_p95_ms)}</td>
+      <td><RunGraph runs={runs} now={now} /></td>
+    </tr>
   );
 }
 
@@ -430,20 +356,5 @@ function ChartPanel({ title, right, legend, children }: { title: string; right?:
       </div>
       {children}
     </section>
-  );
-}
-
-function WorkerRow({ color, label, count, total }: { color: string; label: string; count: number; total: number }) {
-  return (
-    <tr>
-      <td>
-        <span className="flex items-center gap-2">
-          <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
-          {label}
-        </span>
-      </td>
-      <td className="num text-right">{count}</td>
-      <td className="num text-right">{total > 0 ? `${((count / total) * 100).toFixed(1)}%` : '—'}</td>
-    </tr>
   );
 }

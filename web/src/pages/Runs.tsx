@@ -9,6 +9,7 @@ import { downloadFile } from '../lib/download';
 import { formatBytes, formatDayTime, formatSpan, formatTimestamp, shortRunId } from '../lib/format';
 import { humanizeSchedule } from '../lib/cron';
 import { jobPath } from '../lib/routes';
+import { RunGraph } from '../components/RunGraph';
 import { memoryMiB } from '../lib/resources';
 import { useOverview } from '../lib/attention';
 import { runQuery, useStopRun, useTriggerJob } from '../queries';
@@ -17,22 +18,6 @@ import { isActiveRun, type Definition, type Run, type WorkerState } from '../typ
 /** Runs shown when a job is first expanded, and how many each "Load more" adds. */
 const FIRST_PAGE = 5;
 const MORE_PAGE = 20;
-/** Bars in each job's run graph. */
-const GRAPH_SLOTS = 30;
-
-const TONE_VAR: Record<Tone, string> = {
-  ok: 'var(--mc-ok)',
-  danger: 'var(--mc-danger)',
-  warn: 'var(--mc-warn)',
-  info: 'var(--mc-info)',
-  neutral: 'var(--mc-neutral)',
-};
-
-function durationMs(run: Run, now: number): number {
-  const start = Date.parse(run.started_at ?? run.queued_at);
-  const end = run.ended_at ? Date.parse(run.ended_at) : now;
-  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
-}
 
 function runSpan(run: Run): string {
   return isActiveRun(run) ? formatSpan(run.started_at ?? run.queued_at) : formatSpan(run.started_at, run.ended_at);
@@ -61,27 +46,6 @@ function jobStatus(job: Definition, recent: Run[], worker: WorkerState | undefin
   let streak = 0;
   while (streak < recent.length && isFailedStatus(recent[streak].status)) streak++;
   return { label: streak > 1 ? `${meta.label} ${streak}×` : meta.label, tone: meta.tone };
-}
-
-/**
- * One bar per recent run, oldest on the left: height is the run's duration
- * (square-root scale, so one long run does not flatten the rest), color its status.
- */
-function RunGraph({ runs, now }: { runs: Run[]; now: number }) {
-  const recent = runs.slice(0, GRAPH_SLOTS).reverse();
-  const longest = Math.sqrt(Math.max(1, ...recent.map(run => durationMs(run, now))));
-  const failed = recent.filter(run => isFailedStatus(run.status)).length;
-  const label = recent.length === 0 ? 'No recent runs' : `Last ${recent.length} runs: ${failed} failed`;
-  return (
-    <span role="img" aria-label={label} title={label} className="run-graph">
-      {Array.from({ length: GRAPH_SLOTS - recent.length }, (_, index) => (
-        <span key={`empty-${index}`} className="empty" />
-      ))}
-      {recent.map(run => (
-        <span key={run.run_id} style={{ height: `${Math.round(4 + (14 * Math.sqrt(durationMs(run, now))) / longest)}px`, background: TONE_VAR[runStatusMeta(run.status).tone] }} />
-      ))}
-    </span>
-  );
 }
 
 /** Two panes: jobs and workers (the selected one expands into its runs) → selected run detail. */
